@@ -124,3 +124,73 @@ impl PathProber {
 impl Default for PathProber {
     fn default() -> Self { Self::new() }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn build_probe_uses_midpoint_size_and_increments_id() {
+        let mut p = PathProber::new();
+        let (id0, payload0) = p.build_probe();
+        let expected = (MIN_MTU + MAX_MTU) / 2;
+        assert_eq!(id0, 0);
+        assert_eq!(payload0.len(), expected);
+        assert_eq!(u64::from_le_bytes(payload0[0..8].try_into().unwrap()), id0);
+
+        let (id1, _) = p.build_probe();
+        assert_eq!(id1, 1);
+    }
+
+    #[test]
+    fn on_echo_rejects_short_payload_or_unknown_id() {
+        let mut p = PathProber::new();
+        assert_eq!(p.on_echo(&[0u8; 8]), None);
+
+        let mut payload = vec![0u8; PROBE_HDR];
+        payload[0..8].copy_from_slice(&99u64.to_le_bytes());
+        assert_eq!(p.on_echo(&payload), None);
+    }
+
+    #[test]
+    fn successful_echo_updates_mtu_and_can_finish_probing() {
+        let mut p = PathProber::new();
+        p.mtu_lo = 1400;
+        p.mtu_hi = 1410;
+        p.probing_mtu = true;
+
+        let (id, payload) = p.build_probe();
+        assert_eq!(id, 0);
+        let rtt = p.on_echo(&payload);
+        assert!(rtt.is_some());
+        assert!(!p.probing_mtu);
+        assert_eq!(p.path_mtu, 1405);
+    }
+
+    #[test]
+    fn expire_timeouts_shrinks_search_window_for_lost_mtu_probe() {
+        let mut p = PathProber::new();
+        p.pending.insert(
+            1,
+            PendingProbe {
+                sent_at: Instant::now() - PROBE_TIMEOUT,
+                probe_size: 1450,
+            },
+        );
+        let old_hi = p.mtu_hi;
+        let old_lo = p.mtu_lo;
+
+        let lost = p.expire_timeouts();
+        assert!(lost);
+        assert!(p.pending.is_empty());
+        assert_eq!(p.mtu_hi, (old_lo + old_hi) / 2);
+    }
+
+    #[test]
+    fn keepalive_probe_uses_header_size_after_mtu_converges() {
+        let mut p = PathProber::new();
+        p.probing_mtu = false;
+        let (_, payload) = p.build_probe();
+        assert_eq!(payload.len(), PROBE_HDR);
+    }
+}

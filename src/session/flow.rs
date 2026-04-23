@@ -38,3 +38,40 @@ impl FlowWindow {
         self.limit.saturating_sub(self.consumed)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reserve_within_limit_reduces_available() {
+        let mut flow = FlowWindow::new(100);
+        flow.reserve(40).unwrap();
+        assert_eq!(flow.available(), 60);
+    }
+
+    #[test]
+    fn reserve_over_limit_returns_blocked_error_with_remaining_credit() {
+        let mut flow = FlowWindow::new(10);
+        flow.reserve(7).unwrap();
+        let err = flow.reserve(5).unwrap_err();
+        assert!(matches!(
+            err,
+            ApexError::FlowControlBlocked {
+                available: 3,
+                requested: 5
+            }
+        ));
+        assert_eq!(flow.available(), 3);
+    }
+
+    #[test]
+    fn update_limit_only_grows_limit() {
+        let mut flow = FlowWindow::new(50);
+        flow.reserve(20).unwrap();
+        flow.update_limit(40);
+        assert_eq!(flow.available(), 30);
+        flow.update_limit(90);
+        assert_eq!(flow.available(), 70);
+    }
+}

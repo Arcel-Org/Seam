@@ -1,8 +1,11 @@
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use apex_protocol::{PacketDecoder, PacketEncoder, PacketKeys};
 use apex_protocol::session::{Session, stream::{PRIORITY_DEFAULT, PRIORITY_HIGH, PRIORITY_LOW}};
+use apex_protocol::transport::bbr::Bbr;
 use apex_protocol::transport::cc::{CongestionControl, Cubic};
 use apex_protocol::transport::pacer::Pacer;
+use apex_protocol::transport::pool::BufferPool;
+use apex_protocol::session::rack::RackTracker;
 
 const SECRET: &[u8] = b"session-bench-key-32-bytes-exact";
 const SESSION_ID: u64 = 0xDEADBEEF_CAFEBABE;
@@ -97,6 +100,74 @@ fn bench_congestion_controllers(c: &mut Criterion) {
         let mut cc = Cubic::new();
         b.iter(|| cc.on_loss());
     });
+
+    group.bench_function("BBR::on_ack", |b| {
+        let mut cc = Bbr::new();
+        b.iter(|| {
+            cc.on_send(1400);
+            cc.on_ack(1400, std::time::Duration::from_millis(10));
+        });
+    });
+
+    group.bench_function("BBR::on_loss", |b| {
+        let mut cc = Bbr::new();
+        b.iter(|| cc.on_loss());
+    });
+
+    group.finish();
+}
+
+fn bench_rack(c: &mut Criterion) {
+    let mut group = c.benchmark_group("rack");
+
+    group.bench_function("on_sent_on_ack_pair", |b| {
+        let mut r = RackTracker::new();
+        let mut pn = 0u64;
+        b.iter(|| {
+            r.on_sent(pn, bytes::Bytes::from_static(b"x"), 1400);
+            let _ = r.on_ack(pn);
+            pn += 1;
+        });
+    });
+
+    group.finish();
+}
+
+fn bench_buffer_pool(c: &mut Criterion) {
+    let mut group = c.benchmark_group("buffer_pool");
+
+    group.bench_function("acquire_release_1500B", |b| {
+        let pool = BufferPool::new(1500, 64);
+        b.iter(|| {
+            let buf = pool.acquire();
+            pool.release(buf);
+        });
+    });
+
+    group.bench_function("raw_Vec_allocate_1500B", |b| {
+        b.iter(|| {
+            let v: Vec<u8> = Vec::with_capacity(1500);
+            std::hint::black_box(v);
+        });
+    });
+
+    group.finish();
+}
+
+fn bench_datagram_queue(c: &mut Criterion) {
+    use apex_protocol::session::datagram::DatagramQueue;
+    use bytes::Bytes;
+    let mut group = c.benchmark_group("datagram_queue");
+
+    group.bench_function("send_poll_1200B", |b| {
+        let mut q = DatagramQueue::new();
+        let payload = Bytes::from(vec![0xAAu8; 1200]);
+        b.iter(|| {
+            q.send(payload.clone()).unwrap();
+            q.poll_send()
+        });
+    });
+
     group.finish();
 }
 
@@ -114,5 +185,14 @@ fn bench_pacer(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_stream_flush, bench_stream_read, bench_congestion_controllers, bench_pacer);
+criterion_group!(
+    benches,
+    bench_stream_flush,
+    bench_stream_read,
+    bench_congestion_controllers,
+    bench_pacer,
+    bench_rack,
+    bench_buffer_pool,
+    bench_datagram_queue,
+);
 criterion_main!(benches);

@@ -19,14 +19,24 @@ pub struct Stream {
     send_buf: BytesMut,
     send_offset: u64,         // next byte offset to write into the wire
     send_unacked_offset: u64, // oldest byte not yet ACKed
+    /// Per-stream send limit (bytes). Once we have sent `send_max_data` bytes
+    /// no more data is emitted until the peer advances the window.
+    send_max_data: u64,
     // Receive side
     recv_offset: u64,         // next expected byte offset
     recv_buf: BTreeMap<u64, Bytes>, // out-of-order segments keyed by offset
+    /// Per-stream receive limit (bytes). Attempting to buffer beyond this
+    /// is rejected to prevent unbounded memory growth per stream.
+    recv_max_data: u64,
+    recv_buffered: u64,
     fin_received: Option<u64>,
     fin_sent: bool,
 }
 
 impl Stream {
+    /// Default per-stream window: 1 MiB.
+    pub const DEFAULT_WINDOW: u64 = 1 << 20;
+
     pub fn new(id: StreamId) -> Self {
         Self {
             id,
@@ -34,11 +44,31 @@ impl Stream {
             send_buf: BytesMut::new(),
             send_offset: 0,
             send_unacked_offset: 0,
+            send_max_data: Self::DEFAULT_WINDOW,
             recv_offset: 0,
             recv_buf: BTreeMap::new(),
+            recv_max_data: Self::DEFAULT_WINDOW,
+            recv_buffered: 0,
             fin_received: None,
             fin_sent: false,
         }
+    }
+
+    /// Extend the per-stream send window (peer sent MAX_STREAM_DATA).
+    pub fn extend_send_window(&mut self, new_limit: u64) {
+        if new_limit > self.send_max_data {
+            self.send_max_data = new_limit;
+        }
+    }
+
+    /// Current send window remaining (bytes the sender may still put on the wire).
+    pub fn send_window_remaining(&self) -> u64 {
+        self.send_max_data.saturating_sub(self.send_offset)
+    }
+
+    /// Configure this stream's receive-side limit.
+    pub fn set_recv_limit(&mut self, limit: u64) {
+        self.recv_max_data = limit;
     }
 
     // ── Send side ────────────────────────────────────────────────────────────
@@ -47,6 +77,13 @@ impl Stream {
     pub fn write(&mut self, data: &[u8]) -> Result<u64, ApexError> {
         if self.fin_sent {
             return Err(ApexError::StreamFinished(self.id));
+        }
+        // Enforce per-stream send window
+        if self.send_offset.saturating_add(data.len() as u64) > self.send_max_data {
+            return Err(ApexError::FlowControlBlocked {
+                available: self.send_max_data.saturating_sub(self.send_offset),
+                requested: data.len() as u64,
+            });
         }
         let offset = self.send_offset;
         self.send_buf.extend_from_slice(data);
@@ -83,6 +120,7 @@ impl Stream {
     // ── Receive side ─────────────────────────────────────────────────────────
 
     /// Deliver an incoming segment. Buffers out-of-order segments.
+    /// Returns FlowControlBlocked if the segment would exceed the receive window.
     pub fn receive(&mut self, offset: u64, data: Bytes, is_fin: bool) -> Result<(), ApexError> {
         if is_fin {
             self.fin_received = Some(offset + data.len() as u64);
@@ -94,6 +132,16 @@ impl Stream {
         if offset + data.len() as u64 <= self.recv_offset {
             return Ok(());
         }
+        // Per-stream recv window: reject if the highest-offset byte would
+        // exceed the limit (prevents unbounded buffering by a hostile peer).
+        let high_offset = offset + data.len() as u64;
+        if high_offset > self.recv_max_data {
+            return Err(ApexError::FlowControlBlocked {
+                available: self.recv_max_data.saturating_sub(self.recv_offset),
+                requested: high_offset.saturating_sub(self.recv_offset),
+            });
+        }
+        self.recv_buffered = self.recv_buffered.saturating_add(data.len() as u64);
         self.recv_buf.insert(offset, data);
         Ok(())
     }

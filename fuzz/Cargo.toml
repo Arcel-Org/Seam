@@ -1,0 +1,44 @@
+[package]
+name = "apex-protocol-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+apex-protocol = { path = ".." }
+
+[[bin]]
+name = "fuzz_packet_decoder"
+path = "fuzz_targets/fuzz_packet_decoder.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_fec_repair_parse"
+path = "fuzz_targets/fuzz_fec_repair_parse.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_fec_decode"
+path = "fuzz_targets/fuzz_fec_decode.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_ticket_redeem"
+path = "fuzz_targets/fuzz_ticket_redeem.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_pkt_type"
+path = "fuzz_targets/fuzz_pkt_type.rs"
+test = false
+doc = false
+
+[workspace]

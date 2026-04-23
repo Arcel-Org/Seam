@@ -1,14 +1,19 @@
 pub mod arq;
+pub mod datagram;
 pub mod flow;
+pub mod rack;
 pub mod stream;
 
 use std::collections::HashMap;
+use bytes::Bytes;
+
 use crate::{
     crypto::{encoder::PacketEncoder, decoder::PacketDecoder},
     error::ApexError,
     packet::PktType,
     session::{
         arq::ArqTracker,
+        datagram::DatagramQueue,
         flow::FlowWindow,
         stream::{Stream, StreamId, Priority, PRIORITY_DEFAULT},
     },
@@ -20,7 +25,30 @@ pub enum SessionEvent {
     NewStream(StreamId),
     DataAvailable(StreamId),
     StreamFinished(StreamId),
+    DatagramReceived,
     Closed,
+}
+
+/// Resource limits enforced at the session layer to resist DoS.
+#[derive(Debug, Clone)]
+pub struct SessionLimits {
+    pub max_streams: u32,
+    pub max_datagram_size: usize,
+    pub max_datagram_queue: usize,
+    pub max_in_flight_packets: usize,
+    pub max_recv_buffer_per_stream: u64,
+}
+
+impl Default for SessionLimits {
+    fn default() -> Self {
+        Self {
+            max_streams: 1024,
+            max_datagram_size: 1200,
+            max_datagram_queue: 64,
+            max_in_flight_packets: 10_000,
+            max_recv_buffer_per_stream: 4 * 1024 * 1024, // 4 MiB
+        }
+    }
 }
 
 const DEFAULT_WINDOW: u64 = 1 << 20; // 1 MiB
@@ -35,10 +63,22 @@ pub struct Session {
     send_window: FlowWindow,
     recv_window: FlowWindow,
     arq: ArqTracker,
+    datagrams: DatagramQueue,
+    limits: SessionLimits,
 }
 
 impl Session {
     pub fn new(id: u64, encoder: PacketEncoder, decoder: PacketDecoder) -> Self {
+        Self::with_limits(id, encoder, decoder, SessionLimits::default())
+    }
+
+    pub fn with_limits(
+        id: u64,
+        encoder: PacketEncoder,
+        decoder: PacketDecoder,
+        limits: SessionLimits,
+    ) -> Self {
+        let datagrams = DatagramQueue::with_limits(limits.max_datagram_size, limits.max_datagram_queue);
         Self {
             id,
             encoder,
@@ -47,6 +87,8 @@ impl Session {
             next_stream_id: 1,
             send_window: FlowWindow::new(DEFAULT_WINDOW),
             recv_window: FlowWindow::new(DEFAULT_WINDOW),
+            datagrams,
+            limits,
             arq: ArqTracker::new(),
         }
     }
@@ -59,14 +101,45 @@ impl Session {
     }
 
     /// Open a stream with explicit priority (0 = highest, 7 = lowest).
+    /// Returns an error if the connection-wide stream limit would be exceeded.
     pub fn open_stream_with_priority(&mut self, priority: Priority) -> StreamId {
+        self.try_open_stream_with_priority(priority)
+            .expect("stream limit exceeded")
+    }
+
+    /// Fallible variant; returns None if max_streams would be exceeded.
+    pub fn try_open_stream_with_priority(&mut self, priority: Priority) -> Option<StreamId> {
+        if self.streams.len() as u32 >= self.limits.max_streams {
+            return None;
+        }
         let id = self.next_stream_id;
         self.next_stream_id += 2;
         let mut s = Stream::new(id);
         s.priority = priority;
         self.streams.insert(id, s);
-        id
+        Some(id)
     }
+
+    // ── Datagrams (unreliable) ───────────────────────────────────────────────
+
+    /// Queue an unreliable datagram for sending.
+    /// Returns an error if the payload exceeds max_datagram_size.
+    pub fn send_datagram(&mut self, data: Bytes) -> Result<(), ApexError> {
+        self.datagrams.send(data).map_err(|sz| ApexError::BufferTooSmall {
+            need: sz, have: self.limits.max_datagram_size,
+        })
+    }
+
+    /// Read the next received datagram, if any.
+    pub fn recv_datagram(&mut self) -> Option<Bytes> {
+        self.datagrams.recv()
+    }
+
+    pub fn datagram_stats(&self) -> (usize, usize, u64) {
+        (self.datagrams.send_pending(), self.datagrams.recv_pending(), self.datagrams.dropped)
+    }
+
+    pub fn limits(&self) -> &SessionLimits { &self.limits }
 
     /// Accept a remotely-initiated stream (called when a Data frame arrives for an unknown id).
     fn get_or_create_stream(&mut self, id: StreamId) -> &mut Stream {
@@ -115,6 +188,15 @@ impl Session {
                 packets.push(out);
             }
         }
+
+        // Drain queued datagrams: one per wire packet, encrypted as PktType::Datagram.
+        // Datagrams are NOT tracked by ARQ — they are not retransmitted.
+        while let Some(dg) = self.datagrams.poll_send() {
+            let mut out = vec![0u8; 32 + dg.len() + 16];
+            let n = self.encoder.encode(PktType::Datagram, &dg, &mut out)?;
+            out.truncate(n);
+            packets.push(out);
+        }
         Ok(packets)
     }
 
@@ -135,6 +217,10 @@ impl Session {
             }
             PktType::Close => {
                 events.push(SessionEvent::Closed);
+            }
+            PktType::Datagram => {
+                self.datagrams.receive(Bytes::copy_from_slice(payload));
+                events.push(SessionEvent::DatagramReceived);
             }
             _ => {}
         }

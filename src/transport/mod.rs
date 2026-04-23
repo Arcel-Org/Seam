@@ -1,16 +1,23 @@
+pub mod bbr;
 pub mod cc;
 pub mod chaff;
 pub mod congestion;
 pub mod connection;
 pub mod endpoint;
 pub mod pacer;
+pub mod pool;
 pub mod probe;
 pub mod resumption;
+pub mod stats;
 mod tests;
 
+pub use bbr::Bbr;
 pub use cc::{CongestionControl, Cubic, Aimd};
 pub use chaff::ChaffScheduler;
 pub use connection::{Connection, ConnPhase};
 pub use endpoint::Endpoint;
+pub use pacer::Pacer;
+pub use pool::BufferPool;
 pub use probe::PathProber;
 pub use resumption::{SessionTicket, TicketKey, WEAKER_FS_WARNING};
+pub use stats::ConnectionStats;

@@ -12,8 +12,9 @@
 /// Ticket wire format (encrypted with server's ticket key via ChaCha20Poly1305):
 ///   session_id(8) + traffic_secret(32) + expiry_unix_secs(8) + nonce(12)
 
-use chacha20poly1305::{ChaCha20Poly1305, KeyInit, AeadInPlace};
+use chacha20poly1305::{AeadInPlace, ChaCha20Poly1305, KeyInit};
 use crate::error::ApexError;
+use rand::{RngCore, rngs::OsRng};
 
 pub const WEAKER_FS_WARNING: &str =
     "WEAKER-FS: 0-RTT tickets reduce forward secrecy. Acknowledged.";
@@ -37,12 +38,10 @@ impl TicketKey {
         plain[8..40].copy_from_slice(traffic_secret);
         plain[40..48].copy_from_slice(&expiry.to_le_bytes());
 
-        // Random nonce via BLAKE3 KDF (deterministic from secret + session_id + timestamp)
-        let nonce_input = blake3::derive_key(
-            "apex/ticket-nonce/v1",
-            &[session_id.to_le_bytes().as_slice(), &expiry.to_le_bytes()].concat(),
-        );
-        let nonce: [u8; 12] = nonce_input[..12].try_into().unwrap();
+        // Use a fresh nonce per ticket to avoid accidental nonce reuse under the
+        // same key when issuing tickets in the same second.
+        let mut nonce = [0u8; 12];
+        OsRng.fill_bytes(&mut nonce);
 
         let cipher = ChaCha20Poly1305::new((&self.key).into());
         let mut buf = plain.to_vec();
@@ -62,7 +61,9 @@ impl TicketKey {
         if ticket_bytes.len() != TICKET_LEN {
             return Err(ApexError::HandshakeFailed("bad ticket length".into()));
         }
-        let nonce: [u8; 12] = ticket_bytes[..12].try_into().unwrap();
+        let nonce: [u8; 12] = ticket_bytes[..12]
+            .try_into()
+            .map_err(|_| ApexError::HandshakeFailed("bad ticket nonce".into()))?;
         let mut ct = ticket_bytes[12..12 + TICKET_PLAINTEXT_LEN + 16].to_vec();
 
         let cipher = ChaCha20Poly1305::new((&self.key).into());
@@ -70,9 +71,23 @@ impl TicketKey {
             .decrypt_in_place(&nonce.into(), b"apex-ticket", &mut ct)
             .map_err(|_| ApexError::AuthFailed)?;
 
-        let session_id = u64::from_le_bytes(ct[0..8].try_into().unwrap());
-        let traffic_secret: [u8; 32] = ct[8..40].try_into().unwrap();
-        let expiry = u64::from_le_bytes(ct[40..48].try_into().unwrap());
+        if ct.len() < TICKET_PLAINTEXT_LEN {
+            return Err(ApexError::AuthFailed);
+        }
+
+        let session_id = u64::from_le_bytes(
+            ct[0..8]
+                .try_into()
+                .map_err(|_| ApexError::AuthFailed)?,
+        );
+        let traffic_secret: [u8; 32] = ct[8..40]
+            .try_into()
+            .map_err(|_| ApexError::AuthFailed)?;
+        let expiry = u64::from_le_bytes(
+            ct[40..48]
+                .try_into()
+                .map_err(|_| ApexError::AuthFailed)?,
+        );
 
         if unix_now() > expiry {
             return Err(ApexError::HandshakeFailed("ticket expired".into()));
@@ -101,7 +116,7 @@ impl SessionTicket {
     }
 
     pub fn from_bytes(buf: &[u8]) -> Option<Self> {
-        if buf.len() < 40 { return None; }
+        if buf.len() != 40 { return None; }
         let session_id = u64::from_le_bytes(buf[0..8].try_into().ok()?);
         let traffic_secret: [u8; 32] = buf[8..40].try_into().ok()?;
         Some(Self { session_id, traffic_secret })
@@ -138,11 +153,28 @@ mod tests {
     }
 
     #[test]
+    fn issued_tickets_use_fresh_nonces() {
+        let key = TicketKey::new([0x42u8; 32]);
+        let secret = [0xBEu8; 32];
+        let t1 = key.issue(7, &secret);
+        let t2 = key.issue(7, &secret);
+        assert_ne!(&t1[..12], &t2[..12]);
+    }
+
+    #[test]
     fn session_ticket_serialize() {
         let t = SessionTicket::new(7, [0x11u8; 32]);
         let bytes = t.to_bytes();
         let back = SessionTicket::from_bytes(&bytes).unwrap();
         assert_eq!(back.session_id, 7);
         assert_eq!(back.traffic_secret, [0x11u8; 32]);
+    }
+
+    #[test]
+    fn session_ticket_rejects_trailing_bytes() {
+        let t = SessionTicket::new(9, [0x22u8; 32]);
+        let mut bytes = t.to_bytes();
+        bytes.push(0xFF);
+        assert!(SessionTicket::from_bytes(&bytes).is_none());
     }
 }

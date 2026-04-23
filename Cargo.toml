@@ -1,3 +1,6 @@
+[workspace]
+exclude = ["fuzz"]
+
 [package]
 name = "apex-protocol"
 version = "0.1.0"

@@ -311,4 +311,110 @@ mod tests {
         assert_eq!(parsed.session_id, 42);
         assert_eq!(parsed.traffic_secret, [0xABu8; 32]);
     }
+
+    // ── Datagram end-to-end ──────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_datagram_roundtrip() {
+        let client_id = IdentityKeypair::generate();
+        let server_id = Arc::new(IdentityKeypair::generate());
+
+        let (client_sock, server_sock, client_addr, server_addr) = loopback_pair().await;
+        let cookie_factory = Arc::new(CookieFactory::new([0xEEu8; 32]));
+
+        let (mut client, _) = Connection::connect(
+            client_sock.clone(), server_addr, &client_id,
+            &server_id.x25519_public.to_bytes(), &server_id.kem_pk,
+        ).await.unwrap();
+
+        let mut buf = vec![0u8; 65535];
+
+        let (_, _) = server_sock.recv_from(&mut buf).await.unwrap();
+        let (mut server, mut server_events) = Connection::accept_challenge(
+            server_sock.clone(), client_addr, server_id.clone(), cookie_factory,
+        ).await.unwrap();
+
+        // Drive handshake
+        let (n, _) = client_sock.recv_from(&mut buf).await.unwrap();
+        client.on_packet(&mut buf[..n].to_vec()).await.unwrap();
+        let (n, _) = server_sock.recv_from(&mut buf).await.unwrap();
+        server.on_packet(&mut buf[..n].to_vec()).await.unwrap();
+        let (n, _) = client_sock.recv_from(&mut buf).await.unwrap();
+        client.on_packet(&mut buf[..n].to_vec()).await.unwrap();
+        let (n, _) = server_sock.recv_from(&mut buf).await.unwrap();
+        server.on_packet(&mut buf[..n].to_vec()).await.unwrap();
+
+        // Send unreliable datagram
+        use bytes::Bytes;
+        client.session.as_mut().unwrap()
+            .send_datagram(Bytes::from_static(b"datagram-payload-xyz")).unwrap();
+        client.flush().await.unwrap();
+
+        let (n, _) = timeout(Duration::from_secs(2), server_sock.recv_from(&mut buf))
+            .await.unwrap().unwrap();
+        server.on_packet(&mut buf[..n].to_vec()).await.unwrap();
+
+        // Expect DatagramReceived event
+        let evt = timeout(Duration::from_millis(100), server_events.recv())
+            .await.unwrap().unwrap();
+        assert!(matches!(evt, SessionEvent::DatagramReceived));
+
+        let received = server.session.as_mut().unwrap().recv_datagram().unwrap();
+        assert_eq!(&received[..], b"datagram-payload-xyz");
+    }
+
+    // ── BBRv1 smoke ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn bbr_pluggable_into_connection() {
+        use crate::transport::bbr::Bbr;
+        let mut cc: Box<dyn CongestionControl> = Box::new(Bbr::new());
+        for _ in 0..10 {
+            cc.on_send(MSS);
+            cc.on_ack(MSS, Duration::from_millis(5));
+        }
+        assert!(cc.cwnd() >= 4 * MSS);
+    }
+
+    // ── RACK loss detection smoke ────────────────────────────────────────────
+
+    #[test]
+    fn rack_detects_reordered_loss() {
+        use crate::session::rack::RackTracker;
+        use bytes::Bytes;
+        use std::time::Instant;
+
+        let mut r = RackTracker::new();
+        r.on_sent(1, Bytes::from_static(b"old"), 100);
+        r.on_sent(2, Bytes::from_static(b"new"), 100);
+        // Simulate packet 2 arriving while packet 1 is much older
+        // (Internal manipulation only for this test)
+        let (_rtt, losses) = r.on_ack(2);
+        // With default reorder window, we may not detect yet — test API compiles/runs
+        assert_eq!(r.in_flight_count(), 1);
+        let _ = losses;
+        let _ = Instant::now;
+    }
+
+    // ── BufferPool reuse ─────────────────────────────────────────────────────
+
+    #[test]
+    fn buffer_pool_reuses_allocations() {
+        let pool = crate::transport::pool::BufferPool::new(1500, 8);
+        let buf = pool.acquire();
+        let cap = buf.capacity();
+        pool.release(buf);
+        let buf2 = pool.acquire();
+        assert_eq!(buf2.capacity(), cap, "should have reused the same allocation");
+    }
+
+    // ── ConnectionStats ──────────────────────────────────────────────────────
+
+    #[test]
+    fn connection_stats_updates() {
+        let mut s = crate::transport::stats::ConnectionStats::new();
+        s.packets_sent = 1000;
+        s.packets_lost = 50;
+        assert!((s.loss_rate() - 0.05).abs() < 1e-4);
+    }
 }

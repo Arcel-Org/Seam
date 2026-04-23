@@ -20,6 +20,12 @@ pub enum PktType {
     Chaff     = 0x05,
     PathProbe = 0x06,
     Close     = 0x07,
+    /// Unreliable, out-of-order application datagram. No retransmission,
+    /// no reordering, not FEC-protected by default. Analogous to QUIC
+    /// DATAGRAM frame (RFC 9221).
+    Datagram  = 0x08,
+    /// Signals the peer to roll traffic keys forward by one epoch.
+    KeyUpdate = 0x09,
 }
 
 impl TryFrom<u8> for PktType {
@@ -34,6 +40,8 @@ impl TryFrom<u8> for PktType {
             0x05 => Ok(Self::Chaff),
             0x06 => Ok(Self::PathProbe),
             0x07 => Ok(Self::Close),
+            0x08 => Ok(Self::Datagram),
+            0x09 => Ok(Self::KeyUpdate),
             other => Err(ApexError::InvalidPktType(other)),
         }
     }
@@ -60,6 +68,8 @@ mod tests {
             (0x05, PktType::Chaff),
             (0x06, PktType::PathProbe),
             (0x07, PktType::Close),
+            (0x08, PktType::Datagram),
+            (0x09, PktType::KeyUpdate),
         ];
         for (raw, expected) in cases {
             assert_eq!(PktType::try_from(raw).unwrap(), expected);

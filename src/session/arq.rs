@@ -102,3 +102,56 @@ impl Default for ArqTracker {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ack_for_unknown_packet_is_ignored() {
+        let mut arq = ArqTracker::new();
+        assert_eq!(arq.on_ack(42), None);
+    }
+
+    #[test]
+    fn ack_for_first_send_updates_rtt_and_clears_in_flight() {
+        let mut arq = ArqTracker::new();
+        arq.on_sent(1, Bytes::from_static(b"payload"));
+        let sent = arq.in_flight.get_mut(&1).unwrap();
+        sent.sent_at = Instant::now() - Duration::from_millis(25);
+
+        let rtt = arq.on_ack(1).unwrap();
+        assert!(rtt >= Duration::from_millis(1));
+        assert_eq!(arq.in_flight_count(), 0);
+        assert!(arq.srtt() >= Duration::from_millis(1));
+        assert!(arq.rto >= Duration::from_millis(200));
+    }
+
+    #[test]
+    fn expired_packets_are_retransmitted_and_backoff_applies() {
+        let mut arq = ArqTracker::new();
+        arq.on_sent(5, Bytes::from_static(b"hello"));
+        let initial_rto = arq.rto;
+        let sent = arq.in_flight.get_mut(&5).unwrap();
+        sent.sent_at = Instant::now() - initial_rto;
+
+        let expired = arq.drain_expired();
+        assert_eq!(expired.len(), 1);
+        assert_eq!(expired[0].0, 5);
+        assert_eq!(expired[0].1, Bytes::from_static(b"hello"));
+        assert_eq!(arq.rto, (initial_rto * 2).min(Duration::from_secs(60)));
+        assert_eq!(arq.in_flight.get(&5).unwrap().retransmits, 1);
+    }
+
+    #[test]
+    fn ack_after_retransmit_does_not_update_rtt() {
+        let mut arq = ArqTracker::new();
+        arq.on_sent(7, Bytes::from_static(b"rto"));
+        let sent = arq.in_flight.get_mut(&7).unwrap();
+        sent.sent_at = Instant::now() - arq.rto;
+
+        let _ = arq.drain_expired();
+        assert_eq!(arq.on_ack(7), None);
+        assert_eq!(arq.srtt(), Duration::from_micros(0));
+    }
+}

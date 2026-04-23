@@ -38,3 +38,39 @@ impl TryFrom<u8> for PktType {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn encode_buf_len_accounts_for_header_and_tag() {
+        assert_eq!(encode_buf_len(0), MIN_PACKET_LEN);
+        assert_eq!(encode_buf_len(128), HEADER_LEN + 128 + TAG_LEN);
+    }
+
+    #[test]
+    fn pkt_type_try_from_accepts_all_defined_values() {
+        let cases = [
+            (0x00, PktType::Initial),
+            (0x01, PktType::Handshake),
+            (0x02, PktType::Data),
+            (0x03, PktType::Ack),
+            (0x04, PktType::FecRepair),
+            (0x05, PktType::Chaff),
+            (0x06, PktType::PathProbe),
+            (0x07, PktType::Close),
+        ];
+        for (raw, expected) in cases {
+            assert_eq!(PktType::try_from(raw).unwrap(), expected);
+        }
+    }
+
+    #[test]
+    fn pkt_type_try_from_rejects_unknown_values() {
+        assert!(matches!(
+            PktType::try_from(0xFF),
+            Err(ApexError::InvalidPktType(0xFF))
+        ));
+    }
+}

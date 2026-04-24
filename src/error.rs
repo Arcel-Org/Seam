@@ -18,4 +18,6 @@ pub enum ApexError {
     UnknownStream(u32),
     #[error("stream {0} is already finished")]
     StreamFinished(u32),
+    #[error("protocol violation: {0}")]
+    ProtocolViolation(String),
 }

@@ -1,3 +1,4 @@
+pub mod ack;
 pub mod arq;
 pub mod datagram;
 pub mod flow;
@@ -12,6 +13,7 @@ use crate::{
     error::ApexError,
     packet::PktType,
     session::{
+        ack::{parse_ack_frame, AckRanges},
         arq::ArqTracker,
         datagram::DatagramQueue,
         flow::FlowWindow,
@@ -27,6 +29,24 @@ pub enum SessionEvent {
     StreamFinished(StreamId),
     DatagramReceived,
     Closed,
+}
+
+/// Which side of the connection this session represents. Controls stream-id
+/// allocation so client and server can initiate streams concurrently without
+/// collisions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Role {
+    /// Initiator (uses odd stream IDs: 1, 3, 5 …).
+    Client,
+    /// Responder (uses even stream IDs: 2, 4, 6 …).
+    Server,
+}
+
+impl Role {
+    /// Parity bit of locally-initiated stream IDs (Client=1 odd, Server=0 even).
+    fn local_parity(self) -> u32 {
+        match self { Role::Client => 1, Role::Server => 0 }
+    }
 }
 
 /// Resource limits enforced at the session layer to resist DoS.
@@ -56,6 +76,7 @@ const MAX_PAYLOAD: usize = 1400;    // conservative MTU
 
 pub struct Session {
     pub id: u64,
+    pub role: Role,
     encoder: PacketEncoder,
     decoder: PacketDecoder,
     streams: HashMap<StreamId, Stream>,
@@ -65,30 +86,40 @@ pub struct Session {
     arq: ArqTracker,
     datagrams: DatagramQueue,
     limits: SessionLimits,
+    /// Packet numbers received from peer, to be ACKed in range form.
+    ack_ranges: AckRanges,
 }
 
 impl Session {
     pub fn new(id: u64, encoder: PacketEncoder, decoder: PacketDecoder) -> Self {
-        Self::with_limits(id, encoder, decoder, SessionLimits::default())
+        Self::with_limits(id, Role::Client, encoder, decoder, SessionLimits::default())
+    }
+
+    pub fn with_role(id: u64, role: Role, encoder: PacketEncoder, decoder: PacketDecoder) -> Self {
+        Self::with_limits(id, role, encoder, decoder, SessionLimits::default())
     }
 
     pub fn with_limits(
         id: u64,
+        role: Role,
         encoder: PacketEncoder,
         decoder: PacketDecoder,
         limits: SessionLimits,
     ) -> Self {
         let datagrams = DatagramQueue::with_limits(limits.max_datagram_size, limits.max_datagram_queue);
+        let next_stream_id = match role { Role::Client => 1, Role::Server => 2 };
         Self {
             id,
+            role,
             encoder,
             decoder,
             streams: HashMap::new(),
-            next_stream_id: 1,
+            next_stream_id,
             send_window: FlowWindow::new(DEFAULT_WINDOW),
             recv_window: FlowWindow::new(DEFAULT_WINDOW),
             datagrams,
             limits,
+            ack_ranges: AckRanges::new(),
             arq: ArqTracker::new(),
         }
     }
@@ -118,6 +149,14 @@ impl Session {
         s.priority = priority;
         self.streams.insert(id, s);
         Some(id)
+    }
+
+    /// Convenience alias: open a stream that will be *pushed* to the remote peer.
+    /// On a server-role session this allocates an even stream ID (2, 4, 6 …).
+    /// On a client-role session this allocates an odd stream ID (1, 3, 5 …) —
+    /// use `open_stream` directly; `push_stream` is just a semantic marker.
+    pub fn push_stream(&mut self) -> StreamId {
+        self.open_stream()
     }
 
     // ── Datagrams (unreliable) ───────────────────────────────────────────────
@@ -197,15 +236,37 @@ impl Session {
             out.truncate(n);
             packets.push(out);
         }
+
+        // Emit a consolidated ACK frame if we owe the peer one.
+        if self.ack_ranges.has_pending_ack() {
+            let frame = self.ack_ranges.build_frame();
+            let mut out = vec![0u8; 32 + frame.len() + 16];
+            let n = self.encoder.encode(PktType::Ack, &frame, &mut out)?;
+            out.truncate(n);
+            packets.push(out);
+        }
         Ok(packets)
+    }
+
+    /// Does the session owe the peer an ACK frame?
+    pub fn has_pending_ack(&self) -> bool {
+        self.ack_ranges.has_pending_ack()
     }
 
     // ── Receiving ────────────────────────────────────────────────────────────
 
     /// Process an incoming wire packet. Returns events.
     pub fn receive_packet(&mut self, buf: &mut [u8]) -> Result<Vec<SessionEvent>, ApexError> {
-        let (pkt_type, _pkt_num, payload) = self.decoder.decode(buf)?;
+        let (pkt_type, pkt_num, payload) = self.decoder.decode(buf)?;
         let mut events = Vec::new();
+
+        // An "ack-eliciting" packet triggers an ACK to the peer. ACK frames
+        // themselves are NOT ack-eliciting (prevents infinite ACK chatter).
+        let ack_eliciting = !matches!(
+            pkt_type,
+            PktType::Ack | PktType::Chaff | PktType::PathProbe
+        );
+        self.ack_ranges.on_received(pkt_num, ack_eliciting);
 
         match pkt_type {
             PktType::Data => {
@@ -240,10 +301,19 @@ impl Session {
 
         let mut events = Vec::new();
         let is_new = !self.streams.contains_key(&stream_id);
-        let stream = self.get_or_create_stream(stream_id);
         if is_new {
+            // Remotely-initiated streams must have opposite parity from local streams.
+            // Client opens odd IDs; server opens even IDs. Reject violations to prevent
+            // ID-space collisions and detect misbehaving peers early.
+            if stream_id % 2 == self.role.local_parity() {
+                return Err(ApexError::ProtocolViolation(format!(
+                    "stream {stream_id} parity matches local role {:?}; remote must use opposite parity",
+                    self.role
+                )));
+            }
             events.push(SessionEvent::NewStream(stream_id));
         }
+        let stream = self.get_or_create_stream(stream_id);
         stream.receive(offset, data, is_fin)?;
         events.push(SessionEvent::DataAvailable(stream_id));
         if is_fin || stream.is_recv_finished() {
@@ -253,9 +323,15 @@ impl Session {
     }
 
     fn handle_ack_frame(&mut self, frame: &[u8]) -> Result<(), ApexError> {
-        if frame.len() < 8 { return Ok(()); }
-        let acked_pkt = u64::from_le_bytes(frame[..8].try_into().unwrap());
-        self.arq.on_ack(acked_pkt);
+        let Some((_largest, _delay_us, ranges)) = parse_ack_frame(frame) else {
+            return Ok(());
+        };
+        // Each (start, end) is inclusive. ACK every packet number in the range.
+        for (start, end) in ranges {
+            for pn in start..=end {
+                self.arq.on_ack(pn);
+            }
+        }
         Ok(())
     }
 
@@ -285,5 +361,145 @@ impl Session {
     /// Drain ARQ packets that have exceeded their RTO. Returns (pkt_num, data) pairs.
     pub fn drain_retransmits(&mut self) -> Vec<(u64, bytes::Bytes)> {
         self.arq.drain_expired()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::crypto::{
+        decoder::PacketDecoder,
+        encoder::PacketEncoder,
+        keys::PacketKeys,
+    };
+
+    fn make_session_pair() -> (Session, Session) {
+        let secret = [0x42u8; 32];
+        let keys_a = PacketKeys::derive_from_secret(&secret);
+        let keys_b = PacketKeys::derive_from_secret(&secret);
+        let client = Session::with_role(
+            1,
+            Role::Client,
+            PacketEncoder::new(keys_a.clone(), 1),
+            PacketDecoder::new(keys_b.clone()),
+        );
+        let server = Session::with_role(
+            1,
+            Role::Server,
+            PacketEncoder::new(keys_b, 1),
+            PacketDecoder::new(keys_a),
+        );
+        (client, server)
+    }
+
+    #[test]
+    fn server_push_stream_allocates_even_ids() {
+        let (_, mut server) = make_session_pair();
+        let id1 = server.push_stream();
+        let id2 = server.push_stream();
+        assert_eq!(id1 % 2, 0, "server push_stream should allocate even IDs");
+        assert_eq!(id2 % 2, 0);
+        assert_eq!(id1, 2);
+        assert_eq!(id2, 4);
+    }
+
+    #[test]
+    fn client_open_stream_allocates_odd_ids() {
+        let (mut client, _) = make_session_pair();
+        let id1 = client.open_stream();
+        let id2 = client.open_stream();
+        assert_eq!(id1 % 2, 1, "client open_stream should allocate odd IDs");
+        assert_eq!(id2 % 2, 1);
+        assert_eq!(id1, 1);
+        assert_eq!(id2, 3);
+    }
+
+    #[test]
+    fn server_push_data_received_as_new_stream_by_client() {
+        let (mut client, mut server) = make_session_pair();
+
+        // Server opens a push stream and sends data
+        let sid = server.push_stream(); // stream 2 (even, server-initiated)
+        server.send(sid, b"pushed from server").unwrap();
+        let pkts = server.flush().unwrap();
+        assert!(!pkts.is_empty());
+
+        // Client receives the packet
+        let events = client.receive_packet(&mut pkts[0].clone()).unwrap();
+        let has_new = events.iter().any(|e| matches!(e, SessionEvent::NewStream(2)));
+        assert!(has_new, "client should see NewStream(2) for server-pushed stream");
+
+        let mut out = Vec::new();
+        let n = client.read(sid, &mut out, 256).unwrap();
+        assert_eq!(&out[..n], b"pushed from server");
+    }
+
+    #[test]
+    fn wrong_parity_stream_id_rejected() {
+        let (mut client, mut server) = make_session_pair();
+
+        // Client opens stream 1 and sends — this is valid (client initiates odd ID)
+        let sid = client.open_stream();
+        assert_eq!(sid, 1);
+        client.send(sid, b"ping").unwrap();
+        let pkts = client.flush().unwrap();
+
+        // Server receives it fine (server role, parity=0; stream 1 has parity 1 — remote ✓)
+        let events = server.receive_packet(&mut pkts[0].clone()).unwrap();
+        assert!(events.iter().any(|e| matches!(e, SessionEvent::NewStream(1))));
+
+        // Now craft a frame as if the server received a NEW stream with even ID 2 from the client.
+        // This would be a protocol violation: server (local_parity=0) receiving a new stream
+        // with even ID looks like the server itself initiated it, not the client.
+        let sid2 = server.push_stream(); // allocates stream 2 on server side
+        server.send(sid2, b"bad frame").unwrap();
+        let bad_pkts = server.flush().unwrap();
+
+        // Send that back to the server itself — server receiving its own even-ID stream
+        // as if it's new (it already knows about stream 2, so it won't trigger the check).
+        // Instead test via client: client (local_parity=1) should reject new stream with odd ID
+        // (client wouldn't have opened stream 3 yet, and receiving it would be a violation).
+        // We achieve this by having the client send stream 3 to server, then server echoes
+        // it back to client — but client already knows about stream 1. So let's test directly:
+        // open stream 3 on client, send to server; server relays back to a fresh client.
+        let (mut client2, mut server2) = make_session_pair();
+        let bad_sid = client2.open_stream(); // stream 1
+        assert_eq!(bad_sid, 1);
+        client2.send(bad_sid, b"data").unwrap();
+        let bad_pkts2 = client2.flush().unwrap();
+        // server2 receives stream 1 fine (opposite parity)
+        let evs = server2.receive_packet(&mut bad_pkts2[0].clone()).unwrap();
+        assert!(evs.iter().any(|e| matches!(e, SessionEvent::NewStream(1))));
+
+        // Now manufacture a violation: server2 (local_parity=0) receiving a NEW even-ID stream.
+        // We reuse the server push packet from the other pair — server received its own packet.
+        // Actually the simplest check: route bad_pkts (server→client path) to another server2.
+        // server2 would decrypt it wrong (different keys). Skip that.
+        // The cleanest direct unit test: use same-key pair where sender and receiver share keys.
+        let secret = [0xDEu8; 32];
+        let keys = PacketKeys::derive_from_secret(&secret);
+        let mut sender = Session::with_role(
+            99,
+            Role::Client,  // sends odd IDs
+            PacketEncoder::new(keys.clone(), 99),
+            PacketDecoder::new(keys.clone()),
+        );
+        let mut receiver = Session::with_role(
+            99,
+            Role::Client,  // also client role — will reject odd-ID NEW streams from "peer"
+            PacketEncoder::new(keys.clone(), 99),
+            PacketDecoder::new(keys.clone()),
+        );
+        // sender opens stream 1 (odd) and sends; receiver (client) sees a NEW stream 1
+        // with same parity as its own local_parity(1) → violation
+        let vsid = sender.open_stream();
+        assert_eq!(vsid, 1);
+        sender.send(vsid, b"violation").unwrap();
+        let vpkts = sender.flush().unwrap();
+        let result = receiver.receive_packet(&mut vpkts[0].clone());
+        assert!(
+            matches!(result, Err(ApexError::ProtocolViolation(_))),
+            "should reject stream with same parity as receiver's local role: {result:?}"
+        );
     }
 }

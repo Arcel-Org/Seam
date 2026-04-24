@@ -417,4 +417,110 @@ mod tests {
         s.packets_lost = 50;
         assert!((s.loss_rate() - 0.05).abs() < 1e-4);
     }
+
+    // ── Server-initiated (push) streams ──────────────────────────────────────
+
+    #[tokio::test]
+    async fn server_push_stream_received_by_client() {
+        let (mut client, mut server) = do_handshake().await;
+
+        let (client_sock, server_sock, client_addr, server_addr) = loopback_pair().await;
+        let _ = (client_addr, server_addr);
+
+        // Server pushes a stream (even ID, server-initiated)
+        let sid = server.session.as_mut().unwrap().push_stream();
+        assert_eq!(sid % 2, 0, "server push_stream must allocate even IDs");
+        server.session.as_mut().unwrap().send(sid, b"server push payload").unwrap();
+
+        // Flush server → packets sent to client
+        server.flush().await.unwrap();
+
+        // Route packets from server's socket to client
+        let (cs, ss, ca, sa) = loopback_pair().await;
+        let _ = (cs, ss, ca, sa);
+
+        // Use the sockets already embedded in the Connection objects from do_handshake.
+        // do_handshake() doesn't expose sockets, so we re-drive manually.
+        // Re-run flush to get raw bytes, then deliver to client.
+        let session = server.session.as_mut().unwrap();
+        session.send(sid, b"server push payload").unwrap();
+        let pkts = session.flush().unwrap();
+        assert!(!pkts.is_empty(), "server flush should produce at least one packet");
+
+        let events = client.session.as_mut().unwrap()
+            .receive_packet(&mut pkts[0].clone()).unwrap();
+
+        let has_new = events.iter().any(|e| matches!(e, SessionEvent::NewStream(s) if s % 2 == 0));
+        assert!(has_new, "client should receive NewStream with even ID: {events:?}");
+
+        let mut out = Vec::new();
+        let n = client.session.as_mut().unwrap()
+            .read(sid, &mut out, 256)
+            .unwrap_or(0);
+        assert_eq!(&out[..n], b"server push payload");
+    }
+
+
+    // ── High-level Client/Server API ─────────────────────────────────────────
+
+    #[tokio::test]
+    async fn high_level_client_server_roundtrip() {
+        use crate::api::{Client, Server};
+        use crate::handshake::IdentityKeypair;
+
+        let server_id = IdentityKeypair::generate();
+        let server_x25519: [u8; 32] = server_id.x25519_public.to_bytes();
+        let server_kem_pk = server_id.kem_pk.clone();
+
+        // Server binds and starts accepting
+        let mut server = Server::bind("127.0.0.1:0".parse().unwrap(), server_id)
+            .await
+            .unwrap();
+        let server_addr = server.local_addr().unwrap();
+
+        // Drive server accept + client connect concurrently
+        let (server_conn, client_conn) = tokio::join!(
+            async {
+                timeout(Duration::from_secs(5), server.accept())
+                    .await
+                    .expect("server accept timed out")
+                    .expect("server accept returned None")
+            },
+            async {
+                let client_id = IdentityKeypair::generate();
+                let mut client = Client::bind("127.0.0.1:0".parse().unwrap(), client_id)
+                    .await
+                    .unwrap();
+                timeout(
+                    Duration::from_secs(5),
+                    client.connect(server_addr, &server_x25519, &server_kem_pk),
+                )
+                .await
+                .expect("client connect timed out")
+                .expect("client connect failed")
+            },
+        );
+
+        // Session IDs must match
+        assert_eq!(client_conn.session_id().await, server_conn.session_id().await);
+
+        // Client sends a stream
+        let sid = client_conn.open_stream().await;
+        client_conn.write(sid, b"hello from client").await.unwrap();
+
+        // Server waits for the data
+        let mut sconn = server_conn;
+        let event = timeout(Duration::from_secs(2), sconn.read_event())
+            .await
+            .expect("server event timed out")
+            .expect("no event");
+        assert!(
+            matches!(event, SessionEvent::DataAvailable(_) | SessionEvent::NewStream(_)),
+            "unexpected event: {event:?}"
+        );
+
+        let data = sconn.read(sid, 256).await.unwrap();
+        assert_eq!(data, b"hello from client");
+    }
+
 }

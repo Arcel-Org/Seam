@@ -1,7 +1,11 @@
 use std::time::{SystemTime, UNIX_EPOCH};
+use subtle::ConstantTimeEq;
 
 /// Stateless server-side cookie. BLAKE3-HMAC of (secret || client_addr || bucket).
 /// The server never allocates session state until the client echoes a valid cookie back.
+///
+/// Verification uses constant-time comparison to avoid leaking cookie prefixes
+/// via timing side-channels on hostile networks.
 pub struct CookieFactory {
     secret: [u8; 32],
     /// Resolution in seconds — prevents timing attacks while allowing clock drift.
@@ -27,10 +31,16 @@ impl CookieFactory {
     }
 
     /// Verify a cookie, accepting current and previous bucket (30s grace window).
+    /// Uses `subtle::ConstantTimeEq` — must not short-circuit on mismatch.
     pub fn verify(&self, client_addr: &[u8], cookie: &[u8; 32]) -> bool {
         let b = self.bucket();
-        self.compute(client_addr, b) == *cookie
-            || (b > 0 && self.compute(client_addr, b - 1) == *cookie)
+        let cur = self.compute(client_addr, b);
+        let prev = if b > 0 { self.compute(client_addr, b - 1) } else { [0u8; 32] };
+        // Always compute both to avoid timing differences between "current valid"
+        // and "previous valid" cases.
+        let ct_cur = cur.ct_eq(cookie);
+        let ct_prev = prev.ct_eq(cookie);
+        bool::from(ct_cur | ct_prev)
     }
 
     fn compute(&self, client_addr: &[u8], bucket: u64) -> [u8; 32] {

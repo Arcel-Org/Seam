@@ -160,7 +160,14 @@ impl Connection {
     fn finish_handshake(&mut self, result: HandshakeResult) {
         let enc = PacketEncoder::new(result.keys.clone(), result.session_id);
         let dec = PacketDecoder::new(result.keys);
-        self.session = Some(Session::new(result.session_id, enc, dec));
+        // Client-initiated connections take the Client role; server connections
+        // use the Server role so they allocate even stream IDs on push.
+        let role = if self.server_identity.is_some() {
+            crate::session::Role::Server
+        } else {
+            crate::session::Role::Client
+        };
+        self.session = Some(Session::with_role(result.session_id, role, enc, dec));
         self.phase = ConnPhase::Established;
         self.chaff.enable();
         self.server_identity = None;

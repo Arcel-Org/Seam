@@ -1,3 +1,6 @@
+// Copyright (c) 2025 North9 LLC
+// SPDX-License-Identifier: AGPL-3.0-only
+
 pub mod api;
 pub mod crypto;
 pub mod error;

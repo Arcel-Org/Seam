@@ -7,7 +7,7 @@
 UDP · Multi-stream · Built-in FEC · Noise_XX + ML-KEM-768
 
 [![CI](https://github.com/North9LLC/Seam/actions/workflows/ci.yml/badge.svg)](https://github.com/North9LLC/Seam/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![License: AGPL v3](https://img.shields.io/badge/license-AGPL%20v3-blue.svg)](LICENSE)
 [![Rust 1.88+](https://img.shields.io/badge/rust-1.88+-orange.svg)](#getting-started)
 
 </div>
@@ -160,4 +160,9 @@ fuzz/               # cargo-fuzz targets
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+Seam is dual-licensed:
+
+- **Open source:** [GNU Affero General Public License v3.0](LICENSE) — free for open source projects and personal use
+- **Commercial:** contact [licensing@north9.org](mailto:licensing@north9.org) for proprietary, government, SaaS, or OEM use
+
+See [LICENSE-COMMERCIAL](LICENSE-COMMERCIAL) for details.

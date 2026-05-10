@@ -1,50 +1,48 @@
 <div align="center">
 
-# Seam Protocol
+# Seam
 
-**A high-performance, post-quantum encrypted transport stack written in Rust.**
+**Post-quantum encrypted transport protocol — written in Rust.**
 
-UDP-based · Multi-stream · Built-in FEC · ML-KEM768 Post-Quantum Handshake
+UDP · Multi-stream · Built-in FEC · Noise_XX + ML-KEM-768
 
-[![Build](https://img.shields.io/badge/build-passing-brightgreen)](#)
-[![Language](https://img.shields.io/badge/language-Rust-orange)](#)
-[![License](https://img.shields.io/badge/license-MIT-blue)](#)
+[![CI](https://github.com/North9LLC/Seam/actions/workflows/ci.yml/badge.svg)](https://github.com/North9LLC/Seam/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Rust 1.88+](https://img.shields.io/badge/rust-1.88+-orange.svg)](#getting-started)
 
 </div>
 
 ---
 
-## Overview
-
-Seam is a user-space transport protocol designed for applications where standard TCP or QUIC leave performance on the table. It combines encrypted, paced UDP delivery with multi-stream session management, forward error correction, and a hybrid post-quantum handshake — all in a single cohesive stack.
+Seam is a user-space transport protocol for applications where TCP or QUIC leave performance on the table. It delivers encrypted, paced UDP with multi-stream multiplexing, forward error correction, and a hybrid post-quantum handshake in a single library.
 
 | Capability | Detail |
 |---|---|
-| Transport | User-space UDP with CUBIC congestion control + token-bucket pacing |
-| Encryption | ChaCha20-Poly1305 packet protection + header protection |
-| Handshake | Noise_XX + ML-KEM768 (post-quantum hybrid) |
-| Reliability | ARQ + GF(2^8) Forward Error Correction |
+| Transport | UDP with CUBIC congestion control + token-bucket pacing |
+| Encryption | ChaCha20-Poly1305 packet encryption + header protection |
+| Handshake | Noise_XX + ML-KEM-768 (post-quantum hybrid, 247 µs) |
+| Reliability | ARQ + GF(2⁸) forward error correction |
 | Multiplexing | Priority-scheduled streams (0–7, 0 = highest) |
 
 ---
 
-## Why Seam?
+## Why Seam
 
-- **No head-of-line blocking** — streams are scheduled independently; a stalled bulk transfer never blocks a control message
-- **Post-quantum by default** — ML-KEM768 KEM is baked into the handshake, not bolted on
-- **FEC at the transport layer** — packet loss is recovered without a round-trip, not retransmitted
-- **Paced, not bursty** — token-bucket pacer at `cwnd/srtt` bytes/sec eliminates burst-driven queue buildup that plagues raw UDP
-- **Priority-aware** — a priority-0 control stream always drains before priority-7 bulk data, with ~2% scheduling overhead
+- **No head-of-line blocking.** Streams are scheduled independently — a stalled bulk transfer never delays a control message.
+- **Post-quantum by default.** ML-KEM-768 is baked into the handshake. Harvest-now-decrypt-later attacks can't reach session keys.
+- **FEC at the transport layer.** Packet loss is recovered locally without a round-trip retransmit.
+- **Paced, not bursty.** Token-bucket pacer at `cwnd/srtt` bytes/sec eliminates the burst-driven queue buildup that plagues raw UDP.
+- **DDoS-resistant handshake.** Stateless cookie challenge — no heap allocation until the client proves it can receive at the claimed address.
 
 ---
 
 ## Performance
 
-> Benchmarks are hardware and compiler dependent. Values below are representative of local runs on a single core.
+> Single-core, local measurements. Hardware and compiler dependent.
 
-**The headline numbers: ~568 MiB/s (~4.76 Gbps) encrypted throughput per core at 1400 B MTU, 247 µs full handshake including ML-KEM768.**
+**568 MiB/s (~4.76 Gbps) encrypted throughput per core at 1400 B MTU. 247 µs full handshake including ML-KEM-768.**
 
-### Packet Encode — ChaCha20-Poly1305 + Header Protection
+### Packet encode — ChaCha20-Poly1305 + header protection
 
 | Payload | Time | Throughput |
 |---|---:|---:|
@@ -53,26 +51,15 @@ Seam is a user-space transport protocol designed for applications where standard
 | 512 B | 1.03 µs | ~519 MiB/s |
 | 1400 B | 2.43 µs | **~568 MiB/s** |
 
-### GF(2^8) `mul_add_slice` — 8× Unrolled
+### FEC encode/recover — 1400 B symbols
 
-| Slice | scalar=0x17 | scalar=1 (XOR) |
-|---|---:|---:|
-| 64 B | ~30 ns | ~21 ns |
-| 256 B | ~117 ns | ~77 ns |
-| 1 KB | ~467 ns | ~297 ns |
-| 4 KB | ~1.9 µs | ~1.1 µs |
-
-Throughput range: **~1.4–3.3 GiB/s** depending on scalar. The `scalar=1` XOR path auto-vectorizes.
-
-### FEC Encode / Recover — 1400 B Symbols
-
-| Config | Encode | Recover 1 Loss |
+| Config | Encode | Recover 1 loss |
 |---|---:|---:|
 | k=4, r=1 | ~5.5 µs | ~10.4 µs |
 | k=8, r=2 | ~11 µs | ~21 µs |
 | k=10, r=3 | ~16 µs | ~32 µs |
 
-### Handshake — Noise_XX + ML-KEM768
+### Handshake — Noise_XX + ML-KEM-768
 
 | Operation | Time |
 |---|---:|
@@ -82,37 +69,74 @@ Throughput range: **~1.4–3.3 GiB/s** depending on scalar. The `scalar=1` XOR p
 | `CookieFactory::verify` | 88 ns |
 | **Full handshake (3 messages)** | **247 µs** |
 
-### Session Flush Throughput
+### Session flush throughput
 
-| Payload | 1 Stream | 4 Streams (equal) | 4 Streams (mixed priority) |
+| Payload | 1 stream | 4 streams (equal) | 4 streams (mixed priority) |
 |---|---:|---:|---:|
 | 256 B | 1.76 µs / 139 MiB/s | 3.27 µs | 3.35 µs |
 | 4 KB | 8.4 µs / 462 MiB/s | 9.2 µs | 9.3 µs |
 | 16 KB | 30.5 µs / 513 MiB/s | — | — |
 
-Priority scheduling adds only **~2.4% overhead** over equal-priority scheduling.
-
-### Congestion Control + Pacer
-
-| Operation | Time |
-|---|---:|
-| `Cubic::on_ack` | ~200 ns |
-| `Pacer::available + consume` | ~10 ns |
+Priority scheduling overhead: **~2.4%** vs equal-priority.
 
 ---
 
-## Comparison to TCP / QUIC / UDP
+## Comparison
 
-This is a directional capability comparison, not a same-host apples-to-apples benchmark.
+| | Seam | TCP + TLS 1.3 | QUIC | Raw UDP |
+|---|:---:|:---:|:---:|:---:|
+| HoL blocking | ✅ None | ❌ Full stream | ⚠️ Per-stream | ✅ None |
+| Built-in FEC | ✅ | ❌ | ❌ | ❌ |
+| Stream priorities | ✅ 0–7 native | ❌ | ⚠️ Higher-layer | ❌ |
+| Burst control | ✅ Token-bucket | ⚠️ Kernel CC | ⚠️ Impl-dependent | ❌ |
+| Post-quantum KEM | ✅ ML-KEM-768 | ❌ Varies | ❌ Varies | ❌ |
+| DDoS-resistant HS | ✅ Cookie | ❌ | ✅ | — |
 
-| | Seam | TCP+TLS 1.3 | QUIC | Raw UDP |
-|---|---|---|---|---|
-| HOL blocking | ✅ None | ❌ Full stream | ⚠️ Per-stream | ✅ None |
-| Built-in FEC | ✅ Yes | ❌ No | ❌ No | ❌ No |
-| Stream priorities | ✅ 0–7 native | ❌ No | ⚠️ Higher-layer | ❌ No |
-| Burst control | ✅ Token-bucket | ⚠️ Kernel CC | ⚠️ Impl-dependent | ❌ None |
-| Post-quantum KEM | ✅ ML-KEM768 | ❌ Varies | ❌ Varies | ❌ No |
-| Handshake cost | ~247 µs CPU | Minimal | ~300–600 µs | None |
+---
+
+## Getting Started
+
+```bash
+# Add to Cargo.toml
+# seam-protocol = { git = "https://github.com/North9LLC/Seam" }
+
+cargo build --all-targets
+cargo test --all-targets
+cargo bench
+```
+
+### Client / Server
+
+```rust
+use seam_protocol::{api::{Client, Server}, handshake::IdentityKeypair};
+
+// Server
+let id = IdentityKeypair::generate();
+let mut server = Server::bind("0.0.0.0:4433".parse()?, id).await?;
+let conn = server.accept().await.unwrap();
+
+// Client
+let id = IdentityKeypair::generate();
+let mut client = Client::bind("0.0.0.0:0".parse()?, id).await?;
+let conn = client.connect(server_addr, &server_x25519, &server_kem_pk).await?;
+```
+
+### Multiplexed streams
+
+```rust
+use seam_protocol::tunnel::SeamMux;
+
+let mux = SeamMux::new(conn);
+
+// Locally-initiated stream
+let mut stream = mux.open_stream().await;
+
+// Accept a remote-initiated stream
+let mut stream = mux.accept_stream().await.unwrap();
+
+// SeamStream implements AsyncRead + AsyncWrite + Unpin
+tokio::io::copy_bidirectional(&mut stream, &mut other).await?;
+```
 
 ---
 
@@ -120,81 +144,20 @@ This is a directional capability comparison, not a same-host apples-to-apples be
 
 ```
 src/
-├── api.rs          # Client, Server, SeamConn, SeamConnWriter
-├── crypto/         # Packet & header protection, anti-replay, key derivation
-├── handshake/      # Noise_XX + ML-KEM768 handshake, cookies
-├── session/        # Stream state, ARQ, flow control, priority scheduling
-├── fec/            # GF(2^8) arithmetic, FEC codec, FEC/ARQ arbiter
-├── transport/      # Connection, endpoint, CUBIC CC, pacer, probing, resumption
-└── tunnel.rs       # SeamMux / SeamStream — AsyncRead + AsyncWrite adapters
+├── api.rs          # Client, Server, SeamConn
+├── tunnel.rs       # SeamMux + SeamStream (AsyncRead + AsyncWrite)
+├── crypto/         # ChaCha20-Poly1305, header protection, anti-replay
+├── handshake/      # Noise_XX + ML-KEM-768, DDoS-resistant cookie
+├── session/        # Streams, ARQ, flow control, priority scheduling
+├── fec/            # GF(2⁸) arithmetic, systematic RS codec, FEC/ARQ arbiter
+└── transport/      # Connection, endpoint, CUBIC CC, pacer, path probing
 
 benches/            # Criterion benchmarks
+fuzz/               # cargo-fuzz targets
 ```
 
 ---
 
-## Getting Started
+## License
 
-```bash
-# Build all targets
-cargo build --all-targets
-
-# Run tests
-cargo test --all-targets
-
-# Run benchmarks
-cargo bench
-```
-
-### Basic usage
-
-```rust
-use seam_protocol::{api::{Client, Server}, handshake::IdentityKeypair};
-
-// Server side
-let id = IdentityKeypair::generate();
-let mut server = Server::bind("0.0.0.0:4433".parse().unwrap(), id).await?;
-let conn = server.accept().await.unwrap();
-
-// Client side
-let id = IdentityKeypair::generate();
-let mut client = Client::bind("0.0.0.0:0".parse().unwrap(), id).await?;
-// let conn = client.connect(server_addr, &x25519, &kem_pk).await?;
-```
-
-### Mux / stream usage
-
-```rust
-use seam_protocol::tunnel::SeamMux;
-
-// After handshake:
-let mux = SeamMux::new(conn);
-
-// Open a stream (locally initiated)
-let mut stream = mux.open_stream().await;
-
-// Accept a stream from the remote peer
-let mut stream = mux.accept_stream().await.unwrap();
-
-// SeamStream implements AsyncRead + AsyncWrite
-tokio::io::copy(&mut stream, &mut sink).await?;
-```
-
-### Error handling
-
-```rust
-use seam_protocol::SeamError;
-
-match result {
-    Err(SeamError::HandshakeFailed(msg)) => { /* ... */ }
-    Err(SeamError::AuthFailed) => { /* ... */ }
-    _ => {}
-}
-```
-
----
-
-<div align="center">
-Built with Rust
-</div>
-# Seam
+MIT — see [LICENSE](LICENSE).

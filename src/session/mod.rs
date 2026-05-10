@@ -82,6 +82,7 @@ pub struct Session {
     streams: HashMap<StreamId, Stream>,
     next_stream_id: StreamId,
     send_window: FlowWindow,
+    #[allow(dead_code)]
     recv_window: FlowWindow,
     arq: ArqTracker,
     datagrams: DatagramQueue,

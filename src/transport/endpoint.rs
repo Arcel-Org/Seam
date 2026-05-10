@@ -14,7 +14,7 @@ use crate::{
     error::SeamError,
     handshake::{CookieFactory, IdentityKeypair},
     session::SessionEvent,
-    transport::connection::{ConnPhase, Connection},
+    transport::connection::Connection,
 };
 
 const MAX_UDP: usize = 65535;
@@ -24,6 +24,7 @@ pub type SharedConn = Arc<Mutex<Connection>>;
 pub struct Endpoint {
     socket: Arc<UdpSocket>,
     identity: Arc<IdentityKeypair>,
+    #[allow(dead_code)]
     cookie_factory: Arc<CookieFactory>,
     conns: Arc<Mutex<HashMap<SocketAddr, SharedConn>>>,
     /// Newly-accepted server connections are sent here.

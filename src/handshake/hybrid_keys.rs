@@ -4,7 +4,7 @@ use pqcrypto_kyber::kyber768::{
     SecretKey as KemSecretKey,
     Ciphertext as KemCiphertext,
 };
-use pqcrypto_traits::kem::{PublicKey, SecretKey, Ciphertext, SharedSecret};
+use pqcrypto_traits::kem::{PublicKey, Ciphertext, SharedSecret};
 use x25519_dalek::{StaticSecret, PublicKey as X25519Public};
 use rand::rngs::OsRng;
 use zeroize::{Zeroize, ZeroizeOnDrop};

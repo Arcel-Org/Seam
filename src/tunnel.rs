@@ -141,6 +141,7 @@ async fn stream_write_loop(
 
 /// A single multiplexed stream. Implements `AsyncRead + AsyncWrite + Unpin`.
 pub struct SeamStream {
+    #[allow(dead_code)]
     sid: StreamId,
     write_tx: Option<mpsc::UnboundedSender<Bytes>>,
     data_rx: mpsc::UnboundedReceiver<Bytes>,

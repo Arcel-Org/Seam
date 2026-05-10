@@ -71,6 +71,7 @@ pub struct Connection {
     pub session: Option<Session>,
     fec_arbiter: FecArbiter,
     fec_enc: Option<FecEncoder>,
+    #[allow(dead_code)]
     fec_dec: FecDecoder,
     fec_group_id: u32,
     pub cc: Box<dyn CongestionControl>,

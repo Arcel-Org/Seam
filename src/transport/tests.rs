@@ -424,29 +424,17 @@ mod tests {
     async fn server_push_stream_received_by_client() {
         let (mut client, mut server) = do_handshake().await;
 
-        let (client_sock, server_sock, client_addr, server_addr) = loopback_pair().await;
-        let _ = (client_addr, server_addr);
-
         // Server pushes a stream (even ID, server-initiated)
         let sid = server.session.as_mut().unwrap().push_stream();
         assert_eq!(sid % 2, 0, "server push_stream must allocate even IDs");
-        server.session.as_mut().unwrap().send(sid, b"server push payload").unwrap();
 
-        // Flush server → packets sent to client
-        server.flush().await.unwrap();
-
-        // Route packets from server's socket to client
-        let (cs, ss, ca, sa) = loopback_pair().await;
-        let _ = (cs, ss, ca, sa);
-
-        // Use the sockets already embedded in the Connection objects from do_handshake.
-        // do_handshake() doesn't expose sockets, so we re-drive manually.
-        // Re-run flush to get raw bytes, then deliver to client.
+        // Write payload into session buffer and get raw encoded packets.
         let session = server.session.as_mut().unwrap();
         session.send(sid, b"server push payload").unwrap();
         let pkts = session.flush().unwrap();
         assert!(!pkts.is_empty(), "server flush should produce at least one packet");
 
+        // Deliver the encoded packet directly to the client session.
         let events = client.session.as_mut().unwrap()
             .receive_packet(&mut pkts[0].clone()).unwrap();
 

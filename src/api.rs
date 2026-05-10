@@ -81,6 +81,16 @@ impl SeamConnWriter {
         }
         Ok(out)
     }
+
+    /// Mark stream `sid` as finished and flush a FIN DATA frame to the peer.
+    /// The peer will see EOF on its read side for this stream.
+    pub async fn send_fin(&self, sid: StreamId) {
+        let mut g = self.inner.lock().await;
+        if let Some(session) = g.session.as_mut() {
+            session.finish_stream(sid);
+        }
+        let _ = g.flush().await;
+    }
 }
 
 // ── SeamConn ──────────────────────────────────────────────────────────────────

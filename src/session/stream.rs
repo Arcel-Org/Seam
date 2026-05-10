@@ -31,6 +31,7 @@ pub struct Stream {
     recv_buffered: u64,
     fin_received: Option<u64>,
     fin_sent: bool,
+    fin_flushed: bool,  // true once a FIN DATA frame has been emitted
 }
 
 impl Stream {
@@ -51,6 +52,7 @@ impl Stream {
             recv_buffered: 0,
             fin_received: None,
             fin_sent: false,
+            fin_flushed: false,
         }
     }
 
@@ -96,17 +98,31 @@ impl Stream {
         self.fin_sent = true;
     }
 
+    /// True when a FIN DATA frame should be emitted in the next flush.
+    pub fn should_send_fin(&self) -> bool {
+        self.fin_sent && !self.fin_flushed && self.send_buf.is_empty()
+    }
+
+    /// Call after the FIN frame has been encoded and queued.
+    pub fn mark_fin_flushed(&mut self) {
+        self.fin_flushed = true;
+    }
+
+    /// Current send offset (total bytes written to this stream).
+    pub fn send_offset(&self) -> u64 {
+        self.send_offset
+    }
+
     /// Pop up to `max_bytes` of unsent data for packetisation.
-    /// Returns (offset, data).
+    /// Returns (offset, data) where offset is the stream byte position of the chunk.
     pub fn poll_send(&mut self, max_bytes: usize) -> Option<(u64, Bytes)> {
         if self.send_buf.is_empty() {
             return None;
         }
         let take = self.send_buf.len().min(max_bytes);
+        // The start of send_buf in the stream is (send_offset - send_buf.len()).
+        let offset = self.send_offset - self.send_buf.len() as u64;
         let data = self.send_buf.split_to(take).freeze();
-        let offset = self.send_unacked_offset;
-        // Note: send_unacked_offset advances only on ACK; send_offset advances on write.
-        // For ARQ we track in-flight separately. Here we just report the slice.
         Some((offset, data))
     }
 

@@ -17,7 +17,12 @@ use crate::{
 };
 
 struct MuxState {
+    // Data senders for all active streams (both local and remote-initiated).
     stream_senders: HashMap<StreamId, mpsc::UnboundedSender<Bytes>>,
+    // Pre-created receivers for remote-initiated streams not yet claimed by accept_stream().
+    // Created when NewStream arrives so DataAvailable data is never dropped.
+    pending_receivers: HashMap<StreamId, mpsc::UnboundedReceiver<Bytes>>,
+    // Ordered queue of stream IDs ready to be returned by accept_stream().
     pending_streams: VecDeque<StreamId>,
 }
 
@@ -36,6 +41,7 @@ impl SeamMux {
         let writer = Arc::new(writer);
         let state = Arc::new(Mutex::new(MuxState {
             stream_senders: HashMap::new(),
+            pending_receivers: HashMap::new(),
             pending_streams: VecDeque::new(),
         }));
         let pending_sem = Arc::new(Semaphore::new(0));
@@ -53,7 +59,11 @@ impl SeamMux {
     /// Open a locally-initiated stream.
     pub async fn open_stream(&self) -> SeamStream {
         let sid = self.writer.open_stream().await;
-        self.make_stream(sid)
+        let (data_tx, data_rx) = mpsc::unbounded_channel::<Bytes>();
+        let (write_tx, write_rx) = mpsc::unbounded_channel::<Bytes>();
+        self.state.lock().unwrap().stream_senders.insert(sid, data_tx);
+        tokio::spawn(stream_write_loop(sid, self.writer.clone(), write_rx));
+        SeamStream { sid, write_tx: Some(write_tx), data_rx, read_buf: BytesMut::new() }
     }
 
     /// Wait for the remote peer to push a new stream.
@@ -61,16 +71,15 @@ impl SeamMux {
     pub async fn accept_stream(&self) -> Option<SeamStream> {
         let permit = self.pending_sem.acquire().await.ok()?;
         permit.forget();
-        let sid = self.state.lock().unwrap().pending_streams.pop_front()?;
-        Some(self.make_stream(sid))
-    }
-
-    fn make_stream(&self, sid: StreamId) -> SeamStream {
-        let (data_tx, data_rx) = mpsc::unbounded_channel::<Bytes>();
+        let (sid, data_rx) = {
+            let mut s = self.state.lock().unwrap();
+            let sid = s.pending_streams.pop_front()?;
+            let data_rx = s.pending_receivers.remove(&sid)?;
+            (sid, data_rx)
+        };
         let (write_tx, write_rx) = mpsc::unbounded_channel::<Bytes>();
-        self.state.lock().unwrap().stream_senders.insert(sid, data_tx);
         tokio::spawn(stream_write_loop(sid, self.writer.clone(), write_rx));
-        SeamStream { sid, write_tx, data_rx, read_buf: BytesMut::new() }
+        Some(SeamStream { sid, write_tx: Some(write_tx), data_rx, read_buf: BytesMut::new() })
     }
 }
 
@@ -83,7 +92,15 @@ async fn event_loop(
     while let Some(event) = events.recv().await {
         match event {
             SessionEvent::NewStream(sid) => {
-                state.lock().unwrap().pending_streams.push_back(sid);
+                // Pre-create the data channel so DataAvailable data is never dropped
+                // even if accept_stream() hasn't been called yet.
+                let (data_tx, data_rx) = mpsc::unbounded_channel::<Bytes>();
+                {
+                    let mut s = state.lock().unwrap();
+                    s.stream_senders.insert(sid, data_tx);
+                    s.pending_receivers.insert(sid, data_rx);
+                    s.pending_streams.push_back(sid);
+                }
                 pending_sem.add_permits(1);
             }
             SessionEvent::DataAvailable(sid) => {
@@ -96,6 +113,7 @@ async fn event_loop(
                 }
             }
             SessionEvent::StreamFinished(sid) => {
+                // Drop sender to signal EOF to the reader.
                 state.lock().unwrap().stream_senders.remove(&sid);
             }
             SessionEvent::Closed => {
@@ -117,13 +135,14 @@ async fn stream_write_loop(
             break;
         }
     }
+    // Channel closed = caller is done writing. Send a FIN to signal EOF to the remote peer.
+    writer.send_fin(sid).await;
 }
 
 /// A single multiplexed stream. Implements `AsyncRead + AsyncWrite + Unpin`.
 pub struct SeamStream {
-    #[allow(dead_code)]
     sid: StreamId,
-    write_tx: mpsc::UnboundedSender<Bytes>,
+    write_tx: Option<mpsc::UnboundedSender<Bytes>>,
     data_rx: mpsc::UnboundedReceiver<Bytes>,
     read_buf: BytesMut,
 }
@@ -162,12 +181,12 @@ impl AsyncWrite for SeamStream {
         _cx: &mut Context<'_>,
         buf: &[u8],
     ) -> Poll<io::Result<usize>> {
-        match self.write_tx.send(Bytes::copy_from_slice(buf)) {
-            Ok(()) => Poll::Ready(Ok(buf.len())),
-            Err(_) => Poll::Ready(Err(io::Error::new(
-                io::ErrorKind::BrokenPipe,
-                "stream closed",
-            ))),
+        match self.write_tx.as_ref() {
+            Some(tx) => match tx.send(Bytes::copy_from_slice(buf)) {
+                Ok(()) => Poll::Ready(Ok(buf.len())),
+                Err(_) => Poll::Ready(Err(io::Error::new(io::ErrorKind::BrokenPipe, "stream closed"))),
+            },
+            None => Poll::Ready(Err(io::Error::new(io::ErrorKind::BrokenPipe, "stream shut down"))),
         }
     }
 
@@ -176,6 +195,9 @@ impl AsyncWrite for SeamStream {
     }
 
     fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        // Drop the write channel sender. The stream_write_loop will see the channel
+        // close and send a FIN DATA frame to the remote peer, signalling EOF.
+        self.get_mut().write_tx = None;
         Poll::Ready(Ok(()))
     }
 }

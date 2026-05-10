@@ -196,6 +196,14 @@ impl Session {
         Ok(())
     }
 
+    /// Mark a stream as finished (no more data will be sent). The next flush
+    /// will emit a zero-byte FIN DATA frame to signal EOF to the remote peer.
+    pub fn finish_stream(&mut self, stream_id: StreamId) {
+        if let Some(s) = self.streams.get_mut(&stream_id) {
+            s.finish();
+        }
+    }
+
     /// Packetise pending stream data into wire packets. Returns encoded packets.
     /// Streams are drained in priority order (0 = highest). Within the same
     /// priority, streams are served round-robin by insertion order.
@@ -213,7 +221,7 @@ impl Session {
                 // Frame: type(1) + flags(1) + len(2) + stream_id(4) + offset(8) = 16 bytes header
                 let mut frame = Vec::with_capacity(16 + chunk.len());
                 frame.push(0x01u8); // FrameType::Stream
-                frame.push(0u8);    // flags
+                frame.push(0u8);    // flags (bit 0 = FIN)
                 frame.extend_from_slice(&(chunk.len() as u16).to_le_bytes());
                 frame.extend_from_slice(&sid.to_le_bytes());
                 frame.extend_from_slice(&offset.to_le_bytes());
@@ -223,7 +231,26 @@ impl Session {
                 let n = self.encoder.encode(PktType::Data, &frame, &mut out)?;
                 out.truncate(n);
 
-                self.arq.on_sent(0, bytes::Bytes::from(frame)); // pkt_num tracked by encoder
+                self.arq.on_sent(0, bytes::Bytes::from(frame));
+                packets.push(out);
+            }
+
+            // After draining data, emit a zero-byte FIN frame if the stream is finished.
+            let stream = self.streams.get_mut(&sid).unwrap();
+            if stream.should_send_fin() {
+                stream.mark_fin_flushed();
+                let fin_offset = stream.send_offset();
+                let mut frame = Vec::with_capacity(16);
+                frame.push(0x01u8); // FrameType::Stream
+                frame.push(0x01u8); // FIN flag
+                frame.extend_from_slice(&(0u16).to_le_bytes()); // zero data
+                frame.extend_from_slice(&sid.to_le_bytes());
+                frame.extend_from_slice(&fin_offset.to_le_bytes());
+
+                let mut out = vec![0u8; 32 + frame.len() + 16];
+                let n = self.encoder.encode(PktType::Data, &frame, &mut out)?;
+                out.truncate(n);
+                self.arq.on_sent(0, bytes::Bytes::from(frame));
                 packets.push(out);
             }
         }

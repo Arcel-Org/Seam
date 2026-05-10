@@ -1,6 +1,6 @@
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-use apex_protocol::fec::{FecDecoder, FecEncoder};
-use apex_protocol::fec::gf;
+use seam_protocol::fec::{FecDecoder, FecEncoder};
+use seam_protocol::fec::gf;
 
 fn make_sources(k: u8, size: usize) -> Vec<Vec<u8>> {
     (0..k).map(|i| (0..size).map(|j| i.wrapping_add(j as u8)).collect()).collect()

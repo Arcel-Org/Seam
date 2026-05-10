@@ -1,11 +1,11 @@
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-use apex_protocol::{PacketDecoder, PacketEncoder, PacketKeys};
-use apex_protocol::session::{Session, stream::{PRIORITY_DEFAULT, PRIORITY_HIGH, PRIORITY_LOW}};
-use apex_protocol::transport::bbr::Bbr;
-use apex_protocol::transport::cc::{CongestionControl, Cubic};
-use apex_protocol::transport::pacer::Pacer;
-use apex_protocol::transport::pool::BufferPool;
-use apex_protocol::session::rack::RackTracker;
+use seam_protocol::{PacketDecoder, PacketEncoder, PacketKeys};
+use seam_protocol::session::{Session, stream::{PRIORITY_DEFAULT, PRIORITY_HIGH, PRIORITY_LOW}};
+use seam_protocol::transport::bbr::Bbr;
+use seam_protocol::transport::cc::{CongestionControl, Cubic};
+use seam_protocol::transport::pacer::Pacer;
+use seam_protocol::transport::pool::BufferPool;
+use seam_protocol::session::rack::RackTracker;
 
 const SECRET: &[u8] = b"session-bench-key-32-bytes-exact";
 const SESSION_ID: u64 = 0xDEADBEEF_CAFEBABE;
@@ -155,7 +155,7 @@ fn bench_buffer_pool(c: &mut Criterion) {
 }
 
 fn bench_datagram_queue(c: &mut Criterion) {
-    use apex_protocol::session::datagram::DatagramQueue;
+    use seam_protocol::session::datagram::DatagramQueue;
     use bytes::Bytes;
     let mut group = c.benchmark_group("datagram_queue");
 

@@ -14,7 +14,7 @@ use pqcrypto_kyber::kyber768::PublicKey as KemPublicKey;
 
 use crate::{
     crypto::{encoder::PacketEncoder, decoder::PacketDecoder},
-    error::ApexError,
+    error::SeamError,
     fec::{ArbiterMode, FecArbiter, FecDecoder, FecEncoder},
     handshake::{
         CookieFactory,
@@ -95,10 +95,10 @@ impl Connection {
         local_identity: &IdentityKeypair,
         server_x25519: &[u8; 32],
         server_kem_pk: &KemPublicKey,
-    ) -> Result<(Self, mpsc::UnboundedReceiver<SessionEvent>), ApexError> {
+    ) -> Result<(Self, mpsc::UnboundedReceiver<SessionEvent>), SeamError> {
         // Send cookie request (single byte)
         socket.send_to(&[PKT_COOKIE_REQ], remote).await
-            .map_err(|e| ApexError::HandshakeFailed(e.to_string()))?;
+            .map_err(|e| SeamError::HandshakeFailed(e.to_string()))?;
 
         let client_hs = ClientHandshake::new(local_identity, server_x25519)?;
 
@@ -117,14 +117,14 @@ impl Connection {
         remote: SocketAddr,
         server_identity: Arc<IdentityKeypair>,
         cookie_factory: Arc<CookieFactory>,
-    ) -> Result<(Self, mpsc::UnboundedReceiver<SessionEvent>), ApexError> {
+    ) -> Result<(Self, mpsc::UnboundedReceiver<SessionEvent>), SeamError> {
         // Send stateless cookie challenge
         let addr_bytes = remote.to_string();
         let cookie = cookie_factory.generate(addr_bytes.as_bytes());
         let mut challenge = vec![PKT_COOKIE_CHALLENGE];
         challenge.extend_from_slice(&cookie);
         socket.send_to(&challenge, remote).await
-            .map_err(|e| ApexError::HandshakeFailed(e.to_string()))?;
+            .map_err(|e| SeamError::HandshakeFailed(e.to_string()))?;
 
         let (tx, rx) = mpsc::unbounded_channel();
         let mut conn = Self::new_base(socket, remote, ConnPhase::ServerWaitCookie, tx);
@@ -177,7 +177,7 @@ impl Connection {
 
     // ── Ingress ──────────────────────────────────────────────────────────────
 
-    pub async fn on_packet(&mut self, buf: &mut Vec<u8>) -> Result<(), ApexError> {
+    pub async fn on_packet(&mut self, buf: &mut Vec<u8>) -> Result<(), SeamError> {
         if buf.is_empty() { return Ok(()); }
         match self.phase {
             ConnPhase::ClientWaitChallenge => self.client_rx_challenge(buf).await?,
@@ -191,16 +191,16 @@ impl Connection {
     }
 
     // Client received cookie challenge → echo it back with msg1
-    async fn client_rx_challenge(&mut self, buf: &[u8]) -> Result<(), ApexError> {
+    async fn client_rx_challenge(&mut self, buf: &[u8]) -> Result<(), SeamError> {
         if buf.len() < 1 + 32 || buf[0] != PKT_COOKIE_CHALLENGE {
-            return Err(ApexError::HandshakeFailed("expected cookie challenge".into()));
+            return Err(SeamError::HandshakeFailed("expected cookie challenge".into()));
         }
         let cookie: [u8; 32] = buf[1..33].try_into().unwrap();
 
         let hs = self.client_hs.as_mut()
-            .ok_or_else(|| ApexError::HandshakeFailed("no client hs".into()))?;
+            .ok_or_else(|| SeamError::HandshakeFailed("no client hs".into()))?;
         let kem_pk = self._server_kem_pk.as_ref()
-            .ok_or_else(|| ApexError::HandshakeFailed("no server kem pk".into()))?;
+            .ok_or_else(|| SeamError::HandshakeFailed("no server kem pk".into()))?;
         let mut msg1 = Vec::new();
         hs.write_msg1(kem_pk, &mut msg1)?;
 
@@ -210,16 +210,16 @@ impl Connection {
         echo.extend_from_slice(&(msg1.len() as u16).to_le_bytes());
         echo.extend_from_slice(&msg1);
         self.socket.send_to(&echo, self.remote).await
-            .map_err(|e| ApexError::HandshakeFailed(e.to_string()))?;
+            .map_err(|e| SeamError::HandshakeFailed(e.to_string()))?;
         self.phase = ConnPhase::ClientWaitMsg2;
         Ok(())
     }
 
     // Client received msg2 → write msg3 → established
-    async fn client_rx_msg2(&mut self, buf: &[u8]) -> Result<(), ApexError> {
+    async fn client_rx_msg2(&mut self, buf: &[u8]) -> Result<(), SeamError> {
         let payload = strip_type(buf, PKT_HANDSHAKE_MSG)?;
         let hs = self.client_hs.as_mut()
-            .ok_or_else(|| ApexError::HandshakeFailed("no client hs".into()))?;
+            .ok_or_else(|| SeamError::HandshakeFailed("no client hs".into()))?;
         let server_kem_pk = hs.read_msg2(payload)?;
 
         let hs = self.client_hs.take().unwrap();
@@ -229,34 +229,34 @@ impl Connection {
         let mut pkt = vec![PKT_HANDSHAKE_MSG];
         pkt.extend_from_slice(&msg3);
         self.socket.send_to(&pkt, self.remote).await
-            .map_err(|e| ApexError::HandshakeFailed(e.to_string()))?;
+            .map_err(|e| SeamError::HandshakeFailed(e.to_string()))?;
         self.finish_handshake(result);
         Ok(())
     }
 
     // Server received cookie echo — verify cookie, then process msg1, send msg2
-    async fn server_rx_cookie_echo(&mut self, buf: &[u8]) -> Result<(), ApexError> {
+    async fn server_rx_cookie_echo(&mut self, buf: &[u8]) -> Result<(), SeamError> {
         if buf.len() < 1 + 32 + 2 || buf[0] != PKT_COOKIE_ECHO {
-            return Err(ApexError::HandshakeFailed("expected cookie echo".into()));
+            return Err(SeamError::HandshakeFailed("expected cookie echo".into()));
         }
         let cookie: &[u8; 32] = buf[1..33].try_into().unwrap();
         let addr_bytes = self.remote.to_string();
 
         let factory = self.cookie_factory.as_ref()
-            .ok_or_else(|| ApexError::HandshakeFailed("no cookie factory".into()))?;
+            .ok_or_else(|| SeamError::HandshakeFailed("no cookie factory".into()))?;
         if !factory.verify(addr_bytes.as_bytes(), cookie) {
-            return Err(ApexError::HandshakeFailed("invalid cookie".into()));
+            return Err(SeamError::HandshakeFailed("invalid cookie".into()));
         }
 
         let msg1_len = u16::from_le_bytes([buf[33], buf[34]]) as usize;
         if buf.len() < 35 + msg1_len {
-            return Err(ApexError::HandshakeFailed("truncated msg1".into()));
+            return Err(SeamError::HandshakeFailed("truncated msg1".into()));
         }
         let msg1 = &buf[35..35 + msg1_len];
 
         // Allocate server handshake state only after cookie is verified
         let identity = self.server_identity.as_ref()
-            .ok_or_else(|| ApexError::HandshakeFailed("no server identity".into()))?;
+            .ok_or_else(|| SeamError::HandshakeFailed("no server identity".into()))?;
         let mut server_hs = ServerHandshake::new(identity)?;
         server_hs.read_msg1(msg1)?;
 
@@ -266,7 +266,7 @@ impl Connection {
         let mut pkt = vec![PKT_HANDSHAKE_MSG];
         pkt.extend_from_slice(&msg2);
         self.socket.send_to(&pkt, self.remote).await
-            .map_err(|e| ApexError::HandshakeFailed(e.to_string()))?;
+            .map_err(|e| SeamError::HandshakeFailed(e.to_string()))?;
 
         self.server_hs = Some(server_hs);
         self.phase = ConnPhase::ServerWaitMsg3;
@@ -274,20 +274,20 @@ impl Connection {
     }
 
     // Server received msg3 → finish
-    async fn server_rx_msg3(&mut self, buf: &[u8]) -> Result<(), ApexError> {
+    async fn server_rx_msg3(&mut self, buf: &[u8]) -> Result<(), SeamError> {
         let payload = strip_type(buf, PKT_HANDSHAKE_MSG)?;
         let hs = self.server_hs.take()
-            .ok_or_else(|| ApexError::HandshakeFailed("no server hs".into()))?;
+            .ok_or_else(|| SeamError::HandshakeFailed("no server hs".into()))?;
         let identity = self.server_identity.as_ref()
-            .ok_or_else(|| ApexError::HandshakeFailed("no server identity".into()))?;
+            .ok_or_else(|| SeamError::HandshakeFailed("no server identity".into()))?;
         let result = hs.read_msg3_and_finish(&identity.kem_sk, payload)?;
         self.finish_handshake(result);
         Ok(())
     }
 
-    async fn on_data_packet(&mut self, buf: &mut Vec<u8>) -> Result<(), ApexError> {
+    async fn on_data_packet(&mut self, buf: &mut Vec<u8>) -> Result<(), SeamError> {
         let session = self.session.as_mut()
-            .ok_or_else(|| ApexError::HandshakeFailed("no session".into()))?;
+            .ok_or_else(|| SeamError::HandshakeFailed("no session".into()))?;
         let events = session.receive_packet(buf)?;
         for ev in events {
             let _ = self.event_tx.send(ev);
@@ -297,7 +297,7 @@ impl Connection {
 
     // ── Egress ───────────────────────────────────────────────────────────────
 
-    pub async fn flush(&mut self) -> Result<(), ApexError> {
+    pub async fn flush(&mut self) -> Result<(), SeamError> {
         let session = match self.session.as_mut() {
             Some(s) => s,
             None => return Ok(()),
@@ -316,7 +316,7 @@ impl Connection {
             if self.cc.available() < size { break; }
 
             self.socket.send_to(&pkt, self.remote).await
-                .map_err(|e| ApexError::HandshakeFailed(e.to_string()))?;
+                .map_err(|e| SeamError::HandshakeFailed(e.to_string()))?;
             self.cc.on_send(size);
             self.send_counter += 1;
 
@@ -335,7 +335,7 @@ impl Connection {
         Ok(())
     }
 
-    pub async fn maybe_send_chaff(&mut self) -> Result<(), ApexError> {
+    pub async fn maybe_send_chaff(&mut self) -> Result<(), SeamError> {
         if !self.chaff.should_send() { return Ok(()); }
         let session = match self.session.as_mut() { Some(s) => s, None => return Ok(()) };
         let payload = ChaffScheduler::payload(self.send_counter);
@@ -344,13 +344,13 @@ impl Connection {
         let n = session.encode_raw(PktType::Chaff, &padded, &mut out)?;
         out.truncate(n);
         self.socket.send_to(&out, self.remote).await
-            .map_err(|e| ApexError::HandshakeFailed(e.to_string()))?;
+            .map_err(|e| SeamError::HandshakeFailed(e.to_string()))?;
         self.chaff.mark_sent(self.send_counter);
         self.send_counter += 1;
         Ok(())
     }
 
-    pub async fn maybe_send_probe(&mut self) -> Result<(), ApexError> {
+    pub async fn maybe_send_probe(&mut self) -> Result<(), SeamError> {
         if !self.prober.should_probe() { return Ok(()); }
         let (_, payload) = self.prober.build_probe();
         let session = match self.session.as_mut() { Some(s) => s, None => return Ok(()) };
@@ -358,17 +358,17 @@ impl Connection {
         let n = session.encode_raw(PktType::PathProbe, &payload, &mut out)?;
         out.truncate(n);
         self.socket.send_to(&out, self.remote).await
-            .map_err(|e| ApexError::HandshakeFailed(e.to_string()))?;
+            .map_err(|e| SeamError::HandshakeFailed(e.to_string()))?;
         Ok(())
     }
 
-    pub async fn retransmit_expired(&mut self) -> Result<(), ApexError> {
+    pub async fn retransmit_expired(&mut self) -> Result<(), SeamError> {
         let session = match self.session.as_mut() { Some(s) => s, None => return Ok(()) };
         let expired = session.drain_retransmits();
         if !expired.is_empty() { self.cc.on_timeout(); }
         for (_, data) in expired {
             self.socket.send_to(&data, self.remote).await
-                .map_err(|e| ApexError::HandshakeFailed(e.to_string()))?;
+                .map_err(|e| SeamError::HandshakeFailed(e.to_string()))?;
         }
         Ok(())
     }
@@ -391,9 +391,9 @@ impl Connection {
     }
 }
 
-fn strip_type(buf: &[u8], expected: u8) -> Result<&[u8], ApexError> {
+fn strip_type(buf: &[u8], expected: u8) -> Result<&[u8], SeamError> {
     if buf.is_empty() || buf[0] != expected {
-        return Err(ApexError::HandshakeFailed(
+        return Err(SeamError::HandshakeFailed(
             format!("expected pkt type 0x{expected:02x}, got 0x{:02x}", buf.first().copied().unwrap_or(0xff))
         ));
     }

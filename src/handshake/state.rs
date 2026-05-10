@@ -2,7 +2,7 @@ use snow::Builder;
 use pqcrypto_kyber::kyber768::PublicKey as KemPublicKey;
 use crate::{
     crypto::keys::PacketKeys,
-    error::ApexError,
+    error::SeamError,
     handshake::hybrid_keys::{
         IdentityKeypair, HybridSharedSecret,
         kem_encapsulate, kem_decapsulate,
@@ -27,27 +27,27 @@ pub struct ClientHandshake {
 }
 
 impl ClientHandshake {
-    pub fn new(local: &IdentityKeypair, server_x25519_static: &[u8; 32]) -> Result<Self, ApexError> {
+    pub fn new(local: &IdentityKeypair, server_x25519_static: &[u8; 32]) -> Result<Self, SeamError> {
         let noise = Builder::new(NOISE_PATTERN.parse().unwrap())
             .local_private_key(&local.x25519_secret.to_bytes())
             .remote_public_key(server_x25519_static)
             .build_initiator()
-            .map_err(|e| ApexError::HandshakeFailed(e.to_string()))?;
+            .map_err(|e| SeamError::HandshakeFailed(e.to_string()))?;
         Ok(Self { noise })
     }
 
     /// Msg1 (-> e, es): payload = length-prefixed server KEM public key bytes.
-    pub fn write_msg1(&mut self, server_kem_pk: &KemPublicKey, out: &mut Vec<u8>) -> Result<(), ApexError> {
+    pub fn write_msg1(&mut self, server_kem_pk: &KemPublicKey, out: &mut Vec<u8>) -> Result<(), SeamError> {
         let pk_bytes = pk_to_bytes(server_kem_pk);
         let payload = length_prefix(&pk_bytes);
         write_noise(&mut self.noise, &payload, out)
     }
 
     /// Msg2 (<- e, ee, se, s, es): server sends its KEM public key back.
-    pub fn read_msg2(&mut self, msg: &[u8]) -> Result<KemPublicKey, ApexError> {
+    pub fn read_msg2(&mut self, msg: &[u8]) -> Result<KemPublicKey, SeamError> {
         let payload = read_noise(&mut self.noise, msg)?;
         let pk_bytes = extract_prefix(&payload)?;
-        pk_from_bytes(pk_bytes).ok_or_else(|| ApexError::HandshakeFailed("bad KEM PK".into()))
+        pk_from_bytes(pk_bytes).ok_or_else(|| SeamError::HandshakeFailed("bad KEM PK".into()))
     }
 
     /// Msg3 (-> s, se): encapsulate against server's KEM PK, write msg3 to `out`, finish.
@@ -55,7 +55,7 @@ impl ClientHandshake {
         mut self,
         server_kem_pk: &KemPublicKey,
         out: &mut Vec<u8>,
-    ) -> Result<HandshakeResult, ApexError> {
+    ) -> Result<HandshakeResult, SeamError> {
         let (ct_bytes, kem_shared) = kem_encapsulate(server_kem_pk);
         let payload = length_prefix(&ct_bytes);
 
@@ -65,9 +65,9 @@ impl ClientHandshake {
         // Capture hash and peer static after writing msg3
         let hash = self.noise.get_handshake_hash().to_vec();
         let peer_static: [u8; 32] = self.noise.get_remote_static()
-            .ok_or_else(|| ApexError::HandshakeFailed("no remote static".into()))?
+            .ok_or_else(|| SeamError::HandshakeFailed("no remote static".into()))?
             .try_into()
-            .map_err(|_| ApexError::HandshakeFailed("bad static key length".into()))?;
+            .map_err(|_| SeamError::HandshakeFailed("bad static key length".into()))?;
 
         finish(hash, peer_static, kem_shared)
     }
@@ -82,24 +82,24 @@ pub struct ServerHandshake {
 }
 
 impl ServerHandshake {
-    pub fn new(local: &IdentityKeypair) -> Result<Self, ApexError> {
+    pub fn new(local: &IdentityKeypair) -> Result<Self, SeamError> {
         let noise = Builder::new(NOISE_PATTERN.parse().unwrap())
             .local_private_key(&local.x25519_secret.to_bytes())
             .build_responder()
-            .map_err(|e| ApexError::HandshakeFailed(e.to_string()))?;
+            .map_err(|e| SeamError::HandshakeFailed(e.to_string()))?;
         Ok(Self { noise })
     }
 
     /// Msg1: client sends our KEM PK (just reads it through noise, we ignore the payload).
-    pub fn read_msg1(&mut self, msg: &[u8]) -> Result<(), ApexError> {
+    pub fn read_msg1(&mut self, msg: &[u8]) -> Result<(), SeamError> {
         let mut buf = vec![0u8; 65535];
         self.noise.read_message(msg, &mut buf)
-            .map_err(|e| ApexError::HandshakeFailed(e.to_string()))?;
+            .map_err(|e| SeamError::HandshakeFailed(e.to_string()))?;
         Ok(())
     }
 
     /// Msg2: we send our KEM public key in the payload so client can encapsulate against it.
-    pub fn write_msg2(&mut self, local_kem_pk: &KemPublicKey, out: &mut Vec<u8>) -> Result<(), ApexError> {
+    pub fn write_msg2(&mut self, local_kem_pk: &KemPublicKey, out: &mut Vec<u8>) -> Result<(), SeamError> {
         let pk_bytes = pk_to_bytes(local_kem_pk);
         let payload = length_prefix(&pk_bytes);
         write_noise(&mut self.noise, &payload, out)
@@ -110,7 +110,7 @@ impl ServerHandshake {
         mut self,
         local_kem_sk: &pqcrypto_kyber::kyber768::SecretKey,
         msg3: &[u8],
-    ) -> Result<HandshakeResult, ApexError> {
+    ) -> Result<HandshakeResult, SeamError> {
         let payload = read_noise(&mut self.noise, msg3)?;
 
         let kem_shared = if payload.len() >= 2 {
@@ -124,9 +124,9 @@ impl ServerHandshake {
 
         let hash = self.noise.get_handshake_hash().to_vec();
         let peer_static: [u8; 32] = self.noise.get_remote_static()
-            .ok_or_else(|| ApexError::HandshakeFailed("no remote static".into()))?
+            .ok_or_else(|| SeamError::HandshakeFailed("no remote static".into()))?
             .try_into()
-            .map_err(|_| ApexError::HandshakeFailed("bad static key length".into()))?;
+            .map_err(|_| SeamError::HandshakeFailed("bad static key length".into()))?;
 
         finish(hash, peer_static, kem_shared)
     }
@@ -136,7 +136,7 @@ impl ServerHandshake {
 // Shared helpers
 // ──────────────────────────────────────────────────────────────────────────────
 
-fn finish(hash: Vec<u8>, peer_static: [u8; 32], kem_shared: [u8; 32]) -> Result<HandshakeResult, ApexError> {
+fn finish(hash: Vec<u8>, peer_static: [u8; 32], kem_shared: [u8; 32]) -> Result<HandshakeResult, SeamError> {
     let x25519_component = blake3::derive_key("apex/x25519-component/v1", &hash);
     let hybrid = HybridSharedSecret::new(kem_shared, x25519_component);
     let keys = hybrid.derive_packet_keys(&hash);
@@ -144,18 +144,18 @@ fn finish(hash: Vec<u8>, peer_static: [u8; 32], kem_shared: [u8; 32]) -> Result<
     Ok(HandshakeResult { session_id, keys, peer_static_pubkey: peer_static })
 }
 
-fn write_noise(hs: &mut snow::HandshakeState, payload: &[u8], out: &mut Vec<u8>) -> Result<(), ApexError> {
+fn write_noise(hs: &mut snow::HandshakeState, payload: &[u8], out: &mut Vec<u8>) -> Result<(), SeamError> {
     let mut buf = vec![0u8; 65535];
     let n = hs.write_message(payload, &mut buf)
-        .map_err(|e| ApexError::HandshakeFailed(e.to_string()))?;
+        .map_err(|e| SeamError::HandshakeFailed(e.to_string()))?;
     out.extend_from_slice(&buf[..n]);
     Ok(())
 }
 
-fn read_noise(hs: &mut snow::HandshakeState, msg: &[u8]) -> Result<Vec<u8>, ApexError> {
+fn read_noise(hs: &mut snow::HandshakeState, msg: &[u8]) -> Result<Vec<u8>, SeamError> {
     let mut buf = vec![0u8; 65535];
     let n = hs.read_message(msg, &mut buf)
-        .map_err(|e| ApexError::HandshakeFailed(e.to_string()))?;
+        .map_err(|e| SeamError::HandshakeFailed(e.to_string()))?;
     Ok(buf[..n].to_vec())
 }
 
@@ -166,13 +166,13 @@ fn length_prefix(data: &[u8]) -> Vec<u8> {
     out
 }
 
-fn extract_prefix(buf: &[u8]) -> Result<&[u8], ApexError> {
+fn extract_prefix(buf: &[u8]) -> Result<&[u8], SeamError> {
     if buf.len() < 2 {
-        return Err(ApexError::HandshakeFailed("payload too short".into()));
+        return Err(SeamError::HandshakeFailed("payload too short".into()));
     }
     let len = u16::from_le_bytes([buf[0], buf[1]]) as usize;
     if buf.len() < 2 + len {
-        return Err(ApexError::HandshakeFailed("payload truncated".into()));
+        return Err(SeamError::HandshakeFailed("payload truncated".into()));
     }
     Ok(&buf[2..2 + len])
 }

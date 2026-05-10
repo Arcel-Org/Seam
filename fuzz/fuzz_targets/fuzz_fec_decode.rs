@@ -3,7 +3,7 @@
 //! without panicking. Data is split into operation records.
 
 use libfuzzer_sys::fuzz_target;
-use apex_protocol::fec::{FecDecoder, FecRepairData};
+use seam_protocol::fec::{FecDecoder, FecRepairData};
 
 fuzz_target!(|data: &[u8]| {
     let mut dec = FecDecoder::new();

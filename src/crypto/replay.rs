@@ -1,4 +1,4 @@
-use crate::error::ApexError;
+use crate::error::SeamError;
 
 pub struct ReplayWindow {
     base_seq: u64,
@@ -10,9 +10,9 @@ impl ReplayWindow {
         Self { base_seq: 0, bitmap: [0u64; 16] }
     }
 
-    pub fn check_and_insert(&mut self, seq: u64) -> Result<(), ApexError> {
+    pub fn check_and_insert(&mut self, seq: u64) -> Result<(), SeamError> {
         if seq < self.base_seq {
-            return Err(ApexError::TooOld(seq));
+            return Err(SeamError::TooOld(seq));
         }
 
         let offset = seq - self.base_seq;
@@ -46,7 +46,7 @@ impl ReplayWindow {
         let bit = bit_pos % 64;
 
         if self.bitmap[word] & (1u64 << bit) != 0 {
-            return Err(ApexError::Replay(seq));
+            return Err(SeamError::Replay(seq));
         }
 
         self.bitmap[word] |= 1u64 << bit;
@@ -76,7 +76,7 @@ mod tests {
     fn test_replay_rejected() {
         let mut w = ReplayWindow::new();
         w.check_and_insert(42).unwrap();
-        assert!(matches!(w.check_and_insert(42), Err(ApexError::Replay(42))));
+        assert!(matches!(w.check_and_insert(42), Err(SeamError::Replay(42))));
     }
 
     #[test]
@@ -84,7 +84,7 @@ mod tests {
         let mut w = ReplayWindow::new();
         // Force window to slide past 0
         w.check_and_insert(2000).unwrap();
-        assert!(matches!(w.check_and_insert(0), Err(ApexError::TooOld(0))));
+        assert!(matches!(w.check_and_insert(0), Err(SeamError::TooOld(0))));
     }
 
     #[test]
@@ -94,7 +94,7 @@ mod tests {
             assert!(w.check_and_insert(i).is_ok(), "failed at {i}");
         }
         // 0 is now outside the window
-        assert!(matches!(w.check_and_insert(0), Err(ApexError::TooOld(0))));
+        assert!(matches!(w.check_and_insert(0), Err(SeamError::TooOld(0))));
         // 1030 should still be accepted
         assert!(w.check_and_insert(1030).is_ok());
     }

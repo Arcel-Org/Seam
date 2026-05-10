@@ -1,7 +1,7 @@
 use chacha20poly1305::{ChaCha20Poly1305, KeyInit, AeadInPlace, Tag};
 use crate::{
     crypto::{header::apply_header_protection, keys::PacketKeys, replay::ReplayWindow},
-    error::ApexError,
+    error::SeamError,
     packet::{PktType, HEADER_LEN, TAG_LEN, MIN_PACKET_LEN},
 };
 
@@ -17,9 +17,9 @@ impl PacketDecoder {
 
     /// Decode a packet in-place. Returns `(pkt_type, packet_number, plaintext_slice)`.
     /// The buffer is modified: header is unprotected, payload is decrypted.
-    pub fn decode<'a>(&mut self, buf: &'a mut [u8]) -> Result<(PktType, u64, &'a [u8]), ApexError> {
+    pub fn decode<'a>(&mut self, buf: &'a mut [u8]) -> Result<(PktType, u64, &'a [u8]), SeamError> {
         if buf.len() < MIN_PACKET_LEN {
-            return Err(ApexError::BufferTooSmall { need: MIN_PACKET_LEN, have: buf.len() });
+            return Err(SeamError::BufferTooSmall { need: MIN_PACKET_LEN, have: buf.len() });
         }
 
         // Remove header protection using first 16 bytes of ciphertext
@@ -55,7 +55,7 @@ impl PacketDecoder {
         let cipher = ChaCha20Poly1305::new((&self.keys.enc_key).into());
         cipher
             .decrypt_in_place_detached(&nonce.into(), header_region, payload_region, &tag)
-            .map_err(|_| ApexError::AuthFailed)?;
+            .map_err(|_| SeamError::AuthFailed)?;
 
         Ok((pkt_type, pkt_num, payload_region))
     }
@@ -96,7 +96,7 @@ mod tests {
         let mut buf2 = buf.clone();
         dec.decode(&mut buf).unwrap();
         // Second decode of same packet must fail
-        assert!(matches!(dec.decode(&mut buf2), Err(ApexError::Replay(_))));
+        assert!(matches!(dec.decode(&mut buf2), Err(SeamError::Replay(_))));
     }
 
     #[test]
@@ -108,7 +108,7 @@ mod tests {
         enc.encode(PktType::Data, payload, &mut buf).unwrap();
         // Flip a byte in the ciphertext beyond the 16-byte sample (HEADER_LEN + 17).
         buf[HEADER_LEN + 17] ^= 0xFF;
-        assert!(matches!(dec.decode(&mut buf), Err(ApexError::AuthFailed)));
+        assert!(matches!(dec.decode(&mut buf), Err(SeamError::AuthFailed)));
     }
 
     #[test]

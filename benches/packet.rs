@@ -1,6 +1,6 @@
 use criterion::{criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion, Throughput};
-use apex_protocol::{PacketDecoder, PacketEncoder, PacketKeys, PktType};
-use apex_protocol::packet::{HEADER_LEN, TAG_LEN};
+use seam_protocol::{PacketDecoder, PacketEncoder, PacketKeys, PktType};
+use seam_protocol::packet::{HEADER_LEN, TAG_LEN};
 
 const SECRET: &[u8] = b"bench-secret-key-32-bytes-padded";
 

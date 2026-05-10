@@ -1,5 +1,5 @@
 #[derive(thiserror::Error, Debug)]
-pub enum ApexError {
+pub enum SeamError {
     #[error("authentication failed")]
     AuthFailed,
     #[error("replay detected: packet {0} already received")]

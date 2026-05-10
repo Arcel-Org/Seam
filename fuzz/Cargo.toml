@@ -1,5 +1,5 @@
 [package]
-name = "apex-protocol-fuzz"
+name = "seam-protocol-fuzz"
 version = "0.0.0"
 publish = false
 edition = "2024"
@@ -9,7 +9,7 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-apex-protocol = { path = ".." }
+seam-protocol = { path = ".." }
 
 [[bin]]
 name = "fuzz_packet_decoder"

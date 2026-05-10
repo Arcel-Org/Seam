@@ -1,4 +1,4 @@
-use crate::error::ApexError;
+use crate::error::SeamError;
 
 pub const HEADER_LEN: usize = 32;
 pub const TAG_LEN: usize = 16;
@@ -29,7 +29,7 @@ pub enum PktType {
 }
 
 impl TryFrom<u8> for PktType {
-    type Error = ApexError;
+    type Error = SeamError;
     fn try_from(v: u8) -> Result<Self, Self::Error> {
         match v {
             0x00 => Ok(Self::Initial),
@@ -42,7 +42,7 @@ impl TryFrom<u8> for PktType {
             0x07 => Ok(Self::Close),
             0x08 => Ok(Self::Datagram),
             0x09 => Ok(Self::KeyUpdate),
-            other => Err(ApexError::InvalidPktType(other)),
+            other => Err(SeamError::InvalidPktType(other)),
         }
     }
 }
@@ -80,7 +80,7 @@ mod tests {
     fn pkt_type_try_from_rejects_unknown_values() {
         assert!(matches!(
             PktType::try_from(0xFF),
-            Err(ApexError::InvalidPktType(0xFF))
+            Err(SeamError::InvalidPktType(0xFF))
         ));
     }
 }

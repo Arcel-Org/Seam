@@ -2,7 +2,7 @@
 //! Fuzz target: FecRepairData::from_bytes on arbitrary input.
 
 use libfuzzer_sys::fuzz_target;
-use apex_protocol::fec::FecRepairData;
+use seam_protocol::fec::FecRepairData;
 
 fuzz_target!(|data: &[u8]| {
     if let Some(parsed) = FecRepairData::from_bytes(data) {

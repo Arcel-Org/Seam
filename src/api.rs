@@ -4,8 +4,8 @@
 //! behind an ergonomic interface:
 //!
 //! ```no_run
-//! # use apex_protocol::{api::{Client, Server}, handshake::IdentityKeypair};
-//! # async fn example() -> Result<(), apex_protocol::ApexError> {
+//! # use seam_protocol::{api::{Client, Server}, handshake::IdentityKeypair};
+//! # async fn example() -> Result<(), seam_protocol::SeamError> {
 //! // Server side
 //! let id = IdentityKeypair::generate();
 //! let mut server = Server::bind("0.0.0.0:4433".parse().unwrap(), id).await?;
@@ -30,7 +30,7 @@ use tokio::sync::{mpsc, Mutex};
 use tokio::task::JoinHandle;
 
 use crate::{
-    error::ApexError,
+    error::SeamError,
     handshake::{CookieFactory, IdentityKeypair},
     session::SessionEvent,
     session::stream::StreamId,
@@ -40,17 +40,58 @@ use crate::{
 const MAX_UDP: usize = 65535;
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
-type SharedConn = Arc<Mutex<Connection>>;
+pub(crate) type SharedConn = Arc<Mutex<Connection>>;
 
-// ── ApexConn ──────────────────────────────────────────────────────────────────
+// ── SeamConnWriter ────────────────────────────────────────────────────────────
 
-/// An established APEX connection. Provides stream I/O and datagram sending.
-pub struct ApexConn {
-    inner: SharedConn,
-    events: mpsc::UnboundedReceiver<SessionEvent>,
+/// Shareable write half of a [`SeamConn`], produced by [`SeamConn::split`].
+///
+/// Holds an `Arc<Mutex<Connection>>` so it can be cloned and shared across
+/// tasks. Use [`SeamMux`](crate::tunnel::SeamMux) unless you need raw access.
+pub struct SeamConnWriter {
+    pub(crate) inner: SharedConn,
 }
 
-impl ApexConn {
+impl SeamConnWriter {
+    /// Open a locally-initiated stream. Returns the new stream ID.
+    pub async fn open_stream(&self) -> StreamId {
+        self.inner.lock().await
+            .session.as_mut().expect("not established").open_stream()
+    }
+
+    /// Open a stream for server-push (semantic alias for `open_stream`).
+    pub async fn push_stream(&self) -> StreamId {
+        self.inner.lock().await
+            .session.as_mut().expect("not established").push_stream()
+    }
+
+    /// Write `data` into stream `sid` and flush to the network.
+    pub async fn write(&self, sid: StreamId, data: &[u8]) -> Result<(), SeamError> {
+        let mut g = self.inner.lock().await;
+        g.session.as_mut().ok_or_else(|| SeamError::HandshakeFailed("not connected".into()))?.send(sid, data)?;
+        g.flush().await
+    }
+
+    /// Read buffered bytes from stream `sid` (up to `max`).
+    pub async fn read(&self, sid: StreamId, max: usize) -> Result<Vec<u8>, SeamError> {
+        let mut g = self.inner.lock().await;
+        let mut out = Vec::new();
+        if let Some(session) = g.session.as_mut() {
+            let _ = session.read(sid, &mut out, max);  // ignore UnknownStream (stream may not have data yet)
+        }
+        Ok(out)
+    }
+}
+
+// ── SeamConn ──────────────────────────────────────────────────────────────────
+
+/// An established Seam connection. Provides stream I/O and datagram sending.
+pub struct SeamConn {
+    pub(crate) inner: SharedConn,
+    pub(crate) events: mpsc::UnboundedReceiver<SessionEvent>,
+}
+
+impl SeamConn {
     /// Open a locally-initiated stream. Returns the new stream ID.
     pub async fn open_stream(&self) -> StreamId {
         self.inner.lock().await
@@ -65,7 +106,7 @@ impl ApexConn {
     }
 
     /// Write `data` into stream `sid` and flush to the network.
-    pub async fn write(&self, sid: StreamId, data: &[u8]) -> Result<(), ApexError> {
+    pub async fn write(&self, sid: StreamId, data: &[u8]) -> Result<(), SeamError> {
         let mut guard = self.inner.lock().await;
         guard.session.as_mut().expect("not established").send(sid, data)?;
         guard.flush().await
@@ -74,7 +115,7 @@ impl ApexConn {
     /// Read buffered bytes from stream `sid` (up to `max`).
     /// Returns immediately with whatever is buffered; use [`read_event`] to
     /// wait until `DataAvailable` before calling this.
-    pub async fn read(&self, sid: StreamId, max: usize) -> Result<Vec<u8>, ApexError> {
+    pub async fn read(&self, sid: StreamId, max: usize) -> Result<Vec<u8>, SeamError> {
         let mut guard = self.inner.lock().await;
         let mut out = Vec::new();
         guard.session.as_mut().expect("not established").read(sid, &mut out, max)?;
@@ -87,7 +128,7 @@ impl ApexConn {
     }
 
     /// Send an unreliable datagram (≤ max_datagram_size, default 1200 B).
-    pub async fn send_datagram(&self, data: Bytes) -> Result<(), ApexError> {
+    pub async fn send_datagram(&self, data: Bytes) -> Result<(), SeamError> {
         let mut guard = self.inner.lock().await;
         guard.session.as_mut().expect("not established").send_datagram(data)?;
         guard.flush().await
@@ -115,12 +156,18 @@ impl ApexConn {
     }
 
     /// Flush pending stream data and background operations (retransmits, chaff, probes).
-    pub async fn tick(&self) -> Result<(), ApexError> {
+    pub async fn tick(&self) -> Result<(), SeamError> {
         let mut guard = self.inner.lock().await;
         guard.flush().await?;
         guard.retransmit_expired().await?;
         guard.maybe_send_chaff().await?;
         guard.maybe_send_probe().await
+    }
+
+    /// Split into a shareable writer and an exclusive event receiver.
+    /// Use `SeamMux::new(conn)` instead unless you need raw access.
+    pub fn split(self) -> (SeamConnWriter, mpsc::UnboundedReceiver<SessionEvent>) {
+        (SeamConnWriter { inner: self.inner }, self.events)
     }
 }
 
@@ -135,10 +182,10 @@ pub struct Client {
 
 impl Client {
     /// Bind to `local_addr` and prepare to connect.
-    pub async fn bind(local_addr: SocketAddr, identity: IdentityKeypair) -> Result<Self, ApexError> {
+    pub async fn bind(local_addr: SocketAddr, identity: IdentityKeypair) -> Result<Self, SeamError> {
         let socket = Arc::new(
             UdpSocket::bind(local_addr).await
-                .map_err(|e| ApexError::HandshakeFailed(e.to_string()))?,
+                .map_err(|e| SeamError::HandshakeFailed(e.to_string()))?,
         );
         Ok(Self { socket, identity: Arc::new(identity), _recv_task: None })
     }
@@ -150,7 +197,7 @@ impl Client {
         remote: SocketAddr,
         server_x25519: &[u8; 32],
         server_kem_pk: &pqcrypto_kyber::kyber768::PublicKey,
-    ) -> Result<ApexConn, ApexError> {
+    ) -> Result<SeamConn, SeamError> {
         let (mut conn, events) = Connection::connect(
             self.socket.clone(),
             remote,
@@ -166,8 +213,8 @@ impl Client {
                 HANDSHAKE_TIMEOUT,
                 self.socket.recv_from(&mut buf),
             ).await
-                .map_err(|_| ApexError::HandshakeFailed("handshake timed out".into()))?
-                .map_err(|e| ApexError::HandshakeFailed(e.to_string()))?;
+                .map_err(|_| SeamError::HandshakeFailed("handshake timed out".into()))?
+                .map_err(|e| SeamError::HandshakeFailed(e.to_string()))?;
             conn.on_packet(&mut buf[..n].to_vec()).await?;
         }
 
@@ -179,7 +226,7 @@ impl Client {
         let handle = tokio::spawn(client_recv_loop(socket_clone, inner_clone));
         self._recv_task = Some(handle);
 
-        Ok(ApexConn { inner, events })
+        Ok(SeamConn { inner, events })
     }
 
     pub fn local_addr(&self) -> std::io::Result<SocketAddr> {
@@ -207,16 +254,16 @@ async fn client_recv_loop(socket: Arc<UdpSocket>, conn: SharedConn) {
 /// challenges, and surfaces fully-established connections via [`accept`].
 pub struct Server {
     socket: Arc<UdpSocket>,
-    accept_rx: mpsc::UnboundedReceiver<ApexConn>,
+    accept_rx: mpsc::UnboundedReceiver<SeamConn>,
     _recv_task: JoinHandle<()>,
 }
 
 impl Server {
     /// Bind to `local_addr` and start accepting connections.
-    pub async fn bind(local_addr: SocketAddr, identity: IdentityKeypair) -> Result<Self, ApexError> {
+    pub async fn bind(local_addr: SocketAddr, identity: IdentityKeypair) -> Result<Self, SeamError> {
         let socket = Arc::new(
             UdpSocket::bind(local_addr).await
-                .map_err(|e| ApexError::HandshakeFailed(e.to_string()))?,
+                .map_err(|e| SeamError::HandshakeFailed(e.to_string()))?,
         );
 
         let identity = Arc::new(identity);
@@ -239,7 +286,7 @@ impl Server {
 
     /// Wait for the next fully-established inbound connection.
     /// Returns `None` if the server socket has been dropped.
-    pub async fn accept(&mut self) -> Option<ApexConn> {
+    pub async fn accept(&mut self) -> Option<SeamConn> {
         self.accept_rx.recv().await
     }
 
@@ -252,7 +299,7 @@ async fn server_recv_loop(
     socket: Arc<UdpSocket>,
     identity: Arc<IdentityKeypair>,
     cookie_factory: Arc<CookieFactory>,
-    accept_tx: mpsc::UnboundedSender<ApexConn>,
+    accept_tx: mpsc::UnboundedSender<SeamConn>,
 ) {
     let mut buf = vec![0u8; MAX_UDP];
     // Per-remote connection table.
@@ -279,7 +326,7 @@ async fn server_recv_loop(
             if !was_established && is_established && !delivered.contains(&remote) {
                 delivered.insert(remote);
                 if let Some(events) = pending_events.remove(&remote) {
-                    let _ = accept_tx.send(ApexConn { inner: conn.clone(), events });
+                    let _ = accept_tx.send(SeamConn { inner: conn.clone(), events });
                 }
             }
 

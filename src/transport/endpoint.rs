@@ -11,7 +11,7 @@ use tokio::sync::{mpsc, Mutex};
 use tokio::task::JoinHandle;
 
 use crate::{
-    error::ApexError,
+    error::SeamError,
     handshake::{CookieFactory, IdentityKeypair},
     session::SessionEvent,
     transport::connection::{ConnPhase, Connection},
@@ -32,10 +32,10 @@ pub struct Endpoint {
 }
 
 impl Endpoint {
-    pub async fn bind(local_addr: SocketAddr, identity: IdentityKeypair) -> Result<Self, ApexError> {
+    pub async fn bind(local_addr: SocketAddr, identity: IdentityKeypair) -> Result<Self, SeamError> {
         let socket = Arc::new(
             UdpSocket::bind(local_addr).await
-                .map_err(|e| ApexError::HandshakeFailed(e.to_string()))?,
+                .map_err(|e| SeamError::HandshakeFailed(e.to_string()))?,
         );
         let identity = Arc::new(identity);
 
@@ -73,7 +73,7 @@ impl Endpoint {
         remote: SocketAddr,
         server_x25519: &[u8; 32],
         server_kem_pk: &pqcrypto_kyber::kyber768::PublicKey,
-    ) -> Result<(SharedConn, mpsc::UnboundedReceiver<SessionEvent>), ApexError> {
+    ) -> Result<(SharedConn, mpsc::UnboundedReceiver<SessionEvent>), SeamError> {
         let (conn, rx) = Connection::connect(
             self.socket.clone(),
             remote,

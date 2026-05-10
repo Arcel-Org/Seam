@@ -13,7 +13,7 @@
 ///   session_id(8) + traffic_secret(32) + expiry_unix_secs(8) + nonce(12)
 
 use chacha20poly1305::{AeadInPlace, ChaCha20Poly1305, KeyInit};
-use crate::error::ApexError;
+use crate::error::SeamError;
 use rand::{RngCore, rngs::OsRng};
 
 pub const WEAKER_FS_WARNING: &str =
@@ -57,40 +57,40 @@ impl TicketKey {
     }
 
     /// Decrypt and validate a session ticket. Returns (session_id, traffic_secret).
-    pub fn redeem(&self, ticket_bytes: &[u8]) -> Result<(u64, [u8; 32]), ApexError> {
+    pub fn redeem(&self, ticket_bytes: &[u8]) -> Result<(u64, [u8; 32]), SeamError> {
         if ticket_bytes.len() != TICKET_LEN {
-            return Err(ApexError::HandshakeFailed("bad ticket length".into()));
+            return Err(SeamError::HandshakeFailed("bad ticket length".into()));
         }
         let nonce: [u8; 12] = ticket_bytes[..12]
             .try_into()
-            .map_err(|_| ApexError::HandshakeFailed("bad ticket nonce".into()))?;
+            .map_err(|_| SeamError::HandshakeFailed("bad ticket nonce".into()))?;
         let mut ct = ticket_bytes[12..12 + TICKET_PLAINTEXT_LEN + 16].to_vec();
 
         let cipher = ChaCha20Poly1305::new((&self.key).into());
         cipher
             .decrypt_in_place(&nonce.into(), b"apex-ticket", &mut ct)
-            .map_err(|_| ApexError::AuthFailed)?;
+            .map_err(|_| SeamError::AuthFailed)?;
 
         if ct.len() < TICKET_PLAINTEXT_LEN {
-            return Err(ApexError::AuthFailed);
+            return Err(SeamError::AuthFailed);
         }
 
         let session_id = u64::from_le_bytes(
             ct[0..8]
                 .try_into()
-                .map_err(|_| ApexError::AuthFailed)?,
+                .map_err(|_| SeamError::AuthFailed)?,
         );
         let traffic_secret: [u8; 32] = ct[8..40]
             .try_into()
-            .map_err(|_| ApexError::AuthFailed)?;
+            .map_err(|_| SeamError::AuthFailed)?;
         let expiry = u64::from_le_bytes(
             ct[40..48]
                 .try_into()
-                .map_err(|_| ApexError::AuthFailed)?,
+                .map_err(|_| SeamError::AuthFailed)?,
         );
 
         if unix_now() > expiry {
-            return Err(ApexError::HandshakeFailed("ticket expired".into()));
+            return Err(SeamError::HandshakeFailed("ticket expired".into()));
         }
         Ok((session_id, traffic_secret))
     }

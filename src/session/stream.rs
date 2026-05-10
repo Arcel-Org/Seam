@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 use bytes::{Bytes, BytesMut};
-use crate::error::ApexError;
+use crate::error::SeamError;
 
 pub type StreamId = u32;
 
@@ -74,13 +74,13 @@ impl Stream {
     // ── Send side ────────────────────────────────────────────────────────────
 
     /// Buffer data to send. Returns the offset at which this data starts.
-    pub fn write(&mut self, data: &[u8]) -> Result<u64, ApexError> {
+    pub fn write(&mut self, data: &[u8]) -> Result<u64, SeamError> {
         if self.fin_sent {
-            return Err(ApexError::StreamFinished(self.id));
+            return Err(SeamError::StreamFinished(self.id));
         }
         // Enforce per-stream send window
         if self.send_offset.saturating_add(data.len() as u64) > self.send_max_data {
-            return Err(ApexError::FlowControlBlocked {
+            return Err(SeamError::FlowControlBlocked {
                 available: self.send_max_data.saturating_sub(self.send_offset),
                 requested: data.len() as u64,
             });
@@ -121,7 +121,7 @@ impl Stream {
 
     /// Deliver an incoming segment. Buffers out-of-order segments.
     /// Returns FlowControlBlocked if the segment would exceed the receive window.
-    pub fn receive(&mut self, offset: u64, data: Bytes, is_fin: bool) -> Result<(), ApexError> {
+    pub fn receive(&mut self, offset: u64, data: Bytes, is_fin: bool) -> Result<(), SeamError> {
         if is_fin {
             self.fin_received = Some(offset + data.len() as u64);
         }
@@ -136,7 +136,7 @@ impl Stream {
         // exceed the limit (prevents unbounded buffering by a hostile peer).
         let high_offset = offset + data.len() as u64;
         if high_offset > self.recv_max_data {
-            return Err(ApexError::FlowControlBlocked {
+            return Err(SeamError::FlowControlBlocked {
                 available: self.recv_max_data.saturating_sub(self.recv_offset),
                 requested: high_offset.saturating_sub(self.recv_offset),
             });

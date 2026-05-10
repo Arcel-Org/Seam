@@ -2,7 +2,7 @@
 exclude = ["fuzz"]
 
 [package]
-name = "apex-protocol"
+name = "seam-protocol"
 version = "0.1.0"
 edition = "2024"
 

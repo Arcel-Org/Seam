@@ -1,4 +1,4 @@
-use crate::error::ApexError;
+use crate::error::SeamError;
 
 /// Credit-based flow control window (like QUIC's MAX_DATA / MAX_STREAM_DATA).
 /// The sender may not transmit beyond `limit` total bytes.
@@ -15,9 +15,9 @@ impl FlowWindow {
     }
 
     /// Try to reserve `n` bytes. Returns Ok(()) if within limit.
-    pub fn reserve(&mut self, n: u64) -> Result<(), ApexError> {
+    pub fn reserve(&mut self, n: u64) -> Result<(), SeamError> {
         if self.consumed + n > self.limit {
-            Err(ApexError::FlowControlBlocked {
+            Err(SeamError::FlowControlBlocked {
                 available: self.limit.saturating_sub(self.consumed),
                 requested: n,
             })
@@ -57,7 +57,7 @@ mod tests {
         let err = flow.reserve(5).unwrap_err();
         assert!(matches!(
             err,
-            ApexError::FlowControlBlocked {
+            SeamError::FlowControlBlocked {
                 available: 3,
                 requested: 5
             }

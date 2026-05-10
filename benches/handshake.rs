@@ -1,10 +1,10 @@
 use criterion::{criterion_group, criterion_main, Criterion};
-use apex_protocol::handshake::{
+use seam_protocol::handshake::{
     IdentityKeypair,
     state::{ClientHandshake, ServerHandshake},
     CookieFactory,
 };
-use apex_protocol::crypto::keys::PacketKeys;
+use seam_protocol::crypto::keys::PacketKeys;
 
 fn bench_keypair_gen(c: &mut Criterion) {
     c.bench_function("IdentityKeypair::generate", |b| {

@@ -10,7 +10,7 @@ use bytes::Bytes;
 
 use crate::{
     crypto::{encoder::PacketEncoder, decoder::PacketDecoder},
-    error::ApexError,
+    error::SeamError,
     packet::PktType,
     session::{
         ack::{parse_ack_frame, AckRanges},
@@ -163,8 +163,8 @@ impl Session {
 
     /// Queue an unreliable datagram for sending.
     /// Returns an error if the payload exceeds max_datagram_size.
-    pub fn send_datagram(&mut self, data: Bytes) -> Result<(), ApexError> {
-        self.datagrams.send(data).map_err(|sz| ApexError::BufferTooSmall {
+    pub fn send_datagram(&mut self, data: Bytes) -> Result<(), SeamError> {
+        self.datagrams.send(data).map_err(|sz| SeamError::BufferTooSmall {
             need: sz, have: self.limits.max_datagram_size,
         })
     }
@@ -188,10 +188,10 @@ impl Session {
     // ── Sending ──────────────────────────────────────────────────────────────
 
     /// Write `data` into a stream's send buffer.
-    pub fn send(&mut self, stream_id: StreamId, data: &[u8]) -> Result<(), ApexError> {
+    pub fn send(&mut self, stream_id: StreamId, data: &[u8]) -> Result<(), SeamError> {
         self.send_window.reserve(data.len() as u64)?;
         let stream = self.streams.get_mut(&stream_id)
-            .ok_or(ApexError::UnknownStream(stream_id))?;
+            .ok_or(SeamError::UnknownStream(stream_id))?;
         stream.write(data)?;
         Ok(())
     }
@@ -199,7 +199,7 @@ impl Session {
     /// Packetise pending stream data into wire packets. Returns encoded packets.
     /// Streams are drained in priority order (0 = highest). Within the same
     /// priority, streams are served round-robin by insertion order.
-    pub fn flush(&mut self) -> Result<Vec<Vec<u8>>, ApexError> {
+    pub fn flush(&mut self) -> Result<Vec<Vec<u8>>, SeamError> {
         let mut packets = Vec::new();
         // Collect and sort by priority (stable sort preserves insertion order within same priority)
         let mut stream_ids: Vec<StreamId> = self.streams.keys().copied().collect();
@@ -256,7 +256,7 @@ impl Session {
     // ── Receiving ────────────────────────────────────────────────────────────
 
     /// Process an incoming wire packet. Returns events.
-    pub fn receive_packet(&mut self, buf: &mut [u8]) -> Result<Vec<SessionEvent>, ApexError> {
+    pub fn receive_packet(&mut self, buf: &mut [u8]) -> Result<Vec<SessionEvent>, SeamError> {
         let (pkt_type, pkt_num, payload) = self.decoder.decode(buf)?;
         let mut events = Vec::new();
 
@@ -288,7 +288,7 @@ impl Session {
         Ok(events)
     }
 
-    fn handle_data_frame(&mut self, frame: Vec<u8>) -> Result<Vec<SessionEvent>, ApexError> {
+    fn handle_data_frame(&mut self, frame: Vec<u8>) -> Result<Vec<SessionEvent>, SeamError> {
         // Parse: type(1) + flags(1) + len(2) + stream_id(4) + offset(8) + data
         if frame.len() < 16 { return Ok(vec![]); }
         let data_len = u16::from_le_bytes([frame[2], frame[3]]) as usize;
@@ -306,7 +306,7 @@ impl Session {
             // Client opens odd IDs; server opens even IDs. Reject violations to prevent
             // ID-space collisions and detect misbehaving peers early.
             if stream_id % 2 == self.role.local_parity() {
-                return Err(ApexError::ProtocolViolation(format!(
+                return Err(SeamError::ProtocolViolation(format!(
                     "stream {stream_id} parity matches local role {:?}; remote must use opposite parity",
                     self.role
                 )));
@@ -322,7 +322,7 @@ impl Session {
         Ok(events)
     }
 
-    fn handle_ack_frame(&mut self, frame: &[u8]) -> Result<(), ApexError> {
+    fn handle_ack_frame(&mut self, frame: &[u8]) -> Result<(), SeamError> {
         let Some((_largest, _delay_us, ranges)) = parse_ack_frame(frame) else {
             return Ok(());
         };
@@ -337,16 +337,16 @@ impl Session {
 
     // ── Read ─────────────────────────────────────────────────────────────────
 
-    pub fn read(&mut self, stream_id: StreamId, out: &mut Vec<u8>, max: usize) -> Result<usize, ApexError> {
+    pub fn read(&mut self, stream_id: StreamId, out: &mut Vec<u8>, max: usize) -> Result<usize, SeamError> {
         let stream = self.streams.get_mut(&stream_id)
-            .ok_or(ApexError::UnknownStream(stream_id))?;
+            .ok_or(SeamError::UnknownStream(stream_id))?;
         Ok(stream.read(out, max))
     }
 
     // ── Transport helpers ────────────────────────────────────────────────────
 
     /// Encode a single non-stream packet (e.g. Chaff, PathProbe) using session keys.
-    pub fn encode_raw(&self, pkt_type: PktType, payload: &[u8], out: &mut [u8]) -> Result<usize, ApexError> {
+    pub fn encode_raw(&self, pkt_type: PktType, payload: &[u8], out: &mut [u8]) -> Result<usize, SeamError> {
         self.encoder.encode(pkt_type, payload, out)
     }
 
@@ -498,7 +498,7 @@ mod tests {
         let vpkts = sender.flush().unwrap();
         let result = receiver.receive_packet(&mut vpkts[0].clone());
         assert!(
-            matches!(result, Err(ApexError::ProtocolViolation(_))),
+            matches!(result, Err(SeamError::ProtocolViolation(_))),
             "should reject stream with same parity as receiver's local role: {result:?}"
         );
     }

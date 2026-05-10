@@ -7,7 +7,7 @@
 //! require the decoder to handle adversarial input gracefully.
 
 use libfuzzer_sys::fuzz_target;
-use apex_protocol::{PacketDecoder, PacketKeys};
+use seam_protocol::{PacketDecoder, PacketKeys};
 
 fuzz_target!(|data: &[u8]| {
     let keys = PacketKeys::derive_from_secret(b"fuzz-secret-32-bytes-exactly-ok!");

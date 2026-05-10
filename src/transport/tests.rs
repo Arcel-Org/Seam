@@ -1,4 +1,4 @@
-/// Integration tests for the full apex-protocol stack.
+/// Integration tests for the full seam-protocol stack.
 #[cfg(test)]
 mod tests {
     use std::net::SocketAddr;

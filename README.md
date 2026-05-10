@@ -1,6 +1,6 @@
 <div align="center">
 
-# ⚡ Apex Protocol
+# Seam Protocol
 
 **A high-performance, post-quantum encrypted transport stack written in Rust.**
 
@@ -16,7 +16,7 @@ UDP-based · Multi-stream · Built-in FEC · ML-KEM768 Post-Quantum Handshake
 
 ## Overview
 
-Apex is a user-space transport protocol designed for applications where standard TCP or QUIC leave performance on the table. It combines encrypted, paced UDP delivery with multi-stream session management, forward error correction, and a hybrid post-quantum handshake — all in a single cohesive stack.
+Seam is a user-space transport protocol designed for applications where standard TCP or QUIC leave performance on the table. It combines encrypted, paced UDP delivery with multi-stream session management, forward error correction, and a hybrid post-quantum handshake — all in a single cohesive stack.
 
 | Capability | Detail |
 |---|---|
@@ -28,7 +28,7 @@ Apex is a user-space transport protocol designed for applications where standard
 
 ---
 
-## Why Apex?
+## Why Seam?
 
 - **No head-of-line blocking** — streams are scheduled independently; a stalled bulk transfer never blocks a control message
 - **Post-quantum by default** — ML-KEM768 KEM is baked into the handshake, not bolted on
@@ -105,7 +105,7 @@ Priority scheduling adds only **~2.4% overhead** over equal-priority scheduling.
 
 This is a directional capability comparison, not a same-host apples-to-apples benchmark.
 
-| | Apex | TCP+TLS 1.3 | QUIC | Raw UDP |
+| | Seam | TCP+TLS 1.3 | QUIC | Raw UDP |
 |---|---|---|---|---|
 | HOL blocking | ✅ None | ❌ Full stream | ⚠️ Per-stream | ✅ None |
 | Built-in FEC | ✅ Yes | ❌ No | ❌ No | ❌ No |
@@ -118,16 +118,18 @@ This is a directional capability comparison, not a same-host apples-to-apples be
 
 ## Repository Layout
 
+```
 src/
-├── crypto/ # Packet & header protection, anti-replay, key derivation
-├── handshake/ # Noise_XX + ML-KEM768 handshake, cookies
-├── session/ # Stream state, ARQ, flow control, priority scheduling
-├── fec/ # GF(2^8) arithmetic, FEC codec, FEC/ARQ arbiter
-└── transport/ # Connection, endpoint, CUBIC CC, pacer, probing, resumption
+├── api.rs          # Client, Server, SeamConn, SeamConnWriter
+├── crypto/         # Packet & header protection, anti-replay, key derivation
+├── handshake/      # Noise_XX + ML-KEM768 handshake, cookies
+├── session/        # Stream state, ARQ, flow control, priority scheduling
+├── fec/            # GF(2^8) arithmetic, FEC codec, FEC/ARQ arbiter
+├── transport/      # Connection, endpoint, CUBIC CC, pacer, probing, resumption
+└── tunnel.rs       # SeamMux / SeamStream — AsyncRead + AsyncWrite adapters
 
-benches/ # Criterion benchmarks
-
-text
+benches/            # Criterion benchmarks
+```
 
 ---
 
@@ -144,8 +146,54 @@ cargo test --all-targets
 cargo bench
 ```
 
+### Basic usage
+
+```rust
+use seam_protocol::{api::{Client, Server}, handshake::IdentityKeypair};
+
+// Server side
+let id = IdentityKeypair::generate();
+let mut server = Server::bind("0.0.0.0:4433".parse().unwrap(), id).await?;
+let conn = server.accept().await.unwrap();
+
+// Client side
+let id = IdentityKeypair::generate();
+let mut client = Client::bind("0.0.0.0:0".parse().unwrap(), id).await?;
+// let conn = client.connect(server_addr, &x25519, &kem_pk).await?;
+```
+
+### Mux / stream usage
+
+```rust
+use seam_protocol::tunnel::SeamMux;
+
+// After handshake:
+let mux = SeamMux::new(conn);
+
+// Open a stream (locally initiated)
+let mut stream = mux.open_stream().await;
+
+// Accept a stream from the remote peer
+let mut stream = mux.accept_stream().await.unwrap();
+
+// SeamStream implements AsyncRead + AsyncWrite
+tokio::io::copy(&mut stream, &mut sink).await?;
+```
+
+### Error handling
+
+```rust
+use seam_protocol::SeamError;
+
+match result {
+    Err(SeamError::HandshakeFailed(msg)) => { /* ... */ }
+    Err(SeamError::AuthFailed) => { /* ... */ }
+    _ => {}
+}
+```
+
 ---
 
 <div align="center">
-Built with Rust · North9 Group
+Built with Rust
 </div>

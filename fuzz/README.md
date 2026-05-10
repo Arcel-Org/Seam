@@ -1,4 +1,4 @@
-# apex-protocol fuzz targets
+# seam-protocol fuzz targets
 
 Run with cargo-fuzz:
 ```bash

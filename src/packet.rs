@@ -26,6 +26,8 @@ pub enum PktType {
     Datagram  = 0x08,
     /// Signals the peer to roll traffic keys forward by one epoch.
     KeyUpdate = 0x09,
+    /// Extends the peer's send-side flow-control window. Payload: 8-byte BE u64 new limit.
+    MaxData   = 0x0A,
 }
 
 impl TryFrom<u8> for PktType {
@@ -42,6 +44,7 @@ impl TryFrom<u8> for PktType {
             0x07 => Ok(Self::Close),
             0x08 => Ok(Self::Datagram),
             0x09 => Ok(Self::KeyUpdate),
+            0x0A => Ok(Self::MaxData),
             other => Err(SeamError::InvalidPktType(other)),
         }
     }
@@ -70,6 +73,7 @@ mod tests {
             (0x07, PktType::Close),
             (0x08, PktType::Datagram),
             (0x09, PktType::KeyUpdate),
+            (0x0A, PktType::MaxData),
         ];
         for (raw, expected) in cases {
             assert_eq!(PktType::try_from(raw).unwrap(), expected);

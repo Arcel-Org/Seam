@@ -19,13 +19,31 @@ x25519-dalek = { version = "2", features = ["static_secrets"] }
 pqcrypto-kyber = "0.8"
 pqcrypto-traits = "0.3"
 rand = "0.8"
+libc = "0.2"
 subtle = "2"
 tokio = { version = "1", features = ["full"] }
 tracing = "0.1"
+# CLI binary
+clap = { version = "4", features = ["derive"] }
+indicatif = "0.17"
+zstd = "0.13"
+hex = "0.4"
+anyhow = "1"
+ureq = { version = "2", features = ["json"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+walkdir = "2"
+tempfile = "3"
+flate2 = "1"
+tar = "0.4"
 
 [dev-dependencies]
 proptest = "1"
 criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bin]]
+name = "seam"
+path = "src/bin/seam/main.rs"
 
 [[bench]]
 name = "packet"

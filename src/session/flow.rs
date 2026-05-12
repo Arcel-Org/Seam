@@ -37,6 +37,10 @@ impl FlowWindow {
     pub fn available(&self) -> u64 {
         self.limit.saturating_sub(self.consumed)
     }
+
+    pub fn limit(&self) -> u64 {
+        self.limit
+    }
 }
 
 #[cfg(test)]

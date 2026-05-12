@@ -1,8 +1,7 @@
 use crate::crypto::keys::PacketKeys;
 use ml_kem::{
-    Ciphertext, Decapsulate, DecapsulationKey768, Encapsulate, EncapsulationKey768,
-    KeyExport, Kem, MlKem768, Seed,
-    array::Array,
+    Ciphertext, Decapsulate, DecapsulationKey768, Encapsulate, EncapsulationKey768, Kem, KeyExport,
+    MlKem768, Seed, array::Array,
 };
 use rand::rngs::OsRng;
 use x25519_dalek::{PublicKey as X25519Public, StaticSecret};
@@ -37,7 +36,10 @@ impl IdentityKeypair {
     /// Serialise to bytes with length prefixes.
     /// Format (version 2): version(1) + x25519_sk(32) + kem_sk_len(4) + kem_sk(64) + kem_pk_len(4) + kem_pk(1184)
     pub fn to_bytes(&self) -> Vec<u8> {
-        let seed = self.kem_sk.to_seed().expect("seed always present on generated keys");
+        let seed = self
+            .kem_sk
+            .to_seed()
+            .expect("seed always present on generated keys");
         let kem_sk_bytes: &[u8] = seed.as_ref();
         let kem_pk_bytes_arr = self.kem_pk.to_bytes();
         let kem_pk_bytes: &[u8] = kem_pk_bytes_arr.as_ref();

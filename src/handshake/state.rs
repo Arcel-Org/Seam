@@ -1,3 +1,4 @@
+use crate::handshake::hybrid_keys::{KemPublicKey, KemSecretKey};
 use crate::{
     crypto::keys::PacketKeys,
     error::SeamError,
@@ -6,7 +7,6 @@ use crate::{
         pk_to_bytes,
     },
 };
-use crate::handshake::hybrid_keys::{KemPublicKey, KemSecretKey};
 use snow::Builder;
 
 const NOISE_PATTERN: &str = "Noise_XX_25519_ChaChaPoly_BLAKE2s";

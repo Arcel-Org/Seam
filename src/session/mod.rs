@@ -71,7 +71,10 @@ impl Default for SessionLimits {
     }
 }
 
-const DEFAULT_WINDOW: u64 = 1 << 20; // 1 MiB
+// 256 MiB — large enough that flow control never triggers for normal transfers.
+// TODO: shrink once CC correctly exempts ACK/MaxData packets from bytes_in_flight,
+// so MaxData can reliably replenish the window mid-transfer.
+const DEFAULT_WINDOW: u64 = 256 << 20;
 const MAX_PAYLOAD: usize = 1400;    // conservative MTU
 
 pub struct Session {
@@ -82,8 +85,11 @@ pub struct Session {
     streams: HashMap<StreamId, Stream>,
     next_stream_id: StreamId,
     send_window: FlowWindow,
-    #[allow(dead_code)]
     recv_window: FlowWindow,
+    /// Total application bytes received so far (for recv window accounting).
+    recv_consumed: u64,
+    /// If Some(limit), flush() will emit a MaxData packet with this new limit.
+    pending_max_data: Option<u64>,
     arq: ArqTracker,
     datagrams: DatagramQueue,
     limits: SessionLimits,
@@ -118,6 +124,8 @@ impl Session {
             next_stream_id,
             send_window: FlowWindow::new(DEFAULT_WINDOW),
             recv_window: FlowWindow::new(DEFAULT_WINDOW),
+            recv_consumed: 0,
+            pending_max_data: None,
             datagrams,
             limits,
             ack_ranges: AckRanges::new(),
@@ -273,12 +281,28 @@ impl Session {
             out.truncate(n);
             packets.push(out);
         }
+
+        // Emit a MaxData frame if the receive window needs extending.
+        if let Some(new_limit) = self.pending_max_data.take() {
+            let frame = new_limit.to_be_bytes().to_vec();
+            let mut out = vec![0u8; 32 + frame.len() + 16];
+            let n = self.encoder.encode(PktType::MaxData, &frame, &mut out)?;
+            out.truncate(n);
+            packets.push(out);
+            self.recv_window.update_limit(new_limit);
+        }
+
         Ok(packets)
     }
 
     /// Does the session owe the peer an ACK frame?
     pub fn has_pending_ack(&self) -> bool {
         self.ack_ranges.has_pending_ack()
+    }
+
+    /// Does the session need to send a MaxData window-update to the peer?
+    pub fn has_pending_max_data(&self) -> bool {
+        self.pending_max_data.is_some()
     }
 
     // ── Receiving ────────────────────────────────────────────────────────────
@@ -292,7 +316,7 @@ impl Session {
         // themselves are NOT ack-eliciting (prevents infinite ACK chatter).
         let ack_eliciting = !matches!(
             pkt_type,
-            PktType::Ack | PktType::Chaff | PktType::PathProbe
+            PktType::Ack | PktType::Chaff | PktType::PathProbe | PktType::MaxData
         );
         self.ack_ranges.on_received(pkt_num, ack_eliciting);
 
@@ -303,6 +327,12 @@ impl Session {
             }
             PktType::Ack => {
                 self.handle_ack_frame(payload)?;
+            }
+            PktType::MaxData => {
+                if payload.len() >= 8 {
+                    let new_limit = u64::from_be_bytes(payload[..8].try_into().unwrap());
+                    self.send_window.update_limit(new_limit);
+                }
             }
             PktType::Close => {
                 events.push(SessionEvent::Closed);
@@ -341,6 +371,13 @@ impl Session {
             }
             events.push(SessionEvent::NewStream(stream_id));
         }
+        // Track receive-side consumption and schedule a MaxData when the peer's
+        // send window is 50% consumed, so it doesn't stall waiting for credits.
+        self.recv_consumed += data_len as u64;
+        if self.recv_consumed * 2 > self.recv_window.limit() && self.pending_max_data.is_none() {
+            self.pending_max_data = Some(self.recv_consumed + DEFAULT_WINDOW);
+        }
+
         let stream = self.get_or_create_stream(stream_id);
         stream.receive(offset, data, is_fin)?;
         events.push(SessionEvent::DataAvailable(stream_id));

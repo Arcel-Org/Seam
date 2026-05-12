@@ -21,6 +21,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
+use std::os::unix::io::AsRawFd;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -39,6 +40,14 @@ use crate::{
 
 const MAX_UDP: usize = 65535;
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+
+fn set_socket_buffers(socket: &UdpSocket, size: i32) {
+    let fd = socket.as_raw_fd();
+    unsafe {
+        libc::setsockopt(fd, libc::SOL_SOCKET, libc::SO_RCVBUF, &size as *const i32 as *const libc::c_void, std::mem::size_of::<i32>() as libc::socklen_t);
+        libc::setsockopt(fd, libc::SOL_SOCKET, libc::SO_SNDBUF, &size as *const i32 as *const libc::c_void, std::mem::size_of::<i32>() as libc::socklen_t);
+    }
+}
 
 pub(crate) type SharedConn = Arc<Mutex<Connection>>;
 
@@ -193,10 +202,10 @@ pub struct Client {
 impl Client {
     /// Bind to `local_addr` and prepare to connect.
     pub async fn bind(local_addr: SocketAddr, identity: IdentityKeypair) -> Result<Self, SeamError> {
-        let socket = Arc::new(
-            UdpSocket::bind(local_addr).await
-                .map_err(|e| SeamError::HandshakeFailed(e.to_string()))?,
-        );
+        let socket = UdpSocket::bind(local_addr).await
+            .map_err(|e| SeamError::HandshakeFailed(e.to_string()))?;
+        set_socket_buffers(&socket, 8 * 1024 * 1024);
+        let socket = Arc::new(socket);
         Ok(Self { socket, identity: Arc::new(identity), _recv_task: None })
     }
 
@@ -271,10 +280,10 @@ pub struct Server {
 impl Server {
     /// Bind to `local_addr` and start accepting connections.
     pub async fn bind(local_addr: SocketAddr, identity: IdentityKeypair) -> Result<Self, SeamError> {
-        let socket = Arc::new(
-            UdpSocket::bind(local_addr).await
-                .map_err(|e| SeamError::HandshakeFailed(e.to_string()))?,
-        );
+        let socket = UdpSocket::bind(local_addr).await
+            .map_err(|e| SeamError::HandshakeFailed(e.to_string()))?;
+        set_socket_buffers(&socket, 8 * 1024 * 1024);
+        let socket = Arc::new(socket);
 
         let identity = Arc::new(identity);
 

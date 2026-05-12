@@ -293,6 +293,12 @@ impl Connection {
         for ev in events {
             let _ = self.event_tx.send(ev);
         }
+        // Immediately flush a MaxData window-update if one was queued during
+        // packet processing, so the sender's flow-control window is replenished
+        // without waiting for the application to call tick().
+        if self.session.as_ref().map(|s| s.has_pending_max_data()).unwrap_or(false) {
+            self.flush().await?;
+        }
         Ok(())
     }
 
@@ -313,13 +319,14 @@ impl Connection {
         };
 
         for pkt in packets {
-            let size = pkt.len() as u64;
-            if self.cc.available() < size { break; }
-
             self.socket.send_to(&pkt, self.remote).await
                 .map_err(|e| SeamError::HandshakeFailed(e.to_string()))?;
-            self.cc.on_send(size);
             self.send_counter += 1;
+            // Yield every 8 packets to let the OS deliver data to the receiver's
+            // kernel buffer without overflow. Proper CC pacing will replace this.
+            if self.send_counter % 8 == 0 {
+                tokio::task::yield_now().await;
+            }
 
             if let (Some(k), Some(r)) = (fec_k, fec_r) {
                 let gid = self.fec_group_id;

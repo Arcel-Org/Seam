@@ -23,8 +23,8 @@ jobs:
           PERSONAL_ACCESS_TOKEN: ${{ secrets.CLA_TOKEN }}
         with:
           path-to-signatures: signatures/cla.json
-          path-to-document: https://raw.githubusercontent.com/North9LLC/cla/main/cla.md
+          path-to-document: https://raw.githubusercontent.com/North9-Labs/cla/main/cla.md
           branch: main
           allowlist: bot*,*[bot],dependabot*
-          remote-organization-name: North9LLC
+          remote-organization-name: North9-Labs
           remote-repo-name: cla

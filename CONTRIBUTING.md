@@ -13,7 +13,7 @@ The CLA is managed automatically via [CLA Assistant](https://cla-assistant.io/).
 ## Development
 
 ```sh
-git clone https://github.com/North9LLC/Seam
+git clone https://github.com/North9-Labs/Seam
 cargo test --all-targets
 cargo clippy --all-targets -- -D warnings
 ```
@@ -27,7 +27,7 @@ cargo clippy --all-targets -- -D warnings
 
 ## Security
 
-For security vulnerabilities, open a [private advisory](https://github.com/North9LLC/Seam/security/advisories/new) — not a public issue.
+For security vulnerabilities, open a [private advisory](https://github.com/North9-Labs/Seam/security/advisories/new) — not a public issue.
 
 ## License
 

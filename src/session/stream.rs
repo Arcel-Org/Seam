@@ -35,8 +35,9 @@ pub struct Stream {
 }
 
 impl Stream {
-    /// Default per-stream window: 1 MiB.
-    pub const DEFAULT_WINDOW: u64 = 1 << 20;
+    /// Default per-stream window: 256 MiB.
+    /// TODO: shrink once MAX_STREAM_DATA messages are implemented to extend windows dynamically.
+    pub const DEFAULT_WINDOW: u64 = 256 << 20;
 
     pub fn new(id: StreamId) -> Self {
         Self {

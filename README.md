@@ -6,7 +6,7 @@
 
 UDP · Multi-stream · Built-in FEC · Noise_XX + ML-KEM-768
 
-[![CI](https://github.com/North9LLC/Seam/actions/workflows/ci.yml/badge.svg)](https://github.com/North9LLC/Seam/actions/workflows/ci.yml)
+[![CI](https://github.com/North9-Labs/Seam/actions/workflows/ci.yml/badge.svg)](https://github.com/North9-Labs/Seam/actions/workflows/ci.yml)
 [![License: AGPL v3](https://img.shields.io/badge/license-AGPL%20v3-blue.svg)](LICENSE)
 [![Rust 1.88+](https://img.shields.io/badge/rust-1.88+-orange.svg)](#getting-started)
 
@@ -94,11 +94,31 @@ Priority scheduling overhead: **~2.4%** vs equal-priority.
 
 ---
 
-## Getting Started
+## Install
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/North9-Labs/Seam/main/install.sh | sh
+```
+
+Installs the `seam` CLI to `~/.local/bin`. Set `SEAM_INSTALL_DIR` to override.
+
+### File Transfer
+
+```sh
+# Copy a file or directory to a remote host (bootstraps seam on remote if needed)
+seam cp ./data user@host:/remote/path
+
+# Keep seam up to date
+seam update
+```
+
+---
+
+## Getting Started (library)
 
 ```bash
 # Add to Cargo.toml
-# seam-protocol = { git = "https://github.com/North9LLC/Seam" }
+# seam-protocol = { git = "https://github.com/North9-Labs/Seam" }
 
 cargo build --all-targets
 cargo test --all-targets

@@ -1,0 +1,5 @@
+[target.aarch64-unknown-linux-gnu]
+# pqcrypto-internals 0.2.11 uses -march=armv8.2-a+sha3 which requires gcc ≥ 7.
+# The default cross 0.2.5 image uses Ubuntu 16.04 / gcc 5.4 which rejects it.
+# Use the "main" tag (Ubuntu 20.04 / gcc 9) to get a toolchain that supports it.
+image = "ghcr.io/cross-rs/aarch64-unknown-linux-gnu:main"

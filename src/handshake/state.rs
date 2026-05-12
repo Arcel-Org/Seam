@@ -6,7 +6,7 @@ use crate::{
         pk_to_bytes,
     },
 };
-use pqcrypto_mlkem::mlkem768::PublicKey as KemPublicKey;
+use crate::handshake::hybrid_keys::{KemPublicKey, KemSecretKey};
 use snow::Builder;
 
 const NOISE_PATTERN: &str = "Noise_XX_25519_ChaChaPoly_BLAKE2s";
@@ -121,7 +121,7 @@ impl ServerHandshake {
     /// Msg3: client sends KEM ciphertext; we decapsulate to get the shared secret.
     pub fn read_msg3_and_finish(
         mut self,
-        local_kem_sk: &pqcrypto_mlkem::mlkem768::SecretKey,
+        local_kem_sk: &KemSecretKey,
         msg3: &[u8],
     ) -> Result<HandshakeResult, SeamError> {
         let payload = read_noise(&mut self.noise, msg3)?;

@@ -558,7 +558,7 @@ async fn high_level_client_server_roundtrip() {
 
     let server_id = IdentityKeypair::generate();
     let server_x25519: [u8; 32] = server_id.x25519_public.to_bytes();
-    let server_kem_pk = server_id.kem_pk;
+    let server_kem_pk = server_id.kem_pk.clone();
 
     // Server binds and starts accepting
     let mut server = Server::bind("127.0.0.1:0".parse().unwrap(), server_id)

@@ -355,12 +355,11 @@ impl Session {
             PktType::Ack => {
                 self.handle_ack_frame(payload)?;
             }
-            PktType::MaxData => {
-                if payload.len() >= 8 {
-                    let new_limit = u64::from_be_bytes(payload[..8].try_into().unwrap());
-                    self.send_window.update_limit(new_limit);
-                }
+            PktType::MaxData if payload.len() >= 8 => {
+                let new_limit = u64::from_be_bytes(payload[..8].try_into().unwrap());
+                self.send_window.update_limit(new_limit);
             }
+            PktType::MaxData => {}
             PktType::Close => {
                 events.push(SessionEvent::Closed);
             }

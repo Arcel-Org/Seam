@@ -38,14 +38,22 @@ impl ArqTracker {
     }
 
     /// Record receipt of an ACK for `pkt_num`. Updates RTT estimates.
-    pub fn on_ack(&mut self, pkt_num: u64) -> Option<Duration> {
+    ///
+    /// Returns `Some((rtt, bytes_acked))` on a first-transmission ACK
+    /// (Karn's algorithm: retransmitted packets don't update RTT),
+    /// or `Some((Duration::ZERO, bytes_acked))` for a retransmitted packet
+    /// that is now acknowledged. Returns `None` if the packet number is unknown.
+    pub fn on_ack(&mut self, pkt_num: u64) -> Option<(Duration, usize)> {
         if let Some(pkt) = self.in_flight.remove(&pkt_num) {
+            let bytes = pkt.data.len();
             if pkt.retransmits == 0 {
                 // Only update RTT on first transmission (Karn's algorithm)
                 let rtt = pkt.sent_at.elapsed();
                 self.update_rtt(rtt);
-                return Some(rtt);
+                return Some((rtt, bytes));
             }
+            // Retransmitted packet: still count bytes, but no RTT sample.
+            return Some((Duration::ZERO, bytes));
         }
         None
     }
@@ -120,8 +128,9 @@ mod tests {
         let sent = arq.in_flight.get_mut(&1).unwrap();
         sent.sent_at = Instant::now() - Duration::from_millis(25);
 
-        let rtt = arq.on_ack(1).unwrap();
+        let (rtt, bytes) = arq.on_ack(1).unwrap();
         assert!(rtt >= Duration::from_millis(1));
+        assert_eq!(bytes, b"payload".len());
         assert_eq!(arq.in_flight_count(), 0);
         assert!(arq.srtt() >= Duration::from_millis(1));
         assert!(arq.rto >= Duration::from_millis(200));
@@ -151,7 +160,13 @@ mod tests {
         sent.sent_at = Instant::now() - arq.rto;
 
         let _ = arq.drain_expired();
-        assert_eq!(arq.on_ack(7), None);
+        // After a retransmit, on_ack returns Some with rtt=ZERO (Karn's algorithm),
+        // but still removes from in-flight and reports bytes_acked.
+        let result = arq.on_ack(7);
+        assert!(result.is_some());
+        let (rtt, _bytes) = result.unwrap();
+        assert_eq!(rtt, Duration::ZERO);
+        // SRTT should not have been updated (Karn's algorithm)
         assert_eq!(arq.srtt(), Duration::from_micros(0));
     }
 }

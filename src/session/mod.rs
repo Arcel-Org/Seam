@@ -6,6 +6,7 @@ pub mod rack;
 pub mod stream;
 
 use std::collections::HashMap;
+use std::time::Duration;
 use bytes::Bytes;
 
 use crate::{
@@ -95,6 +96,9 @@ pub struct Session {
     limits: SessionLimits,
     /// Packet numbers received from peer, to be ACKed in range form.
     ack_ranges: AckRanges,
+    /// Accumulated CC feedback from the last ACK frame: (bytes_acked, rtt_sample).
+    /// Consumed by `drain_cc_ack()`.
+    pending_cc_ack: Option<(u64, Duration)>,
 }
 
 impl Session {
@@ -130,6 +134,7 @@ impl Session {
             limits,
             ack_ranges: AckRanges::new(),
             arq: ArqTracker::new(),
+            pending_cc_ack: None,
         }
     }
 
@@ -237,10 +242,11 @@ impl Session {
                 frame.extend_from_slice(&chunk);
 
                 let mut out = vec![0u8; 32 + frame.len() + 16];
+                let pkt_num = self.encoder.peek_next_pkt_num();
                 let n = self.encoder.encode(PktType::Data, &frame, &mut out)?;
                 out.truncate(n);
 
-                self.arq.on_sent(0, bytes::Bytes::from(frame));
+                self.arq.on_sent(pkt_num, bytes::Bytes::from(frame));
                 packets.push(out);
             }
 
@@ -257,9 +263,10 @@ impl Session {
                 frame.extend_from_slice(&fin_offset.to_le_bytes());
 
                 let mut out = vec![0u8; 32 + frame.len() + 16];
+                let pkt_num = self.encoder.peek_next_pkt_num();
                 let n = self.encoder.encode(PktType::Data, &frame, &mut out)?;
                 out.truncate(n);
-                self.arq.on_sent(0, bytes::Bytes::from(frame));
+                self.arq.on_sent(pkt_num, bytes::Bytes::from(frame));
                 packets.push(out);
             }
         }
@@ -392,12 +399,39 @@ impl Session {
             return Ok(());
         };
         // Each (start, end) is inclusive. ACK every packet number in the range.
+        // Accumulate bytes_acked and pick the best (non-zero) RTT sample.
+        let mut total_bytes: u64 = 0;
+        let mut rtt_sample: Option<Duration> = None;
         for (start, end) in ranges {
             for pn in start..=end {
-                self.arq.on_ack(pn);
+                if let Some((rtt, bytes)) = self.arq.on_ack(pn) {
+                    total_bytes += bytes as u64;
+                    // Prefer a genuine RTT sample over a Karn-excluded zero.
+                    if rtt > Duration::ZERO {
+                        rtt_sample = Some(rtt);
+                    } else if rtt_sample.is_none() {
+                        // No real sample yet; keep None so CC gets a real value later.
+                    }
+                }
             }
         }
+        if total_bytes > 0 {
+            // Use best available RTT; fall back to a conservative 100 ms if none.
+            let rtt = rtt_sample.unwrap_or(Duration::from_millis(100));
+            // Merge with any already-pending CC feedback (e.g. multiple ACK frames).
+            self.pending_cc_ack = Some(match self.pending_cc_ack.take() {
+                Some((prev_bytes, prev_rtt)) => (prev_bytes + total_bytes, prev_rtt.min(rtt)),
+                None => (total_bytes, rtt),
+            });
+        }
         Ok(())
+    }
+
+    /// Drain accumulated congestion-control feedback from the last ACK frame(s).
+    /// Returns `Some((bytes_acked, rtt))` if new feedback is available, `None` otherwise.
+    /// The caller (connection layer) should pass these to `cc.on_ack(bytes, rtt)`.
+    pub fn drain_cc_ack(&mut self) -> Option<(u64, Duration)> {
+        self.pending_cc_ack.take()
     }
 
     // ── Read ─────────────────────────────────────────────────────────────────

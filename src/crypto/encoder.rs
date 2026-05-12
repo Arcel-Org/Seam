@@ -17,6 +17,12 @@ impl PacketEncoder {
         Self { keys, session_id, next_pkt_num: AtomicU64::new(0) }
     }
 
+    /// Return the packet number that will be used by the *next* call to `encode`.
+    /// Useful for recording a pkt_num in the ARQ tracker before encoding.
+    pub fn peek_next_pkt_num(&self) -> u64 {
+        self.next_pkt_num.load(Ordering::Relaxed)
+    }
+
     /// Encode a packet into `out`. Returns bytes written.
     /// `out` must be at least `encode_buf_len(plaintext.len())` bytes.
     pub fn encode(&self, pkt_type: PktType, plaintext: &[u8], out: &mut [u8]) -> Result<usize, SeamError> {

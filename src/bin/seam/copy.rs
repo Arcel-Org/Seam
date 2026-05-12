@@ -201,10 +201,6 @@ async fn send_file(
         frame.extend_from_slice(&payload);
         send_frame(conn, ctrl_sid, &frame).await?;
         pb.inc(n as u64);
-        // Brief pause to pace sending at ~10 MB/s so the receiver's kernel
-        // UDP buffer doesn't overflow. TODO: remove once CC on_ack() is wired.
-        let delay_us = (frame.len() as u64 * 100) / 1024; // ~10 MB/s
-        tokio::time::sleep(tokio::time::Duration::from_micros(delay_us)).await;
         // Drive retransmits and flush pending ACKs for received packets.
         let _ = conn.tick().await;
     }

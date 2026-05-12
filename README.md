@@ -2,95 +2,23 @@
 
 # Seam
 
-**Post-quantum encrypted transport protocol — written in Rust.**
+**Post-quantum encrypted file transfer and transport library — written in Rust.**
 
 UDP · Multi-stream · Built-in FEC · Noise_XX + ML-KEM-768
 
 [![CI](https://github.com/North9-Labs/Seam/actions/workflows/ci.yml/badge.svg)](https://github.com/North9-Labs/Seam/actions/workflows/ci.yml)
 [![License: AGPL v3](https://img.shields.io/badge/license-AGPL%20v3-blue.svg)](LICENSE)
-[![Rust 1.88+](https://img.shields.io/badge/rust-1.88+-orange.svg)](#getting-started)
+[![Rust 1.88+](https://img.shields.io/badge/rust-1.88+-orange.svg)](#build-from-source)
 
 </div>
 
 ---
 
-Seam is a user-space transport protocol for applications where TCP or QUIC leave performance on the table. It delivers encrypted, paced UDP with multi-stream multiplexing, forward error correction, and a hybrid post-quantum handshake in a single library.
+```sh
+curl -fsSL https://raw.githubusercontent.com/North9-Labs/Seam/main/install.sh | sh
+```
 
-| Capability | Detail |
-|---|---|
-| Transport | UDP with CUBIC congestion control + token-bucket pacing |
-| Encryption | ChaCha20-Poly1305 packet encryption + header protection |
-| Handshake | Noise_XX + ML-KEM-768 (post-quantum hybrid, 247 µs) |
-| Reliability | ARQ + GF(2⁸) forward error correction |
-| Multiplexing | Priority-scheduled streams (0–7, 0 = highest) |
-
----
-
-## Why Seam
-
-- **No head-of-line blocking.** Streams are scheduled independently — a stalled bulk transfer never delays a control message.
-- **Post-quantum by default.** ML-KEM-768 is baked into the handshake. Harvest-now-decrypt-later attacks can't reach session keys.
-- **FEC at the transport layer.** Packet loss is recovered locally without a round-trip retransmit.
-- **Paced, not bursty.** Token-bucket pacer at `cwnd/srtt` bytes/sec eliminates the burst-driven queue buildup that plagues raw UDP.
-- **DDoS-resistant handshake.** Stateless cookie challenge — no heap allocation until the client proves it can receive at the claimed address.
-
----
-
-## Performance
-
-> Single-core, local measurements. Hardware and compiler dependent.
-
-**568 MiB/s (~4.76 Gbps) encrypted throughput per core at 1400 B MTU. 247 µs full handshake including ML-KEM-768.**
-
-### Packet encode — ChaCha20-Poly1305 + header protection
-
-| Payload | Time | Throughput |
-|---|---:|---:|
-| 64 B | 350 ns | ~303 MiB/s |
-| 256 B | 644 ns | ~455 MiB/s |
-| 512 B | 1.03 µs | ~519 MiB/s |
-| 1400 B | 2.43 µs | **~568 MiB/s** |
-
-### FEC encode/recover — 1400 B symbols
-
-| Config | Encode | Recover 1 loss |
-|---|---:|---:|
-| k=4, r=1 | ~5.5 µs | ~10.4 µs |
-| k=8, r=2 | ~11 µs | ~21 µs |
-| k=10, r=3 | ~16 µs | ~32 µs |
-
-### Handshake — Noise_XX + ML-KEM-768
-
-| Operation | Time |
-|---|---:|
-| `IdentityKeypair::generate` | 17.8 µs |
-| `PacketKeys::derive_from_secret` | 370 ns |
-| `CookieFactory::generate` | 91 ns |
-| `CookieFactory::verify` | 88 ns |
-| **Full handshake (3 messages)** | **247 µs** |
-
-### Session flush throughput
-
-| Payload | 1 stream | 4 streams (equal) | 4 streams (mixed priority) |
-|---|---:|---:|---:|
-| 256 B | 1.76 µs / 139 MiB/s | 3.27 µs | 3.35 µs |
-| 4 KB | 8.4 µs / 462 MiB/s | 9.2 µs | 9.3 µs |
-| 16 KB | 30.5 µs / 513 MiB/s | — | — |
-
-Priority scheduling overhead: **~2.4%** vs equal-priority.
-
----
-
-## Comparison
-
-| | Seam | TCP + TLS 1.3 | QUIC | Raw UDP |
-|---|:---:|:---:|:---:|:---:|
-| HoL blocking | ✅ None | ❌ Full stream | ⚠️ Per-stream | ✅ None |
-| Built-in FEC | ✅ | ❌ | ❌ | ❌ |
-| Stream priorities | ✅ 0–7 native | ❌ | ⚠️ Higher-layer | ❌ |
-| Burst control | ✅ Token-bucket | ⚠️ Kernel CC | ⚠️ Impl-dependent | ❌ |
-| Post-quantum KEM | ✅ ML-KEM-768 | ❌ Varies | ❌ Varies | ❌ |
-| DDoS-resistant HS | ✅ Cookie | ❌ | ✅ | — |
+`seam` is a command-line tool for securely copying files between machines over a post-quantum encrypted UDP transport. The handshake uses Noise_XX + ML-KEM-768 so session keys are safe against harvest-now-decrypt-later attacks.
 
 ---
 
@@ -100,29 +28,110 @@ Priority scheduling overhead: **~2.4%** vs equal-priority.
 curl -fsSL https://raw.githubusercontent.com/North9-Labs/Seam/main/install.sh | sh
 ```
 
-Installs the `seam` CLI to `~/.local/bin`. Set `SEAM_INSTALL_DIR` to override.
-
-### File Transfer
+Installs to `~/.local/bin/seam`. Override the location with `SEAM_INSTALL_DIR`:
 
 ```sh
-# Copy a file or directory to a remote host (bootstraps seam on remote if needed)
-seam cp ./data user@host:/remote/path
+SEAM_INSTALL_DIR=/usr/local/bin curl -fsSL https://raw.githubusercontent.com/North9-Labs/Seam/main/install.sh | sh
+```
 
-# Keep seam up to date
-seam update
+Verify the install:
+
+```sh
+seam --version
 ```
 
 ---
 
-## Getting Started (library)
+## Quick Start
 
-```bash
-# Add to Cargo.toml
-# seam-protocol = { git = "https://github.com/North9-Labs/Seam" }
+```sh
+# Copy a local file to a remote host
+seam cp ./report.pdf user@host:/home/user/report.pdf
 
-cargo build --all-targets
-cargo test --all-targets
+# Copy a directory (compressed by default with zstd)
+seam cp ./dataset/ user@host:/data/dataset
+
+# Skip compression (already-compressed data)
+seam cp --no-compress ./archive.tar.gz user@host:/backups/
+
+# seam bootstraps itself on the remote if it isn't installed yet —
+# no manual setup on the server side required.
+```
+
+`seam cp` does the full job: SSH to the remote, start the receiver, perform the post-quantum handshake, transfer the data, and verify delivery.
+
+---
+
+## Update
+
+```sh
+seam update
+```
+
+Downloads the latest release for your platform and replaces the current binary.
+
+---
+
+## How It Works
+
+`seam cp` opens an SSH connection to your remote host, starts `seam recv` there, then connects back over UDP with a post-quantum encrypted channel. The file transfer runs over that direct UDP path — bypassing the SSH forwarding overhead for bulk data.
+
+The transport layer provides:
+
+- **Noise_XX + ML-KEM-768 handshake** — hybrid classical/post-quantum key exchange completes in ~247 µs
+- **ChaCha20-Poly1305** packet encryption with header protection
+- **ARQ + GF(2⁸) forward error correction** — packet loss recovered locally without a round-trip
+- **Multi-stream multiplexing** — control and data streams are independent, no head-of-line blocking
+- **DDoS-resistant handshake** — stateless cookie challenge before any server state is allocated
+
+> **Honest status:** Transfers are currently rate-limited to ~10 MB/s while congestion control on_ack() feedback is being wired end-to-end. On high-latency WAN links the UDP transport already reduces round-trip overhead compared to TCP. The rate limit will be removed once CUBIC CC is fully integrated.
+
+---
+
+## Security
+
+- All packets are encrypted with ChaCha20-Poly1305; the header (session ID, packet number) is additionally protected against traffic analysis.
+- The handshake is Noise_XX augmented with ML-KEM-768 (NIST post-quantum standard). Even if classical elliptic-curve cryptography is broken in the future, recorded traffic cannot be decrypted.
+- Anti-replay protection rejects duplicate or out-of-window packet numbers.
+- The server allocates no per-client state until the client echoes a valid BLAKE3 cookie tied to its IP address, preventing amplification attacks.
+
+Seam is pre-1.0 software. The cryptographic design is sound, but the protocol has not undergone a third-party audit. Do not use it where your threat model requires audited implementations.
+
+---
+
+## Build from Source
+
+```sh
+# Prerequisites: Rust 1.88+
+git clone https://github.com/North9-Labs/Seam
+cd Seam
+
+cargo build --release --bin seam
+
+# The binary is at:
+./target/release/seam --version
+```
+
+Run the test suite:
+
+```sh
+cargo test
+```
+
+Run benchmarks:
+
+```sh
 cargo bench
+```
+
+---
+
+## Library Usage
+
+Add to `Cargo.toml`:
+
+```toml
+seam-protocol = { git = "https://github.com/North9-Labs/Seam" }
 ```
 
 ### Client / Server
@@ -141,22 +150,40 @@ let mut client = Client::bind("0.0.0.0:0".parse()?, id).await?;
 let conn = client.connect(server_addr, &server_x25519, &server_kem_pk).await?;
 ```
 
-### Multiplexed streams
+### Multiplexed streams (AsyncRead + AsyncWrite)
 
 ```rust
 use seam_protocol::tunnel::SeamMux;
 
 let mux = SeamMux::new(conn);
 
-// Locally-initiated stream
-let mut stream = mux.open_stream().await;
-
-// Accept a remote-initiated stream
-let mut stream = mux.accept_stream().await.unwrap();
+let mut stream = mux.open_stream().await;          // locally-initiated
+let mut stream = mux.accept_stream().await.unwrap(); // remote-initiated
 
 // SeamStream implements AsyncRead + AsyncWrite + Unpin
 tokio::io::copy_bidirectional(&mut stream, &mut other).await?;
 ```
+
+---
+
+## Performance
+
+> Single-core, loopback. Hardware and compiler dependent.
+
+**568 MiB/s (~4.76 Gbps) encrypted throughput per core at 1400 B MTU. 247 µs full handshake including ML-KEM-768.**
+
+| Payload | Time | Throughput |
+|---|---:|---:|
+| 64 B | 350 ns | ~303 MiB/s |
+| 256 B | 644 ns | ~455 MiB/s |
+| 512 B | 1.03 µs | ~519 MiB/s |
+| 1400 B | 2.43 µs | **~568 MiB/s** |
+
+| Handshake operation | Time |
+|---|---:|
+| `IdentityKeypair::generate` | 17.8 µs |
+| `PacketKeys::derive_from_secret` | 370 ns |
+| Full handshake (3 messages, Noise_XX + ML-KEM-768) | **247 µs** |
 
 ---
 

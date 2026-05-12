@@ -293,6 +293,10 @@ impl Connection {
         for ev in events {
             let _ = self.event_tx.send(ev);
         }
+        // Feed ACK feedback into the congestion controller.
+        if let Some((bytes, rtt)) = self.session.as_mut().and_then(|s| s.drain_cc_ack()) {
+            self.cc.on_ack(bytes, rtt);
+        }
         // Immediately flush a MaxData window-update if one was queued during
         // packet processing, so the sender's flow-control window is replenished
         // without waiting for the application to call tick().
@@ -319,14 +323,17 @@ impl Connection {
         };
 
         for pkt in packets {
+            let size = pkt.len() as u64;
+            // Honour the congestion window: if there is no room, stop sending.
+            // ACK/MaxData packets bypass this check (they are not data) but they
+            // are small enough that the error in bytes_in_flight is negligible.
+            if self.cc.available() < size {
+                break;
+            }
             self.socket.send_to(&pkt, self.remote).await
                 .map_err(|e| SeamError::HandshakeFailed(e.to_string()))?;
+            self.cc.on_send(size);
             self.send_counter += 1;
-            // Yield every 8 packets to let the OS deliver data to the receiver's
-            // kernel buffer without overflow. Proper CC pacing will replace this.
-            if self.send_counter % 8 == 0 {
-                tokio::task::yield_now().await;
-            }
 
             if let (Some(k), Some(r)) = (fec_k, fec_r) {
                 let gid = self.fec_group_id;

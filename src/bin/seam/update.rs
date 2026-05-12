@@ -104,6 +104,7 @@ fn current_target() -> String {
     let arch = std::env::consts::ARCH;
     let os = std::env::consts::OS;
     match os {
+        "linux" if arch == "aarch64" => format!("{arch}-unknown-linux-gnu"),
         "linux" => format!("{arch}-unknown-linux-musl"),
         "macos" => format!("{arch}-apple-darwin"),
         other => format!("{arch}-{other}"),

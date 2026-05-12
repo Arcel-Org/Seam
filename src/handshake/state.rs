@@ -126,14 +126,9 @@ impl ServerHandshake {
     ) -> Result<HandshakeResult, SeamError> {
         let payload = read_noise(&mut self.noise, msg3)?;
 
-        let kem_shared = if payload.len() >= 2 {
-            match extract_prefix(&payload) {
-                Ok(ct_bytes) => kem_decapsulate(local_kem_sk, ct_bytes).unwrap_or([0u8; 32]),
-                Err(_) => [0u8; 32],
-            }
-        } else {
-            [0u8; 32]
-        };
+        let ct_bytes = extract_prefix(&payload)?;
+        let kem_shared = kem_decapsulate(local_kem_sk, ct_bytes)
+            .ok_or_else(|| SeamError::HandshakeFailed("KEM decapsulation failed".into()))?;
 
         let hash = self.noise.get_handshake_hash().to_vec();
         let peer_static: [u8; 32] = self

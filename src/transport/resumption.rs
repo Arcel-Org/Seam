@@ -1,4 +1,5 @@
 use crate::{crypto::keys::PacketKeys, error::SeamError};
+use zeroize::{Zeroize, ZeroizeOnDrop};
 /// 0-RTT session resumption via encrypted session tickets.
 ///
 /// ⚠️  **WEAKER FORWARD SECRECY**: Session tickets store the derived traffic
@@ -17,7 +18,7 @@ const TICKET_TTL_SECS: u64 = 24 * 3600; // 24-hour ticket lifetime
 pub const WEAKER_FS_WARNING: &str = "WARNING: session tickets weaken forward secrecy — \
      if the server ticket key leaks, past 0-RTT sessions can be decrypted.";
 
-#[derive(Clone)]
+#[derive(Clone, Zeroize, ZeroizeOnDrop)]
 pub struct TicketKey {
     key: [u8; 32],
 }
@@ -75,7 +76,7 @@ impl TicketKey {
         let keys = PacketKeys::from_bytes(&ct[8..84]).ok_or(SeamError::AuthFailed)?;
         let expiry = u64::from_le_bytes(ct[84..92].try_into().map_err(|_| SeamError::AuthFailed)?);
 
-        if unix_now() > expiry {
+        if unix_now() >= expiry {
             return Err(SeamError::HandshakeFailed("ticket expired".into()));
         }
         Ok((session_id, keys))
@@ -83,7 +84,7 @@ impl TicketKey {
 }
 
 /// In-memory representation of a redeemed ticket (for the client side).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Zeroize, ZeroizeOnDrop)]
 pub struct SessionTicket {
     pub session_id: u64,
     pub keys: PacketKeys,

@@ -29,12 +29,13 @@ impl BufferPool {
     /// Acquire a zeroed-length buffer with at least `buf_capacity` capacity.
     pub fn acquire(&self) -> Vec<u8> {
         if let Ok(mut pool) = self.inner.lock()
-            && let Some(mut buf) = pool.pop() {
-                buf.clear();
-                if buf.capacity() >= self.buf_capacity {
-                    return buf;
-                }
+            && let Some(mut buf) = pool.pop()
+        {
+            buf.clear();
+            if buf.capacity() >= self.buf_capacity {
+                return buf;
             }
+        }
         Vec::with_capacity(self.buf_capacity)
     }
 
@@ -44,9 +45,10 @@ impl BufferPool {
             return;
         }
         if let Ok(mut pool) = self.inner.lock()
-            && pool.len() < self.max_pool_size {
-                pool.push(buf);
-            }
+            && pool.len() < self.max_pool_size
+        {
+            pool.push(buf);
+        }
     }
 
     pub fn len(&self) -> usize {

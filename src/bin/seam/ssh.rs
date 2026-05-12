@@ -97,13 +97,13 @@ impl RemoteInfo {
         Ok(dest.to_string())
     }
 
-    /// Start `seam recv` on remote via SSH.
+    /// Start any seam subcommand on remote via SSH.
     ///
     /// Returns the SEAM connection-info line AND the live SSH child process.
-    /// The caller MUST keep `Child` alive for the duration of the transfer —
-    /// dropping it kills the SSH session and the remote receiver.
-    pub fn start_receiver(&self, seam_bin: &str, dest: &str) -> Result<(String, Child)> {
-        let cmd = format!("{seam_bin} recv {dest} --port 0 --once 2>/dev/null");
+    /// The caller MUST keep `Child` alive for the duration of the session —
+    /// dropping it kills the SSH session and the remote worker.
+    pub fn start_remote_seam(&self, seam_bin: &str, subcmd: &str) -> Result<(String, Child)> {
+        let cmd = format!("{seam_bin} {subcmd} 2>/dev/null");
 
         let mut ssh_args = self.ssh_base();
         ssh_args.push(cmd);
@@ -126,9 +126,18 @@ impl RemoteInfo {
         }
 
         bail!(
-            "receiver on {} exited without printing SEAM line",
+            "remote seam on {} exited without printing SEAM line",
             self.target()
         );
+    }
+
+    /// Start `seam recv` on remote via SSH.
+    ///
+    /// Returns the SEAM connection-info line AND the live SSH child process.
+    /// The caller MUST keep `Child` alive for the duration of the transfer —
+    /// dropping it kills the SSH session and the remote receiver.
+    pub fn start_receiver(&self, seam_bin: &str, dest: &str) -> Result<(String, Child)> {
+        self.start_remote_seam(seam_bin, &format!("recv {} --port 0 --once", dest))
     }
 }
 

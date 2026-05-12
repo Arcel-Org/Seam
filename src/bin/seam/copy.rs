@@ -1,14 +1,10 @@
-use anyhow::{Context, Result, bail};
+use anyhow::{Result, bail};
 use clap::Args;
 use indicatif::{ProgressBar, ProgressStyle};
-use seam_protocol::{
-    api::Client,
-    handshake::{IdentityKeypair, pk_from_bytes},
-};
-use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
 use crate::{
+    connect,
     proto::{self, COMPRESS_NONE, COMPRESS_ZSTD, read_frame, send_frame},
     ssh,
 };
@@ -71,24 +67,12 @@ pub async fn run(args: CopyArgs) -> Result<()> {
 
     // ── Parse SEAM line ───────────────────────────────────────────────────────
 
-    let (port, x25519_bytes, kem_pk) = parse_ready(&ready_line)?;
-
-    let server_addr: SocketAddr = format!("{}:{}", host, port)
-        .parse()
-        .context("invalid server address")?;
+    let (port, x25519_bytes, kem_pk) = connect::parse_seam_line(&ready_line)?;
 
     // ── Connect via Seam (post-quantum UDP handshake) ─────────────────────────
 
-    let id = IdentityKeypair::generate();
-    let mut client = Client::bind("0.0.0.0:0".parse()?, id)
-        .await
-        .map_err(|e| anyhow::anyhow!("bind: {e}"))?;
-
-    eprintln!("connecting to {}…", server_addr);
-    let mut conn = client
-        .connect(server_addr, &x25519_bytes, &kem_pk)
-        .await
-        .map_err(|e| anyhow::anyhow!("connect: {e}"))?;
+    eprintln!("connecting to {}:{}…", host, port);
+    let mut conn = connect::dial(&host, port, x25519_bytes, kem_pk).await?;
     eprintln!("connected — post-quantum handshake complete");
 
     // ── Protocol ──────────────────────────────────────────────────────────────
@@ -216,34 +200,4 @@ async fn send_file(
         let _ = conn.tick().await;
     }
     Ok(())
-}
-
-fn parse_ready(line: &str) -> Result<(u16, [u8; 32], pqcrypto_kyber::kyber768::PublicKey)> {
-    let mut port = None;
-    let mut x25519 = None;
-    let mut kem = None;
-
-    for part in line.split_whitespace().skip(1) {
-        if let Some(v) = part.strip_prefix("PORT=") {
-            port = Some(v.parse::<u16>().context("bad PORT")?);
-        } else if let Some(v) = part.strip_prefix("X25519=") {
-            let bytes = hex::decode(v).context("bad X25519 hex")?;
-            x25519 = Some(
-                bytes
-                    .try_into()
-                    .map_err(|_| anyhow::anyhow!("X25519 must be 32 bytes"))?,
-            );
-        } else if let Some(v) = part.strip_prefix("KEM=") {
-            let bytes = hex::decode(v).context("bad KEM hex")?;
-            kem = Some(
-                pk_from_bytes(&bytes).ok_or_else(|| anyhow::anyhow!("invalid KEM public key"))?,
-            );
-        }
-    }
-
-    Ok((
-        port.ok_or_else(|| anyhow::anyhow!("missing PORT in SEAM line"))?,
-        x25519.ok_or_else(|| anyhow::anyhow!("missing X25519 in SEAM line"))?,
-        kem.ok_or_else(|| anyhow::anyhow!("missing KEM in SEAM line"))?,
-    ))
 }

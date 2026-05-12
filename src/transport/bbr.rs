@@ -168,10 +168,11 @@ impl Bbr {
     fn maybe_exit_probe_rtt(&mut self) {
         if self.state == BbrState::ProbeRTT
             && let Some(done) = self.probe_rtt_done_stamp
-                && Instant::now() >= done {
-                    self.rtprop_stamp = Instant::now();
-                    self.enter_probe_bw();
-                }
+            && Instant::now() >= done
+        {
+            self.rtprop_stamp = Instant::now();
+            self.enter_probe_bw();
+        }
     }
 }
 

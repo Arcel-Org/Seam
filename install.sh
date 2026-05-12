@@ -48,7 +48,9 @@ main() {
     trap 'rm -rf "$TMPDIR"' EXIT
 
     echo "downloading seam ${LATEST} for ${TARGET}…"
-    curl -fsSL --progress-bar "$DOWNLOAD_URL" -o "${TMPDIR}/${ASSET}"
+    # Force progress output to /dev/tty so it's visible even when piped through sh
+    curl -fL --progress-bar "$DOWNLOAD_URL" -o "${TMPDIR}/${ASSET}" 2>/dev/tty || \
+      curl -fL "$DOWNLOAD_URL" -o "${TMPDIR}/${ASSET}"
     curl -fsSL "$CHECKSUM_URL" -o "${TMPDIR}/checksums.sha256"
 
     # Verify checksum

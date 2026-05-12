@@ -100,7 +100,10 @@ impl FecArbiter {
         let changed = !matches!(
             (&self.mode, &new_mode),
             (ArbiterMode::PureArq, ArbiterMode::PureArq)
-                | (ArbiterMode::HybridFecArq { .. }, ArbiterMode::HybridFecArq { .. })
+                | (
+                    ArbiterMode::HybridFecArq { .. },
+                    ArbiterMode::HybridFecArq { .. }
+                )
                 | (ArbiterMode::PureFec { .. }, ArbiterMode::PureFec { .. })
         );
 

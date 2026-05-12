@@ -146,7 +146,7 @@ pub async fn run_recv(args: LsRecvArgs) -> Result<()> {
         frame.extend_from_slice(&(name_bytes.len() as u16).to_be_bytes());
         frame.extend_from_slice(name_bytes);
         frame.extend_from_slice(&meta.len().to_be_bytes());
-        frame.extend_from_slice(&meta.permissions().mode().to_be_bytes());
+        frame.extend_from_slice(&file_mode(&meta).to_be_bytes());
         proto::send_frame(&conn, ctrl_sid, &frame).await?;
     }
 

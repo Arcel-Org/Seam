@@ -52,6 +52,11 @@ jobs:
 
       - name: Build (zigbuild)
         if: matrix.use_zigbuild
+        env:
+          # Disable SHA3 hardware-acceleration in pqcrypto-mlkem's C build so the
+          # zig musl linker doesn't choke on missing aarch64 crypto extension symbols.
+          CFLAGS: "-O2"
+          CXXFLAGS: "-O2"
         run: cargo zigbuild --release --bin seam --target ${{ matrix.target }}
 
       - name: Build (native)

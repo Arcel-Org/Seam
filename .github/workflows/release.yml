@@ -19,18 +19,23 @@ jobs:
           - target: x86_64-unknown-linux-musl
             os: ubuntu-latest
             use_zigbuild: true
+            use_cross: false
           - target: aarch64-unknown-linux-musl
             os: ubuntu-latest
-            use_zigbuild: true
+            use_zigbuild: false
+            use_cross: true
           - target: x86_64-apple-darwin
             os: macos-latest
             use_zigbuild: false
+            use_cross: false
           - target: aarch64-apple-darwin
             os: macos-latest
             use_zigbuild: false
+            use_cross: false
           - target: x86_64-pc-windows-msvc
             os: windows-latest
             use_zigbuild: false
+            use_cross: false
 
     steps:
       - uses: actions/checkout@v4
@@ -50,17 +55,20 @@ jobs:
         if: matrix.use_zigbuild
         run: cargo install cargo-zigbuild --locked
 
+      - name: Install cross
+        if: matrix.use_cross
+        run: cargo install cross --locked
+
       - name: Build (zigbuild)
         if: matrix.use_zigbuild
-        env:
-          # Disable SHA3 hardware-acceleration in pqcrypto-mlkem's C build so the
-          # zig musl linker doesn't choke on missing aarch64 crypto extension symbols.
-          CFLAGS: "-O2"
-          CXXFLAGS: "-O2"
         run: cargo zigbuild --release --bin seam --target ${{ matrix.target }}
 
+      - name: Build (cross)
+        if: matrix.use_cross
+        run: cross build --release --bin seam --target ${{ matrix.target }}
+
       - name: Build (native)
-        if: '!matrix.use_zigbuild'
+        if: '!matrix.use_zigbuild && !matrix.use_cross'
         run: cargo build --release --bin seam --target ${{ matrix.target }}
 
       - name: Package tarball

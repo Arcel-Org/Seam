@@ -108,7 +108,7 @@ impl Connection {
         let mut conn = Self::new_base(socket, remote, ConnPhase::ClientWaitChallenge, tx);
         conn.client_hs = Some(client_hs);
         // Stash server KEM PK so we can use it in write_msg1 when the challenge arrives
-        conn._server_kem_pk = Some(server_kem_pk.clone());
+        conn._server_kem_pk = Some(*server_kem_pk);
         Ok((conn, rx))
     }
 
@@ -185,7 +185,7 @@ impl Connection {
 
     // ── Ingress ──────────────────────────────────────────────────────────────
 
-    pub async fn on_packet(&mut self, buf: &mut Vec<u8>) -> Result<(), SeamError> {
+    pub async fn on_packet(&mut self, buf: &mut [u8]) -> Result<(), SeamError> {
         if buf.is_empty() {
             return Ok(());
         }
@@ -317,7 +317,7 @@ impl Connection {
         Ok(())
     }
 
-    async fn on_data_packet(&mut self, buf: &mut Vec<u8>) -> Result<(), SeamError> {
+    async fn on_data_packet(&mut self, buf: &mut [u8]) -> Result<(), SeamError> {
         let session = self
             .session
             .as_mut()

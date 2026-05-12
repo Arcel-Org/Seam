@@ -593,7 +593,7 @@ mod tests {
         // with even ID looks like the server itself initiated it, not the client.
         let sid2 = server.push_stream(); // allocates stream 2 on server side
         server.send(sid2, b"bad frame").unwrap();
-        let bad_pkts = server.flush().unwrap();
+        let _bad_pkts = server.flush().unwrap();
 
         // Send that back to the server itself — server receiving its own even-ID stream
         // as if it's new (it already knows about stream 2, so it won't trigger the check).

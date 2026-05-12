@@ -104,8 +104,8 @@ fn bench_fec_recover_1_loss(c: &mut Criterion) {
                 b.iter(|| {
                     let mut dec = FecDecoder::new();
                     // Add all sources except index 0
-                    for i in 1..k as usize {
-                        dec.add_source(0, i as u8, k, r, &sources[i]);
+                    for (i, src) in sources.iter().enumerate().skip(1) {
+                        dec.add_source(0, i as u8, k, r, src);
                     }
                     // Recover using first repair
                     dec.add_repair(&repairs[0])

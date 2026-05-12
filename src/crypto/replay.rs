@@ -30,12 +30,12 @@ impl ReplayWindow {
                 let word_shift = (slide / 64) as usize;
                 let bit_shift = (slide % 64) as u32;
                 let mut new_bitmap = [0u64; 16];
-                for i in 0..16 {
+                for (i, slot) in new_bitmap.iter_mut().enumerate() {
                     let src = i + word_shift;
                     if src < 16 {
-                        new_bitmap[i] = self.bitmap[src] >> bit_shift;
+                        *slot = self.bitmap[src] >> bit_shift;
                         if bit_shift > 0 && src + 1 < 16 {
-                            new_bitmap[i] |= self.bitmap[src + 1] << (64 - bit_shift);
+                            *slot |= self.bitmap[src + 1] << (64 - bit_shift);
                         }
                     }
                 }

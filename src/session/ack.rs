@@ -19,6 +19,8 @@
 use std::collections::BTreeSet;
 use std::time::Instant;
 
+pub type AckFrame = (u64, u64, Vec<(u64, u64)>);
+
 pub struct AckRanges {
     /// Set of received packet numbers not yet ACKed on the wire.
     received: BTreeSet<u64>,
@@ -131,7 +133,7 @@ impl Default for AckRanges {
 }
 
 /// Parse an ACK frame. Returns a vector of inclusive (start, end) packet-number ranges.
-pub fn parse_ack_frame(frame: &[u8]) -> Option<(u64, u64, Vec<(u64, u64)>)> {
+pub fn parse_ack_frame(frame: &[u8]) -> Option<AckFrame> {
     if frame.len() < 8 + 8 + 2 + 8 {
         return None;
     }

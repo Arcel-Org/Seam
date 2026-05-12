@@ -216,11 +216,10 @@ impl CongestionControl for Aimd {
 
     fn on_loss(&mut self) {
         let now = Instant::now();
-        if let Some(last) = self.last_loss {
-            if now.duration_since(last) < Duration::from_millis(200) {
+        if let Some(last) = self.last_loss
+            && now.duration_since(last) < Duration::from_millis(200) {
                 return;
             }
-        }
         self.last_loss = Some(now);
         self.ssthresh = (self.cwnd / 2).max(2 * MSS);
         self.cwnd = self.ssthresh;

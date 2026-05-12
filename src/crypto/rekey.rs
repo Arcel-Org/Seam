@@ -77,7 +77,7 @@ mod tests {
     fn initial_epoch_is_zero() {
         let k = KeySchedule::new([0x42u8; 32]);
         assert_eq!(k.epoch, 0);
-        assert_eq!(k.key_phase(), false);
+        assert!(!k.key_phase());
     }
 
     #[test]
@@ -86,7 +86,7 @@ mod tests {
         let enc_key_before = k.current.enc_key;
         k.rotate();
         assert_eq!(k.epoch, 1);
-        assert_eq!(k.key_phase(), true);
+        assert!(k.key_phase());
         assert_ne!(
             k.current.enc_key, enc_key_before,
             "keys must differ after rotation"
@@ -109,11 +109,11 @@ mod tests {
     #[test]
     fn key_phase_toggles_each_rotation() {
         let mut k = KeySchedule::new([0x01u8; 32]);
-        assert_eq!(k.key_phase(), false);
+        assert!(!k.key_phase());
         k.rotate();
-        assert_eq!(k.key_phase(), true);
+        assert!(k.key_phase());
         k.rotate();
-        assert_eq!(k.key_phase(), false);
+        assert!(!k.key_phase());
     }
 
     #[test]

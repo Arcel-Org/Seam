@@ -188,7 +188,7 @@ impl Stream {
 
     pub fn is_recv_finished(&self) -> bool {
         self.fin_received
-            .map_or(false, |fin_off| self.recv_offset >= fin_off)
+            .is_some_and(|fin_off| self.recv_offset >= fin_off)
     }
 
     pub fn is_send_finished(&self) -> bool {

@@ -193,7 +193,7 @@ impl GroupState {
 
         let k = self.k as usize;
         let r = self.r;
-        let len = self.padded_len;
+        let _len = self.padded_len;
 
         let missing: Vec<u8> = (0..self.k)
             .filter(|i| !self.sources.contains_key(i))
@@ -237,7 +237,7 @@ impl GroupState {
             }
         }
 
-        if !gauss_rhs(&mut mat, &mut rhs, k, len) {
+        if !gauss_rhs(&mut mat, &mut rhs, k) {
             return None;
         }
 
@@ -253,7 +253,7 @@ impl GroupState {
 }
 
 /// Gaussian elimination over GF(2^8). Transforms mat → I, applying same ops to rhs.
-fn gauss_rhs(mat: &mut Vec<Vec<u8>>, rhs: &mut Vec<Vec<u8>>, k: usize, rhs_len: usize) -> bool {
+fn gauss_rhs(mat: &mut [Vec<u8>], rhs: &mut [Vec<u8>], k: usize) -> bool {
     for col in 0..k {
         let pivot = (col..k).find(|&r| mat[r][col] != 0);
         let Some(pivot) = pivot else { return false };
@@ -261,11 +261,11 @@ fn gauss_rhs(mat: &mut Vec<Vec<u8>>, rhs: &mut Vec<Vec<u8>>, k: usize, rhs_len: 
         rhs.swap(col, pivot);
 
         let piv_inv = gf::inv(mat[col][col]);
-        for j in 0..k {
-            mat[col][j] = gf::mul(mat[col][j], piv_inv);
+        for v in mat[col].iter_mut() {
+            *v = gf::mul(*v, piv_inv);
         }
-        for j in 0..rhs_len {
-            rhs[col][j] = gf::mul(rhs[col][j], piv_inv);
+        for v in rhs[col].iter_mut() {
+            *v = gf::mul(*v, piv_inv);
         }
 
         for r in 0..k {
@@ -276,9 +276,9 @@ fn gauss_rhs(mat: &mut Vec<Vec<u8>>, rhs: &mut Vec<Vec<u8>>, k: usize, rhs_len: 
             if factor == 0 {
                 continue;
             }
-            for j in 0..k {
-                let v = gf::mul(factor, mat[col][j]);
-                mat[r][j] ^= v;
+            let pivot_row: Vec<u8> = mat[col].to_vec();
+            for (dst, &src) in mat[r].iter_mut().zip(pivot_row.iter()) {
+                *dst ^= gf::mul(factor, src);
             }
             let row_c = rhs[col].clone();
             gf::mul_add_slice(&mut rhs[r], &row_c, factor);

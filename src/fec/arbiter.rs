@@ -5,7 +5,6 @@
 /// are sent alongside data so the receiver reconstructs without a
 /// retransmission RTT.
 /// Above 15% we go pure FEC because ARQ retransmits are hopeless.
-
 const THRESHOLD_LOW: f32 = 0.01; // 1%
 const THRESHOLD_HIGH: f32 = 0.15; // 15%
 
@@ -98,12 +97,12 @@ impl FecArbiter {
         };
 
         // Hysteresis: only switch if mode class changes to avoid rapid oscillation
-        let changed = match (&self.mode, &new_mode) {
-            (ArbiterMode::PureArq, ArbiterMode::PureArq) => false,
-            (ArbiterMode::HybridFecArq { .. }, ArbiterMode::HybridFecArq { .. }) => false,
-            (ArbiterMode::PureFec { .. }, ArbiterMode::PureFec { .. }) => false,
-            _ => true,
-        };
+        let changed = !matches!(
+            (&self.mode, &new_mode),
+            (ArbiterMode::PureArq, ArbiterMode::PureArq)
+                | (ArbiterMode::HybridFecArq { .. }, ArbiterMode::HybridFecArq { .. })
+                | (ArbiterMode::PureFec { .. }, ArbiterMode::PureFec { .. })
+        );
 
         if changed {
             self.mode = new_mode;

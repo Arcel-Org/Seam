@@ -94,7 +94,7 @@ impl ChaffScheduler {
         }
         self.lcg = self.lcg.wrapping_mul(6364136223846793005).wrapping_add(1);
         // Jitter ≤ 5ms — small enough not to hurt latency, large enough to blur timing
-        let jitter_us = (self.lcg >> 32) as u64 % 5_000;
+        let jitter_us = (self.lcg >> 32) % 5_000;
         Duration::from_micros(jitter_us)
     }
 }

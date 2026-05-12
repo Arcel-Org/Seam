@@ -1,7 +1,6 @@
 /// GF(2^8) arithmetic using primitive polynomial x^8 + x^4 + x^3 + x^2 + 1.
 ///
 /// EXP/LOG tables give O(1) multiply/divide. Tables are computed at compile time.
-
 const POLY: u16 = 0x11d;
 
 const fn build_tables() -> ([u8; 512], [u8; 256]) {
@@ -150,7 +149,7 @@ pub fn mul_add_slice(dst: &mut [u8], src: &[u8], scalar: u8) {
 
 /// Invert a k×k matrix over GF(2^8) in place (Gaussian elimination).
 /// Returns false if the matrix is singular.
-pub fn invert_matrix(mat: &mut Vec<Vec<u8>>, k: usize) -> bool {
+pub fn invert_matrix(mat: &mut [Vec<u8>], k: usize) -> bool {
     // Augment with identity
     let mut aug: Vec<Vec<u8>> = (0..k)
         .map(|i| {
@@ -168,10 +167,9 @@ pub fn invert_matrix(mat: &mut Vec<Vec<u8>>, k: usize) -> bool {
         aug.swap(col, pivot);
 
         let pivot_inv = inv(aug[col][col]);
-        let row_len = aug[col].len();
         // Scale pivot row
-        for j in 0..row_len {
-            aug[col][j] = mul(aug[col][j], pivot_inv);
+        for v in aug[col].iter_mut() {
+            *v = mul(*v, pivot_inv);
         }
         // Eliminate column
         for r in 0..k {
@@ -183,8 +181,8 @@ pub fn invert_matrix(mat: &mut Vec<Vec<u8>>, k: usize) -> bool {
                 continue;
             }
             let pivot_row = aug[col].clone();
-            for j in 0..row_len {
-                aug[r][j] ^= mul(factor, pivot_row[j]);
+            for (dst, &src) in aug[r].iter_mut().zip(pivot_row.iter()) {
+                *dst ^= mul(factor, src);
             }
         }
     }

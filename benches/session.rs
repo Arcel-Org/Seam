@@ -2,7 +2,7 @@ use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_m
 use seam_protocol::session::rack::RackTracker;
 use seam_protocol::session::{
     Session,
-    stream::{PRIORITY_DEFAULT, PRIORITY_HIGH, PRIORITY_LOW},
+    stream::{PRIORITY_HIGH, PRIORITY_LOW},
 };
 use seam_protocol::transport::bbr::Bbr;
 use seam_protocol::transport::cc::{CongestionControl, Cubic};

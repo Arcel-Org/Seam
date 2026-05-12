@@ -77,7 +77,7 @@ impl Endpoint {
         &self,
         remote: SocketAddr,
         server_x25519: &[u8; 32],
-        server_kem_pk: &pqcrypto_mlkem::mlkem768::PublicKey,
+        server_kem_pk: &crate::handshake::hybrid_keys::KemPublicKey,
     ) -> Result<(SharedConn, mpsc::UnboundedReceiver<SessionEvent>), SeamError> {
         let (conn, rx) = Connection::connect(
             self.socket.clone(),

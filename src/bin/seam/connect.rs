@@ -13,7 +13,7 @@ pub fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
-pub fn parse_seam_line(line: &str) -> Result<(u16, [u8; 32], pqcrypto_mlkem::mlkem768::PublicKey)> {
+pub fn parse_seam_line(line: &str) -> Result<(u16, [u8; 32], seam_protocol::handshake::hybrid_keys::KemPublicKey)> {
     let mut port = None;
     let mut x25519 = None;
     let mut kem = None;
@@ -54,7 +54,7 @@ pub async fn dial(
     host: &str,
     port: u16,
     x25519: [u8; 32],
-    kem_pk: pqcrypto_mlkem::mlkem768::PublicKey,
+    kem_pk: seam_protocol::handshake::hybrid_keys::KemPublicKey,
 ) -> Result<SeamConn> {
     let server_addr: SocketAddr = format!("{}:{}", host, port)
         .parse()

@@ -275,7 +275,7 @@ impl Client {
         &mut self,
         remote: SocketAddr,
         server_x25519: &[u8; 32],
-        server_kem_pk: &pqcrypto_mlkem::mlkem768::PublicKey,
+        server_kem_pk: &crate::handshake::hybrid_keys::KemPublicKey,
     ) -> Result<SeamConn, SeamError> {
         let mut last_err = None;
         for attempt in 0..3 {
@@ -297,7 +297,7 @@ impl Client {
         &mut self,
         remote: SocketAddr,
         server_x25519: &[u8; 32],
-        server_kem_pk: &pqcrypto_mlkem::mlkem768::PublicKey,
+        server_kem_pk: &crate::handshake::hybrid_keys::KemPublicKey,
     ) -> Result<SeamConn, SeamError> {
         let (mut conn, events) = Connection::connect(
             self.socket.clone(),

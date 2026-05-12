@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
 
-use pqcrypto_mlkem::mlkem768::PublicKey as KemPublicKey;
+use crate::handshake::hybrid_keys::KemPublicKey;
 
 use crate::{
     crypto::{decoder::PacketDecoder, encoder::PacketEncoder},
@@ -112,7 +112,7 @@ impl Connection {
         let mut conn = Self::new_base(socket, remote, ConnPhase::ClientWaitChallenge, tx);
         conn.client_hs = Some(client_hs);
         // Stash server KEM PK so we can use it in write_msg1 when the challenge arrives
-        conn._server_kem_pk = Some(*server_kem_pk);
+        conn._server_kem_pk = Some(server_kem_pk.clone());
         Ok((conn, rx))
     }
 

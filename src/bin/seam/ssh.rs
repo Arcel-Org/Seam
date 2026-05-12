@@ -142,6 +142,7 @@ impl RemoteInfo {
 }
 
 /// Parse `"user@host:/path"` or `"host:/path"` into `(RemoteInfo, remote_path)`.
+/// Respects `~/.ssh/config` via `ssh -G` when no explicit user/port is given.
 pub fn parse_remote(s: &str) -> Option<(RemoteInfo, String)> {
     let colon_pos = s.find(':')?;
     let host_part = &s[..colon_pos];
@@ -152,7 +153,7 @@ pub fn parse_remote(s: &str) -> Option<(RemoteInfo, String)> {
         return None;
     }
 
-    let (user, host) = if let Some(at) = host_part.find('@') {
+    let (explicit_user, host) = if let Some(at) = host_part.find('@') {
         (
             Some(host_part[..at].to_string()),
             host_part[at + 1..].to_string(),
@@ -161,12 +162,40 @@ pub fn parse_remote(s: &str) -> Option<(RemoteInfo, String)> {
         (None, host_part.to_string())
     };
 
+    let (cfg_user, cfg_port, cfg_hostname) = resolve_ssh_config(&host);
+    let user = explicit_user.or(cfg_user);
+    let ssh_port = cfg_port;
+    // If ssh -G resolved a concrete hostname, use it for the UDP seam dial.
+    let host = cfg_hostname.unwrap_or(host);
+
     Some((
         RemoteInfo {
             host,
             user,
-            ssh_port: None,
+            ssh_port,
         },
         path,
     ))
+}
+
+/// Run `ssh -G <host>` to resolve Host/User/Port from the user's SSH config.
+fn resolve_ssh_config(host: &str) -> (Option<String>, Option<u16>, Option<String>) {
+    let out = match Command::new("ssh").args(["-G", host]).output() {
+        Ok(o) if o.status.success() => o,
+        _ => return (None, None, None),
+    };
+    let text = String::from_utf8_lossy(&out.stdout);
+    let mut user = None;
+    let mut port = None;
+    let mut hostname = None;
+    for line in text.lines() {
+        if let Some(v) = line.strip_prefix("hostname ") {
+            hostname = Some(v.to_string());
+        } else if let Some(v) = line.strip_prefix("user ") {
+            user = Some(v.to_string());
+        } else if let Some(v) = line.strip_prefix("port ") {
+            port = v.parse().ok();
+        }
+    }
+    (user, port, hostname)
 }

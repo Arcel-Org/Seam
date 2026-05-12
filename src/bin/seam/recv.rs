@@ -5,7 +5,6 @@ use seam_protocol::{
     handshake::{IdentityKeypair, pk_to_bytes},
     session::stream::StreamId,
 };
-use std::io::Write;
 use std::path::PathBuf;
 
 use crate::proto::{self, read_frame, send_frame, wait_for_stream};
@@ -96,6 +95,8 @@ async fn receive_file(
     compress: bool,
     buf: &mut Vec<u8>,
 ) -> Result<()> {
+    use std::io::{Seek, SeekFrom, Write};
+
     if info_frame.len() < 11 {
         bail!("FILE_INFO too short");
     }
@@ -110,12 +111,31 @@ async fn receive_file(
     if let Some(parent) = out_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let mut file = std::fs::File::create(&out_path)?;
 
-    let mut received: u64 = 0;
+    // Check for partial file and resume if possible.
+    let existing = out_path.metadata().map(|m| m.len()).unwrap_or(0);
+    let resume_from = if existing > 0 && existing < size {
+        let mut resume_frame = Vec::with_capacity(1 + 8);
+        resume_frame.push(proto::RESUME);
+        resume_frame.extend_from_slice(&existing.to_be_bytes());
+        send_frame(conn, ctrl_sid, &resume_frame).await?;
+        existing
+    } else {
+        0
+    };
+
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(resume_from == 0)
+        .open(&out_path)?;
+    if resume_from > 0 {
+        file.seek(SeekFrom::Start(resume_from))?;
+    }
+
+    let mut received: u64 = resume_from;
     while received < size {
         let data_frame = read_frame(conn, ctrl_sid, buf).await?;
-        // Flush ACKs after each DATA chunk so sender doesn't stall on ARQ.
         let _ = conn.tick().await;
 
         if data_frame.is_empty() || data_frame[0] != proto::DATA {

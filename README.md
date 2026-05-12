@@ -14,7 +14,7 @@
 curl -fsSL https://raw.githubusercontent.com/North9-Labs/Seam/main/install.sh | sh
 ```
 
-Seam replaces `scp`, `netcat`, and `ssh -L` with a single tool that is faster on real-world links and safe against quantum computers. All traffic uses a hybrid Noise\_XX + ML-KEM-768 handshake so session keys cannot be decrypted even if elliptic-curve cryptography is broken in the future.
+Seam replaces `scp`, `netcat`, and `ssh -L` with a single tool that is faster on real-world links and safe against quantum computers. All traffic uses a hybrid Noise_XX + ML-KEM-768 handshake so session keys cannot be decrypted even if elliptic-curve cryptography is broken in the future.
 
 ---
 
@@ -30,7 +30,7 @@ Seam fixes all three.
 
 ### Speed comparison
 
-> Measured on loopback (single core, x86\_64). WAN advantage is larger — TCP degrades at high latency and loss where seam does not.
+> Measured on loopback (single core, x86_64). WAN advantage is larger — TCP degrades at high latency and loss where seam does not.
 
 | | seam | scp (OpenSSH) | rsync over SSH | netcat (no encryption) |
 |---|---:|---:|---:|---:|
@@ -59,6 +59,22 @@ SEAM_INSTALL_DIR=/usr/local/bin curl -fsSL https://raw.githubusercontent.com/Nor
 
 The installer verifies a SHA-256 checksum before placing the binary.
 
+### Shell completions
+
+```sh
+seam completions bash > /etc/bash_completion.d/seam   # system-wide
+seam completions zsh  > ~/.zsh/completions/_seam       # user
+seam completions fish > ~/.config/fish/completions/seam.fish
+```
+
+### First-time setup
+
+```sh
+seam doctor          # check system readiness
+```
+
+Seam respects your `~/.ssh/config` (Host aliases, User, Port, IdentityFile) and stores a persistent identity key in `~/.config/seam/identity` so peers can recognise you across sessions.
+
 ---
 
 ## Commands
@@ -71,6 +87,12 @@ seam cp ./report.pdf alice@server:/home/alice/report.pdf
 
 # Send a directory
 seam cp ./dataset/ alice@server:/data/dataset
+
+# Receive from remote (pull)
+seam cp alice@server:/remote/logs ./local-backup/
+
+# Resume an interrupted transfer
+seam cp --resume ./large.iso alice@server:/data/
 
 # Raw transfer, no compression (already-compressed files)
 seam cp --no-compress ./archive.tar.gz alice@server:/backups/
@@ -124,6 +146,9 @@ Measure actual seam speed to a host and compare against known baselines.
 ```sh
 seam bench alice@server          # 100 MiB test
 seam bench alice@server --mib 1000
+
+# Use BBR congestion control instead of CUBIC
+SEAM_CC=bbr seam bench alice@server
 ```
 
 ```
@@ -142,6 +167,33 @@ seam bench alice@server --mib 1000
 
 ---
 
+### `seam ls` — remote directory listing
+
+```sh
+seam ls alice@server:/var/log
+seam ls alice@server:/data  # trailing slash optional
+```
+
+Lists files with Unix-style permissions, human-readable sizes, and names.
+
+---
+
+### `seam config` — persistent settings
+
+Manage defaults so you don't have to pass flags every time.
+
+```sh
+seam config init                  # create ~/.config/seam/config.toml
+seam config list                  # show all settings
+seam config get cc                # current value
+seam config set cc bbr            # switch default CC to BBR
+seam config set compress false    # disable zstd by default
+```
+
+Config file location: `~/.config/seam/config.toml`.
+
+---
+
 ### `seam update` — self-update
 
 ```sh
@@ -156,19 +208,21 @@ seam update --check   # just print available version
 Every seam command follows the same pattern:
 
 1. **SSH bootstrap** — seam uses your existing SSH config to reach the remote, starts a receiver process, and reads back connection parameters. No new ports need to be opened.
-2. **Post-quantum handshake** — client and server perform Noise\_XX augmented with ML-KEM-768 in ~247 µs. Each side contributes randomness; neither can force a weak key.
+2. **Post-quantum handshake** — client and server perform Noise_XX augmented with ML-KEM-768 in ~247 µs. Each side contributes randomness; neither can force a weak key.
 3. **Encrypted UDP transport** — all data flows over a direct UDP path. The transport layer handles loss recovery, ordering, flow control, and multiplexing internally.
 
 ### Transport features
 
 | Feature | What it does |
 |---|---|
-| **CUBIC congestion control** | Fills the pipe without overwhelming routers |
+| **CUBIC congestion control** | Fills the pipe without overwhelming routers (switch to BBR with `SEAM_CC=bbr`) |
 | **ARQ retransmission** | Resends dropped packets with exponential backoff |
 | **GF(2⁸) Reed-Solomon FEC** | Recovers up to *r* losses per *k*-packet group without a round-trip |
 | **Multi-stream mux** | Tunnel, bench, and pipe share one session; streams are independent |
 | **DDoS-resistant handshake** | BLAKE3 cookie challenge before any per-client state is allocated |
 | **Header protection** | Session ID and packet number encrypted in addition to payload |
+| **Flow control** | Dynamic 16 MiB windows extended via MaxData frames; control packets bypass congestion control |
+| **Keepalive** | Automatic Ping/Pong every 15 s; idle timeout after 60 s |
 
 ---
 
@@ -180,7 +234,7 @@ Every byte sent over seam is encrypted with **ChaCha20-Poly1305**, an AEAD ciphe
 
 ### The handshake
 
-Seam uses **Noise\_XX** (mutual authentication with forward secrecy) combined with **ML-KEM-768** (CRYSTALS-Kyber, NIST post-quantum standard). The hybrid construction means:
+Seam uses **Noise_XX** (mutual authentication with forward secrecy) combined with **ML-KEM-768** (CRYSTALS-Kyber, NIST post-quantum standard). The hybrid construction means:
 
 - A classical adversary cannot break the session (x25519 elliptic-curve hardness)
 - A quantum adversary cannot break the session (ML-KEM-768 hardness)
@@ -202,6 +256,31 @@ Seam is pre-1.0 software. The cryptographic design follows well-established patt
 
 ---
 
+## Troubleshooting
+
+### "handshake timed out"
+- Seam automatically retries the handshake up to 3 times with exponential backoff.
+- If it still fails, check that UDP is not blocked by a firewall.
+- Increase kernel socket buffers:
+  ```sh
+  sudo sysctl -w net.core.rmem_max=8388608
+  sudo sysctl -w net.core.wmem_max=8388608
+  ```
+
+### "seam not found on remote"
+- seam bootstraps automatically, but if the remote has no internet access, copy the binary manually to `~/.local/bin/seam`.
+
+### Slow throughput on LAN
+- seam is optimised for lossy / high-latency paths. On pristine LAN, scp may be similar. Use `seam bench` to verify.
+
+### Verbose logging
+- Add `-v` (info), `-vv` (debug), or `-vvv` (trace) to any command:
+  ```sh
+  seam -vv cp ./data user@host:/dest
+  ```
+
+---
+
 ## Build from Source
 
 ```sh
@@ -209,7 +288,8 @@ Seam is pre-1.0 software. The cryptographic design follows well-established patt
 git clone https://github.com/North9-Labs/Seam
 cd Seam
 cargo build --release --bin seam
-./target/release/seam --version
+./target/release/seam --version        # Linux / macOS
+# target\release\seam.exe --version    # Windows
 ```
 
 Test suite:
@@ -284,12 +364,12 @@ conn.send_datagram(b"ping").await?;
 
 ## Performance
 
-> Single-core, loopback, x86\_64. Numbers vary with hardware and kernel UDP buffer limits.
+> Single-core, loopback, x86_64. Numbers vary with hardware and kernel UDP buffer limits.
 
-**568 MiB/s (~4.76 Gbps) encrypted throughput at 1400 B MTU. 247 µs full Noise\_XX + ML-KEM-768 handshake.**
+**568 MiB/s (~4.76 Gbps) encrypted throughput at 1400 B MTU. 247 µs full Noise_XX + ML-KEM-768 handshake.**
 
 | Payload size | Encrypt + send | Throughput |
-|---|---:|---:|
+|---|---|---:|
 | 64 B | 350 ns | ~303 MiB/s |
 | 256 B | 644 ns | ~455 MiB/s |
 | 512 B | 1.03 µs | ~519 MiB/s |
@@ -299,7 +379,7 @@ conn.send_datagram(b"ping").await?;
 |---|---:|
 | `IdentityKeypair::generate` | 17.8 µs |
 | `PacketKeys::derive_from_secret` | 370 ns |
-| Full handshake (Noise\_XX + ML-KEM-768, 3 messages) | **247 µs** |
+| Full handshake (Noise_XX + ML-KEM-768, 3 messages) | **247 µs** |
 
 ---
 
@@ -313,7 +393,7 @@ src/
 ├── handshake/      # Noise_XX + ML-KEM-768, DDoS-resistant cookie
 ├── session/        # Streams, ARQ, flow control, priority scheduling
 ├── fec/            # GF(2⁸) arithmetic, systematic RS codec, FEC/ARQ arbiter
-└── transport/      # Connection, endpoint, CUBIC CC, pacer, path probing
+└── transport/      # Connection, endpoint, CUBIC/BBR CC, pacer, path probing
 
 benches/            # Criterion benchmarks
 fuzz/               # cargo-fuzz targets

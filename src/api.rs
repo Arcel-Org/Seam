@@ -21,7 +21,6 @@
 
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
-use std::os::unix::io::AsRawFd;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -41,24 +40,20 @@ use crate::{
 const MAX_UDP: usize = 65535;
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
-fn set_socket_buffers(socket: &UdpSocket, size: i32) {
-    let fd = socket.as_raw_fd();
-    unsafe {
-        libc::setsockopt(
-            fd,
-            libc::SOL_SOCKET,
-            libc::SO_RCVBUF,
-            &size as *const i32 as *const libc::c_void,
-            std::mem::size_of::<i32>() as libc::socklen_t,
-        );
-        libc::setsockopt(
-            fd,
-            libc::SOL_SOCKET,
-            libc::SO_SNDBUF,
-            &size as *const i32 as *const libc::c_void,
-            std::mem::size_of::<i32>() as libc::socklen_t,
-        );
-    }
+/// Create a UDP socket with enlarged kernel buffers, cross-platform.
+fn create_bound_socket(local_addr: SocketAddr) -> Result<UdpSocket, std::io::Error> {
+    let domain = if local_addr.is_ipv4() {
+        socket2::Domain::IPV4
+    } else {
+        socket2::Domain::IPV6
+    };
+    let sock = socket2::Socket::new(domain, socket2::Type::DGRAM, Some(socket2::Protocol::UDP))?;
+    sock.set_nonblocking(true)?;
+    // 8 MiB kernel buffers — reduces drops on high-throughput paths.
+    let _ = sock.set_recv_buffer_size(8 * 1024 * 1024);
+    let _ = sock.set_send_buffer_size(8 * 1024 * 1024);
+    sock.bind(&local_addr.into())?;
+    UdpSocket::from_std(sock.into())
 }
 
 pub(crate) type SharedConn = Arc<Mutex<Connection>>;
@@ -226,13 +221,19 @@ impl SeamConn {
             .unwrap_or(0)
     }
 
-    /// Flush pending stream data and background operations (retransmits, chaff, probes).
+    /// Flush pending stream data and background operations (retransmits, chaff, probes, ping).
     pub async fn tick(&self) -> Result<(), SeamError> {
         let mut guard = self.inner.lock().await;
+        guard.maybe_queue_ping();
         guard.flush().await?;
         guard.retransmit_expired().await?;
         guard.maybe_send_chaff().await?;
         guard.maybe_send_probe().await
+    }
+
+    /// True if the peer has not sent any packet for 60 seconds.
+    pub async fn is_idle(&self) -> bool {
+        self.inner.lock().await.is_idle()
     }
 
     /// Split into a shareable writer and an exclusive event receiver.
@@ -257,10 +258,8 @@ impl Client {
         local_addr: SocketAddr,
         identity: IdentityKeypair,
     ) -> Result<Self, SeamError> {
-        let socket = UdpSocket::bind(local_addr)
-            .await
+        let socket = create_bound_socket(local_addr)
             .map_err(|e| SeamError::HandshakeFailed(e.to_string()))?;
-        set_socket_buffers(&socket, 8 * 1024 * 1024);
         let socket = Arc::new(socket);
         Ok(Self {
             socket,
@@ -271,11 +270,34 @@ impl Client {
 
     /// Connect to a server at `remote`. Drives the 1.5-RTT cookie + noise handshake
     /// to completion before returning, then spawns a background recv loop.
+    /// Retries up to 3 times with exponential backoff on handshake failure.
     pub async fn connect(
         &mut self,
         remote: SocketAddr,
         server_x25519: &[u8; 32],
-        server_kem_pk: &pqcrypto_kyber::kyber768::PublicKey,
+        server_kem_pk: &pqcrypto_mlkem::mlkem768::PublicKey,
+    ) -> Result<SeamConn, SeamError> {
+        let mut last_err = None;
+        for attempt in 0..3 {
+            if attempt > 0 {
+                let delay = Duration::from_millis(250 * (1 << (attempt - 1)));
+                tracing::info!("handshake retry {}/3 after {:?}", attempt + 1, delay);
+                tokio::time::sleep(delay).await;
+            }
+            match self.try_connect(remote, server_x25519, server_kem_pk).await {
+                Ok(conn) => return Ok(conn),
+                Err(e) => last_err = Some(e),
+            }
+        }
+        Err(last_err
+            .unwrap_or_else(|| SeamError::HandshakeFailed("handshake exhausted retries".into())))
+    }
+
+    async fn try_connect(
+        &mut self,
+        remote: SocketAddr,
+        server_x25519: &[u8; 32],
+        server_kem_pk: &pqcrypto_mlkem::mlkem768::PublicKey,
     ) -> Result<SeamConn, SeamError> {
         let (mut conn, events) = Connection::connect(
             self.socket.clone(),
@@ -344,10 +366,8 @@ impl Server {
         local_addr: SocketAddr,
         identity: IdentityKeypair,
     ) -> Result<Self, SeamError> {
-        let socket = UdpSocket::bind(local_addr)
-            .await
+        let socket = create_bound_socket(local_addr)
             .map_err(|e| SeamError::HandshakeFailed(e.to_string()))?;
-        set_socket_buffers(&socket, 8 * 1024 * 1024);
         let socket = Arc::new(socket);
 
         let identity = Arc::new(identity);
@@ -356,12 +376,17 @@ impl Server {
         rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut secret);
         let cookie_factory = Arc::new(CookieFactory::new(secret));
 
+        let mut ticket_secret = [0u8; 32];
+        rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut ticket_secret);
+        let ticket_key = crate::transport::resumption::TicketKey::new(ticket_secret);
+
         let (accept_tx, accept_rx) = mpsc::unbounded_channel();
 
         let recv_task = tokio::spawn(server_recv_loop(
             socket.clone(),
             identity,
             cookie_factory,
+            ticket_key,
             accept_tx,
         ));
 
@@ -387,6 +412,7 @@ async fn server_recv_loop(
     socket: Arc<UdpSocket>,
     identity: Arc<IdentityKeypair>,
     cookie_factory: Arc<CookieFactory>,
+    ticket_key: crate::transport::resumption::TicketKey,
     accept_tx: mpsc::UnboundedSender<SeamConn>,
 ) {
     let mut buf = vec![0u8; MAX_UDP];
@@ -435,6 +461,7 @@ async fn server_recv_loop(
                 remote,
                 identity.clone(),
                 cookie_factory.clone(),
+                Some(ticket_key.clone()),
             )
             .await
             {

@@ -13,6 +13,15 @@ mod tests;
 
 pub use bbr::Bbr;
 pub use cc::{Aimd, CongestionControl, Cubic};
+
+/// Create the default congestion controller, respecting the `SEAM_CC`
+/// environment variable (`bbr` or `cubic`).
+pub fn default_cc() -> Box<dyn CongestionControl> {
+    match std::env::var("SEAM_CC").as_deref() {
+        Ok("bbr") => Box::new(Bbr::new()),
+        _ => Box::new(Cubic::new()),
+    }
+}
 pub use chaff::ChaffScheduler;
 pub use connection::{ConnPhase, Connection};
 pub use endpoint::Endpoint;

@@ -9,6 +9,13 @@ use bytes::Bytes;
 use std::collections::HashMap;
 use std::time::Duration;
 
+/// A packet produced by [`Session::flush`], tagged so the connection layer can
+/// exempt control packets (ACK, MaxData) from congestion-control accounting.
+pub struct TaggedPacket {
+    pub is_control: bool,
+    pub bytes: Vec<u8>,
+}
+
 use crate::{
     crypto::{decoder::PacketDecoder, encoder::PacketEncoder},
     error::SeamError,
@@ -29,6 +36,8 @@ pub enum SessionEvent {
     DataAvailable(StreamId),
     StreamFinished(StreamId),
     DatagramReceived,
+    /// Encrypted session ticket received from the server (for 0-RTT resumption).
+    SessionTicket(Vec<u8>),
     Closed,
 }
 
@@ -75,10 +84,10 @@ impl Default for SessionLimits {
     }
 }
 
-// 256 MiB — large enough that flow control never triggers for normal transfers.
-// TODO: shrink once CC correctly exempts ACK/MaxData packets from bytes_in_flight,
-// so MaxData can reliably replenish the window mid-transfer.
-const DEFAULT_WINDOW: u64 = 256 << 20;
+// 16 MiB — replenished dynamically via MaxData frames. Control packets are
+// exempt from congestion-control bytes_in_flight, so MaxData reliably extends
+// the window before the sender stalls.
+const DEFAULT_WINDOW: u64 = 16 << 20;
 const MAX_PAYLOAD: usize = 1400; // conservative MTU
 
 pub struct Session {
@@ -94,6 +103,10 @@ pub struct Session {
     recv_consumed: u64,
     /// If Some(limit), flush() will emit a MaxData packet with this new limit.
     pending_max_data: Option<u64>,
+    /// If true, the next flush() will emit a Pong frame.
+    pending_pong: bool,
+    /// If true, the next flush() will emit a Ping frame.
+    pending_ping: bool,
     arq: ArqTracker,
     datagrams: DatagramQueue,
     limits: SessionLimits,
@@ -137,6 +150,8 @@ impl Session {
             recv_window: FlowWindow::new(DEFAULT_WINDOW),
             recv_consumed: 0,
             pending_max_data: None,
+            pending_pong: false,
+            pending_ping: false,
             datagrams,
             limits,
             ack_ranges: AckRanges::new(),
@@ -236,11 +251,13 @@ impl Session {
         }
     }
 
-    /// Packetise pending stream data into wire packets. Returns encoded packets.
+    /// Packetise pending stream data into wire packets.
     /// Streams are drained in priority order (0 = highest). Within the same
     /// priority, streams are served round-robin by insertion order.
-    pub fn flush(&mut self) -> Result<Vec<Vec<u8>>, SeamError> {
-        let mut packets = Vec::new();
+    /// Control packets (ACK, MaxData) are tagged so the connection layer can
+    /// send them even when the congestion window is exhausted.
+    pub fn flush(&mut self) -> Result<Vec<TaggedPacket>, SeamError> {
+        let mut packets: Vec<TaggedPacket> = Vec::new();
         // Collect and sort by priority (stable sort preserves insertion order within same priority)
         let mut stream_ids: Vec<StreamId> = self.streams.keys().copied().collect();
         stream_ids.sort_by_key(|id| self.streams[id].priority);
@@ -267,7 +284,10 @@ impl Session {
                 out.truncate(n);
 
                 self.arq.on_sent(pkt_num, bytes::Bytes::from(frame));
-                packets.push(out);
+                packets.push(TaggedPacket {
+                    is_control: false,
+                    bytes: out,
+                });
             }
 
             // After draining data, emit a zero-byte FIN frame if the stream is finished.
@@ -287,7 +307,10 @@ impl Session {
                 let n = self.encoder.encode(PktType::Data, &frame, &mut out)?;
                 out.truncate(n);
                 self.arq.on_sent(pkt_num, bytes::Bytes::from(frame));
-                packets.push(out);
+                packets.push(TaggedPacket {
+                    is_control: false,
+                    bytes: out,
+                });
             }
         }
 
@@ -297,7 +320,10 @@ impl Session {
             let mut out = vec![0u8; 32 + dg.len() + 16];
             let n = self.encoder.encode(PktType::Datagram, &dg, &mut out)?;
             out.truncate(n);
-            packets.push(out);
+            packets.push(TaggedPacket {
+                is_control: false,
+                bytes: out,
+            });
         }
 
         // Emit a consolidated ACK frame if we owe the peer one.
@@ -306,7 +332,10 @@ impl Session {
             let mut out = vec![0u8; 32 + frame.len() + 16];
             let n = self.encoder.encode(PktType::Ack, &frame, &mut out)?;
             out.truncate(n);
-            packets.push(out);
+            packets.push(TaggedPacket {
+                is_control: true,
+                bytes: out,
+            });
         }
 
         // Emit a MaxData frame if the receive window needs extending.
@@ -315,8 +344,35 @@ impl Session {
             let mut out = vec![0u8; 32 + frame.len() + 16];
             let n = self.encoder.encode(PktType::MaxData, &frame, &mut out)?;
             out.truncate(n);
-            packets.push(out);
+            packets.push(TaggedPacket {
+                is_control: true,
+                bytes: out,
+            });
             self.recv_window.update_limit(new_limit);
+        }
+
+        // Emit a Pong in response to the peer's Ping.
+        if self.pending_pong {
+            self.pending_pong = false;
+            let mut out = vec![0u8; 32 + 16];
+            let n = self.encoder.encode(PktType::Pong, b"", &mut out)?;
+            out.truncate(n);
+            packets.push(TaggedPacket {
+                is_control: true,
+                bytes: out,
+            });
+        }
+
+        // Emit a Ping if the application asked for one (keepalive).
+        if self.pending_ping {
+            self.pending_ping = false;
+            let mut out = vec![0u8; 32 + 16];
+            let n = self.encoder.encode(PktType::Ping, b"", &mut out)?;
+            out.truncate(n);
+            packets.push(TaggedPacket {
+                is_control: true,
+                bytes: out,
+            });
         }
 
         Ok(packets)
@@ -332,6 +388,11 @@ impl Session {
         self.pending_max_data.is_some()
     }
 
+    /// Queue a Ping frame for the next flush.
+    pub fn ping(&mut self) {
+        self.pending_ping = true;
+    }
+
     // ── Receiving ────────────────────────────────────────────────────────────
 
     /// Process an incoming wire packet. Returns events.
@@ -341,9 +402,10 @@ impl Session {
 
         // An "ack-eliciting" packet triggers an ACK to the peer. ACK frames
         // themselves are NOT ack-eliciting (prevents infinite ACK chatter).
+        // Pong is also non-ack-eliciting so a Ping/Pong pair doesn't spiral.
         let ack_eliciting = !matches!(
             pkt_type,
-            PktType::Ack | PktType::Chaff | PktType::PathProbe | PktType::MaxData
+            PktType::Ack | PktType::Chaff | PktType::PathProbe | PktType::MaxData | PktType::Pong
         );
         self.ack_ranges.on_received(pkt_num, ack_eliciting);
 
@@ -360,6 +422,15 @@ impl Session {
                 self.send_window.update_limit(new_limit);
             }
             PktType::MaxData => {}
+            PktType::Ping => {
+                self.pending_pong = true;
+            }
+            PktType::Pong => {
+                // No-op: receipt resets the connection-level idle timer.
+            }
+            PktType::SessionTicket => {
+                events.push(SessionEvent::SessionTicket(payload.to_vec()));
+            }
             PktType::Close => {
                 events.push(SessionEvent::Closed);
             }
@@ -555,7 +626,7 @@ mod tests {
         assert!(!pkts.is_empty());
 
         // Client receives the packet
-        let events = client.receive_packet(&mut pkts[0].clone()).unwrap();
+        let events = client.receive_packet(&mut pkts[0].bytes.clone()).unwrap();
         let has_new = events
             .iter()
             .any(|e| matches!(e, SessionEvent::NewStream(2)));
@@ -580,7 +651,7 @@ mod tests {
         let pkts = client.flush().unwrap();
 
         // Server receives it fine (server role, parity=0; stream 1 has parity 1 — remote ✓)
-        let events = server.receive_packet(&mut pkts[0].clone()).unwrap();
+        let events = server.receive_packet(&mut pkts[0].bytes.clone()).unwrap();
         assert!(
             events
                 .iter()
@@ -607,7 +678,9 @@ mod tests {
         client2.send(bad_sid, b"data").unwrap();
         let bad_pkts2 = client2.flush().unwrap();
         // server2 receives stream 1 fine (opposite parity)
-        let evs = server2.receive_packet(&mut bad_pkts2[0].clone()).unwrap();
+        let evs = server2
+            .receive_packet(&mut bad_pkts2[0].bytes.clone())
+            .unwrap();
         assert!(evs.iter().any(|e| matches!(e, SessionEvent::NewStream(1))));
 
         // Now manufacture a violation: server2 (local_parity=0) receiving a NEW even-ID stream.
@@ -635,7 +708,7 @@ mod tests {
         assert_eq!(vsid, 1);
         sender.send(vsid, b"violation").unwrap();
         let vpkts = sender.flush().unwrap();
-        let result = receiver.receive_packet(&mut vpkts[0].clone());
+        let result = receiver.receive_packet(&mut vpkts[0].bytes.clone());
         assert!(
             matches!(result, Err(SeamError::ProtocolViolation(_))),
             "should reject stream with same parity as receiver's local role: {result:?}"

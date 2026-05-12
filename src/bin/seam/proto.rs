@@ -7,7 +7,9 @@ pub const FILE_INFO: u8 = 0x02;
 pub const DATA: u8 = 0x03;
 pub const DONE: u8 = 0x04;
 pub const ACK: u8 = 0x05;
-pub const _ERR: u8 = 0x06;
+pub const RESUME: u8 = 0x06;
+pub const LS: u8 = 0x07;
+pub const ENTRY: u8 = 0x08;
 
 pub const COMPRESS_NONE: u8 = 0;
 pub const COMPRESS_ZSTD: u8 = 1;

@@ -3,7 +3,7 @@ exclude = ["fuzz"]
 
 [package]
 name = "seam-protocol"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
 license = "AGPL-3.0-only"
 
@@ -16,13 +16,14 @@ thiserror = "2"
 zeroize = { version = "1", features = ["derive"] }
 snow = "0.9"
 x25519-dalek = { version = "2", features = ["static_secrets"] }
-pqcrypto-kyber = "0.8"
+pqcrypto-mlkem = "0.1"
 pqcrypto-traits = "0.3"
 rand = "0.8"
-libc = "0.2"
 subtle = "2"
 tokio = { version = "1", features = ["full"] }
 tracing = "0.1"
+tracing-subscriber = "0.3"
+socket2 = { version = "0.6", features = ["all"] }
 # CLI binary
 clap = { version = "4", features = ["derive"] }
 indicatif = "0.17"
@@ -34,8 +35,12 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 walkdir = "2"
 tempfile = "3"
+dirs = "5"
+which = "7"
 flate2 = "1"
 tar = "0.4"
+clap_complete = "4.6.5"
+toml = "1.1.2"
 
 [dev-dependencies]
 proptest = "1"

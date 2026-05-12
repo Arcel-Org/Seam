@@ -76,6 +76,7 @@ async fn do_handshake() -> (Connection, Connection) {
         client_addr,
         server_id.clone(),
         cookie_factory,
+        None,
     )
     .await
     .unwrap();
@@ -306,6 +307,7 @@ async fn test_stream_data_transfer() {
         client_addr,
         server_id.clone(),
         cookie_factory,
+        None,
     )
     .await
     .unwrap();
@@ -362,13 +364,15 @@ async fn test_stream_data_transfer() {
 
 #[test]
 fn session_ticket_encode_decode() {
+    use crate::crypto::keys::PacketKeys;
     use crate::transport::resumption::{SessionTicket, WEAKER_FS_WARNING};
     println!("{WEAKER_FS_WARNING}");
-    let ticket = SessionTicket::new(42u64, [0xABu8; 32]);
+    let keys = PacketKeys::derive_from_secret(&[0xABu8; 32]);
+    let ticket = SessionTicket::new(42u64, keys.clone());
     let bytes = ticket.to_bytes();
     let parsed = SessionTicket::from_bytes(&bytes).unwrap();
     assert_eq!(parsed.session_id, 42);
-    assert_eq!(parsed.traffic_secret, [0xABu8; 32]);
+    assert_eq!(parsed.keys.enc_key, keys.enc_key);
 }
 
 // ── Datagram end-to-end ──────────────────────────────────────────────────
@@ -399,6 +403,7 @@ async fn test_datagram_roundtrip() {
         client_addr,
         server_id.clone(),
         cookie_factory,
+        None,
     )
     .await
     .unwrap();
@@ -523,7 +528,7 @@ async fn server_push_stream_received_by_client() {
         .session
         .as_mut()
         .unwrap()
-        .receive_packet(&mut pkts[0].clone())
+        .receive_packet(&mut pkts[0].bytes.clone())
         .unwrap();
 
     let has_new = events

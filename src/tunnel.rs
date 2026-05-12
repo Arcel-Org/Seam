@@ -135,6 +135,7 @@ async fn event_loop(
                 break;
             }
             SessionEvent::DatagramReceived => {}
+            SessionEvent::SessionTicket(_) => {}
         }
     }
 }

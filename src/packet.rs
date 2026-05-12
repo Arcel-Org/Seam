@@ -28,6 +28,12 @@ pub enum PktType {
     KeyUpdate = 0x09,
     /// Extends the peer's send-side flow-control window. Payload: 8-byte BE u64 new limit.
     MaxData = 0x0A,
+    /// Keepalive ping — elicits a Pong from the peer.
+    Ping = 0x0B,
+    /// Keepalive pong — response to Ping, resets idle timer.
+    Pong = 0x0C,
+    /// Encrypted session ticket for 0-RTT resumption.
+    SessionTicket = 0x0D,
 }
 
 impl TryFrom<u8> for PktType {
@@ -45,6 +51,9 @@ impl TryFrom<u8> for PktType {
             0x08 => Ok(Self::Datagram),
             0x09 => Ok(Self::KeyUpdate),
             0x0A => Ok(Self::MaxData),
+            0x0B => Ok(Self::Ping),
+            0x0C => Ok(Self::Pong),
+            0x0D => Ok(Self::SessionTicket),
             other => Err(SeamError::InvalidPktType(other)),
         }
     }
@@ -74,6 +83,9 @@ mod tests {
             (0x08, PktType::Datagram),
             (0x09, PktType::KeyUpdate),
             (0x0A, PktType::MaxData),
+            (0x0B, PktType::Ping),
+            (0x0C, PktType::Pong),
+            (0x0D, PktType::SessionTicket),
         ];
         for (raw, expected) in cases {
             assert_eq!(PktType::try_from(raw).unwrap(), expected);

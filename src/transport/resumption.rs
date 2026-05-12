@@ -1,27 +1,23 @@
-use crate::error::SeamError;
+use crate::{crypto::keys::PacketKeys, error::SeamError};
 /// 0-RTT session resumption via encrypted session tickets.
 ///
-/// ⚠️  **WEAKER FORWARD SECRECY**: Session tickets derive from the long-term
-/// traffic secret. If the server's ticket-encryption key is compromised, past
-/// 0-RTT sessions can be decrypted. Use only where latency beats FS requirements.
-/// The API enforces awareness: `SessionTicket::zero_rtt_connect` requires the
-/// caller to pass `WEAKER_FS_WARNING` as an acknowledgement string.
-///
-/// Wire format for a 0-RTT Initial packet (type = 0x14):
-///   encrypted_ticket(variable) + 0-RTT data
+/// ⚠️  **WEAKER FORWARD SECRECY**: Session tickets store the derived traffic
+/// keys. If the server's ticket-encryption key is compromised, past 0-RTT
+/// sessions can be decrypted. Use only where latency beats FS requirements.
 ///
 /// Ticket wire format (encrypted with server's ticket key via ChaCha20Poly1305):
-///   session_id(8) + traffic_secret(32) + expiry_unix_secs(8) + nonce(12)
+///   session_id(8) + packet_keys(76) + expiry_unix_secs(8) + nonce(12)
 use chacha20poly1305::{AeadInPlace, ChaCha20Poly1305, KeyInit};
 use rand::{RngCore, rngs::OsRng};
 
-pub const WEAKER_FS_WARNING: &str =
-    "WEAKER-FS: 0-RTT tickets reduce forward secrecy. Acknowledged.";
-
-const TICKET_PLAINTEXT_LEN: usize = 8 + 32 + 8; // session_id + secret + expiry
+const TICKET_PLAINTEXT_LEN: usize = 8 + 76 + 8; // session_id + keys + expiry
 const TICKET_LEN: usize = TICKET_PLAINTEXT_LEN + 12 + 16; // + nonce + tag
 const TICKET_TTL_SECS: u64 = 24 * 3600; // 24-hour ticket lifetime
 
+pub const WEAKER_FS_WARNING: &str = "WARNING: session tickets weaken forward secrecy — \
+     if the server ticket key leaks, past 0-RTT sessions can be decrypted.";
+
+#[derive(Clone)]
 pub struct TicketKey {
     key: [u8; 32],
 }
@@ -31,23 +27,21 @@ impl TicketKey {
         Self { key }
     }
 
-    /// Issue a new session ticket for `session_id` / `traffic_secret`.
-    pub fn issue(&self, session_id: u64, traffic_secret: &[u8; 32]) -> Vec<u8> {
+    /// Issue a new session ticket for `session_id` / `keys`.
+    pub fn issue(&self, session_id: u64, keys: &PacketKeys) -> Vec<u8> {
         let expiry = unix_now() + TICKET_TTL_SECS;
         let mut plain = [0u8; TICKET_PLAINTEXT_LEN];
         plain[0..8].copy_from_slice(&session_id.to_le_bytes());
-        plain[8..40].copy_from_slice(traffic_secret);
-        plain[40..48].copy_from_slice(&expiry.to_le_bytes());
+        plain[8..84].copy_from_slice(&keys.to_bytes());
+        plain[84..92].copy_from_slice(&expiry.to_le_bytes());
 
-        // Use a fresh nonce per ticket to avoid accidental nonce reuse under the
-        // same key when issuing tickets in the same second.
         let mut nonce = [0u8; 12];
         OsRng.fill_bytes(&mut nonce);
 
         let cipher = ChaCha20Poly1305::new((&self.key).into());
         let mut buf = plain.to_vec();
         let tag = cipher
-            .encrypt_in_place_detached(&nonce.into(), b"apex-ticket", &mut buf)
+            .encrypt_in_place_detached(&nonce.into(), b"seam-ticket", &mut buf)
             .expect("ticket encrypt");
 
         let mut out = Vec::with_capacity(TICKET_LEN);
@@ -57,8 +51,8 @@ impl TicketKey {
         out
     }
 
-    /// Decrypt and validate a session ticket. Returns (session_id, traffic_secret).
-    pub fn redeem(&self, ticket_bytes: &[u8]) -> Result<(u64, [u8; 32]), SeamError> {
+    /// Decrypt and validate a session ticket. Returns (session_id, keys).
+    pub fn redeem(&self, ticket_bytes: &[u8]) -> Result<(u64, PacketKeys), SeamError> {
         if ticket_bytes.len() != TICKET_LEN {
             return Err(SeamError::HandshakeFailed("bad ticket length".into()));
         }
@@ -69,7 +63,7 @@ impl TicketKey {
 
         let cipher = ChaCha20Poly1305::new((&self.key).into());
         cipher
-            .decrypt_in_place(&nonce.into(), b"apex-ticket", &mut ct)
+            .decrypt_in_place(&nonce.into(), b"seam-ticket", &mut ct)
             .map_err(|_| SeamError::AuthFailed)?;
 
         if ct.len() < TICKET_PLAINTEXT_LEN {
@@ -78,13 +72,13 @@ impl TicketKey {
 
         let session_id =
             u64::from_le_bytes(ct[0..8].try_into().map_err(|_| SeamError::AuthFailed)?);
-        let traffic_secret: [u8; 32] = ct[8..40].try_into().map_err(|_| SeamError::AuthFailed)?;
-        let expiry = u64::from_le_bytes(ct[40..48].try_into().map_err(|_| SeamError::AuthFailed)?);
+        let keys = PacketKeys::from_bytes(&ct[8..84]).ok_or(SeamError::AuthFailed)?;
+        let expiry = u64::from_le_bytes(ct[84..92].try_into().map_err(|_| SeamError::AuthFailed)?);
 
         if unix_now() > expiry {
             return Err(SeamError::HandshakeFailed("ticket expired".into()));
         }
-        Ok((session_id, traffic_secret))
+        Ok((session_id, keys))
     }
 }
 
@@ -92,34 +86,28 @@ impl TicketKey {
 #[derive(Debug, Clone)]
 pub struct SessionTicket {
     pub session_id: u64,
-    pub traffic_secret: [u8; 32],
+    pub keys: PacketKeys,
 }
 
 impl SessionTicket {
-    pub fn new(session_id: u64, traffic_secret: [u8; 32]) -> Self {
-        Self {
-            session_id,
-            traffic_secret,
-        }
+    pub fn new(session_id: u64, keys: PacketKeys) -> Self {
+        Self { session_id, keys }
     }
 
     pub fn to_bytes(&self) -> Vec<u8> {
-        let mut out = Vec::with_capacity(8 + 32);
+        let mut out = Vec::with_capacity(8 + 76);
         out.extend_from_slice(&self.session_id.to_le_bytes());
-        out.extend_from_slice(&self.traffic_secret);
+        out.extend_from_slice(&self.keys.to_bytes());
         out
     }
 
     pub fn from_bytes(buf: &[u8]) -> Option<Self> {
-        if buf.len() != 40 {
+        if buf.len() != 84 {
             return None;
         }
         let session_id = u64::from_le_bytes(buf[0..8].try_into().ok()?);
-        let traffic_secret: [u8; 32] = buf[8..40].try_into().ok()?;
-        Some(Self {
-            session_id,
-            traffic_secret,
-        })
+        let keys = PacketKeys::from_bytes(&buf[8..84])?;
+        Some(Self { session_id, keys })
     }
 }
 
@@ -137,17 +125,20 @@ mod tests {
     #[test]
     fn ticket_roundtrip() {
         let key = TicketKey::new([0x42u8; 32]);
-        let secret = [0xBEu8; 32];
-        let issued = key.issue(999, &secret);
-        let (sid, sec) = key.redeem(&issued).unwrap();
+        let keys = PacketKeys::derive_from_secret(&[0xBEu8; 32]);
+        let issued = key.issue(999, &keys);
+        let (sid, redeemed) = key.redeem(&issued).unwrap();
         assert_eq!(sid, 999);
-        assert_eq!(sec, secret);
+        assert_eq!(redeemed.enc_key, keys.enc_key);
+        assert_eq!(redeemed.hp_key, keys.hp_key);
+        assert_eq!(redeemed.nonce_base, keys.nonce_base);
     }
 
     #[test]
     fn tampered_ticket_rejected() {
         let key = TicketKey::new([0x42u8; 32]);
-        let mut ticket = key.issue(1, &[0u8; 32]);
+        let keys = PacketKeys::derive_from_secret(&[0u8; 32]);
+        let mut ticket = key.issue(1, &keys);
         ticket[15] ^= 0xFF; // corrupt ciphertext
         assert!(key.redeem(&ticket).is_err());
     }
@@ -155,24 +146,26 @@ mod tests {
     #[test]
     fn issued_tickets_use_fresh_nonces() {
         let key = TicketKey::new([0x42u8; 32]);
-        let secret = [0xBEu8; 32];
-        let t1 = key.issue(7, &secret);
-        let t2 = key.issue(7, &secret);
+        let keys = PacketKeys::derive_from_secret(&[0xBEu8; 32]);
+        let t1 = key.issue(7, &keys);
+        let t2 = key.issue(7, &keys);
         assert_ne!(&t1[..12], &t2[..12]);
     }
 
     #[test]
     fn session_ticket_serialize() {
-        let t = SessionTicket::new(7, [0x11u8; 32]);
+        let keys = PacketKeys::derive_from_secret(&[0x11u8; 32]);
+        let t = SessionTicket::new(7, keys.clone());
         let bytes = t.to_bytes();
         let back = SessionTicket::from_bytes(&bytes).unwrap();
         assert_eq!(back.session_id, 7);
-        assert_eq!(back.traffic_secret, [0x11u8; 32]);
+        assert_eq!(back.keys.enc_key, keys.enc_key);
     }
 
     #[test]
     fn session_ticket_rejects_trailing_bytes() {
-        let t = SessionTicket::new(9, [0x22u8; 32]);
+        let keys = PacketKeys::derive_from_secret(&[0x22u8; 32]);
+        let t = SessionTicket::new(9, keys);
         let mut bytes = t.to_bytes();
         bytes.push(0xFF);
         assert!(SessionTicket::from_bytes(&bytes).is_none());

@@ -7,10 +7,11 @@
 ///   4. Established
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
 
-use pqcrypto_kyber::kyber768::PublicKey as KemPublicKey;
+use pqcrypto_mlkem::mlkem768::PublicKey as KemPublicKey;
 
 use crate::{
     crypto::{decoder::PacketDecoder, encoder::PacketEncoder},
@@ -22,11 +23,7 @@ use crate::{
     },
     packet::PktType,
     session::{Session, SessionEvent},
-    transport::{
-        cc::{CongestionControl, Cubic},
-        chaff::ChaffScheduler,
-        probe::PathProber,
-    },
+    transport::{cc::CongestionControl, chaff::ChaffScheduler, default_cc, probe::PathProber},
 };
 
 // ── Wire framing for pre-session packets ─────────────────────────────────────
@@ -81,6 +78,13 @@ pub struct Connection {
     send_counter: u64,
     /// Server's KEM public key, held by client during cookie handshake.
     _server_kem_pk: Option<KemPublicKey>,
+
+    // Keepalive
+    last_recv: Instant,
+    last_send: Instant,
+
+    // Resumption
+    pub ticket_key: Option<crate::transport::resumption::TicketKey>,
 }
 
 impl Connection {
@@ -119,6 +123,7 @@ impl Connection {
         remote: SocketAddr,
         server_identity: Arc<IdentityKeypair>,
         cookie_factory: Arc<CookieFactory>,
+        ticket_key: Option<crate::transport::resumption::TicketKey>,
     ) -> Result<(Self, mpsc::UnboundedReceiver<SessionEvent>), SeamError> {
         // Send stateless cookie challenge
         let addr_bytes = remote.to_string();
@@ -134,6 +139,7 @@ impl Connection {
         let mut conn = Self::new_base(socket, remote, ConnPhase::ServerWaitCookie, tx);
         conn.server_identity = Some(server_identity);
         conn.cookie_factory = Some(cookie_factory);
+        conn.ticket_key = ticket_key;
         Ok((conn, rx))
     }
 
@@ -157,17 +163,20 @@ impl Connection {
             fec_enc: None,
             fec_dec: FecDecoder::new(),
             fec_group_id: 0,
-            cc: Box::new(Cubic::new()),
+            cc: default_cc(),
             chaff: ChaffScheduler::new(),
             prober: PathProber::new(),
             event_tx,
             send_counter: 0,
+            last_recv: Instant::now(),
+            last_send: Instant::now(),
+            ticket_key: None,
         }
     }
 
-    fn finish_handshake(&mut self, result: HandshakeResult) {
+    async fn finish_handshake(&mut self, result: HandshakeResult) {
         let enc = PacketEncoder::new(result.keys.clone(), result.session_id);
-        let dec = PacketDecoder::new(result.keys);
+        let dec = PacketDecoder::new(result.keys.clone());
         // Client-initiated connections take the Client role; server connections
         // use the Server role so they allocate even stream IDs on push.
         let role = if self.server_identity.is_some() {
@@ -181,6 +190,18 @@ impl Connection {
         self.server_identity = None;
         self.cookie_factory = None;
         self._server_kem_pk = None;
+
+        // Server: issue and send an encrypted session ticket for 0-RTT resumption.
+        if let Some(tk) = &self.ticket_key {
+            let ticket = tk.issue(result.session_id, &result.keys);
+            if let Some(session) = self.session.as_mut() {
+                let mut out = vec![0u8; 32 + ticket.len() + 16];
+                if let Ok(n) = session.encode_raw(PktType::SessionTicket, &ticket, &mut out) {
+                    out.truncate(n);
+                    let _ = self.socket.send_to(&out, self.remote).await;
+                }
+            }
+        }
     }
 
     // ── Ingress ──────────────────────────────────────────────────────────────
@@ -252,7 +273,7 @@ impl Connection {
             .send_to(&pkt, self.remote)
             .await
             .map_err(|e| SeamError::HandshakeFailed(e.to_string()))?;
-        self.finish_handshake(result);
+        self.finish_handshake(result).await;
         Ok(())
     }
 
@@ -313,11 +334,12 @@ impl Connection {
             .as_ref()
             .ok_or_else(|| SeamError::HandshakeFailed("no server identity".into()))?;
         let result = hs.read_msg3_and_finish(&identity.kem_sk, payload)?;
-        self.finish_handshake(result);
+        self.finish_handshake(result).await;
         Ok(())
     }
 
     async fn on_data_packet(&mut self, buf: &mut [u8]) -> Result<(), SeamError> {
+        self.last_recv = Instant::now();
         let session = self
             .session
             .as_mut()
@@ -364,16 +386,25 @@ impl Connection {
             ArbiterMode::PureArq => (None, None),
         };
 
-        for pkt in packets {
-            let size = pkt.len() as u64;
-            // Honour the congestion window: if there is no room, stop sending.
-            // ACK/MaxData packets bypass this check (they are not data) but they
-            // are small enough that the error in bytes_in_flight is negligible.
+        for tp in packets {
+            self.last_send = Instant::now();
+            let size = tp.bytes.len() as u64;
+            if tp.is_control {
+                // ACK / MaxData — always send, do not count against CC or FEC.
+                self.socket
+                    .send_to(&tp.bytes, self.remote)
+                    .await
+                    .map_err(|e| SeamError::HandshakeFailed(e.to_string()))?;
+                self.send_counter += 1;
+                continue;
+            }
+
+            // Honour the congestion window: if there is no room, stop sending data.
             if self.cc.available() < size {
                 break;
             }
             self.socket
-                .send_to(&pkt, self.remote)
+                .send_to(&tp.bytes, self.remote)
                 .await
                 .map_err(|e| SeamError::HandshakeFailed(e.to_string()))?;
             self.cc.on_send(size);
@@ -387,7 +418,7 @@ impl Connection {
                 if enc.group_id != gid {
                     *enc = FecEncoder::new(gid, k, r);
                 }
-                if let Some(repairs) = enc.push_source(&pkt) {
+                if let Some(repairs) = enc.push_source(&tp.bytes) {
                     self.fec_group_id = self.fec_group_id.wrapping_add(1);
                     for rep in &repairs {
                         let _ = self.socket.send_to(&rep.to_bytes(), self.remote).await;
@@ -463,6 +494,29 @@ impl Connection {
             let rtt_us = session.srtt_us();
             self.fec_arbiter.on_ack_epoch(0, in_flight.max(1), rtt_us);
         }
+    }
+
+    // ── Keepalive ────────────────────────────────────────────────────────────
+
+    const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(15);
+    const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
+
+    /// If the connection has been idle on the send side, queue a Ping frame.
+    #[allow(clippy::collapsible_if)]
+    pub fn maybe_queue_ping(&mut self) {
+        if self.phase != ConnPhase::Established {
+            return;
+        }
+        if self.last_send.elapsed() >= Self::KEEPALIVE_INTERVAL {
+            if let Some(s) = self.session.as_mut() {
+                s.ping();
+            }
+        }
+    }
+
+    /// True if no packet has been received from the peer for too long.
+    pub fn is_idle(&self) -> bool {
+        self.phase == ConnPhase::Established && self.last_recv.elapsed() >= Self::IDLE_TIMEOUT
     }
 
     pub fn is_established(&self) -> bool {

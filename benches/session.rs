@@ -86,7 +86,7 @@ fn bench_stream_read(c: &mut Criterion) {
                 // Receiver side
                 let mut receiver = make_session();
                 for mut pkt in packets {
-                    let _ = receiver.receive_packet(&mut pkt);
+                    let _ = receiver.receive_packet(&mut pkt.bytes);
                 }
                 let mut out = Vec::with_capacity(sz);
                 receiver.read(1, &mut out, sz).ok()

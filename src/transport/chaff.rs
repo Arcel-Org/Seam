@@ -31,23 +31,32 @@ impl ChaffScheduler {
         }
     }
 
-    pub fn enable(&mut self)  { self.enabled = true; }
-    pub fn disable(&mut self) { self.enabled = false; }
-    pub fn is_enabled(&self) -> bool { self.enabled }
+    pub fn enable(&mut self) {
+        self.enabled = true;
+    }
+    pub fn disable(&mut self) {
+        self.enabled = false;
+    }
+    pub fn is_enabled(&self) -> bool {
+        self.enabled
+    }
 
     pub fn should_send(&self) -> bool {
         self.enabled && Instant::now() >= self.next_send
     }
 
     pub fn time_until_next(&self) -> Duration {
-        if !self.enabled { return Duration::MAX; }
+        if !self.enabled {
+            return Duration::MAX;
+        }
         self.next_send.saturating_duration_since(Instant::now())
     }
 
     /// Advance the chaff schedule after a packet is sent.
     /// Uses the send_counter as additional entropy for the LCG.
     pub fn mark_sent(&mut self, send_counter: u64) {
-        self.lcg = self.lcg
+        self.lcg = self
+            .lcg
             .wrapping_mul(6364136223846793005)
             .wrapping_add(send_counter.wrapping_add(1));
         let interval = pseudo_exp(self.lcg, MEAN_INTERVAL_MS);
@@ -80,7 +89,9 @@ impl ChaffScheduler {
     /// Returns the jitter duration that should be applied before flushing.
     /// Call this on every flush to introduce sub-RTT timing noise.
     pub fn jitter_delay(&mut self) -> Duration {
-        if !self.enabled { return Duration::ZERO; }
+        if !self.enabled {
+            return Duration::ZERO;
+        }
         self.lcg = self.lcg.wrapping_mul(6364136223846793005).wrapping_add(1);
         // Jitter ≤ 5ms — small enough not to hurt latency, large enough to blur timing
         let jitter_us = (self.lcg >> 32) as u64 % 5_000;
@@ -97,7 +108,9 @@ fn pseudo_exp(seed: u64, mean_ms: u64) -> u64 {
 }
 
 impl Default for ChaffScheduler {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[cfg(test)]

@@ -73,14 +73,22 @@ impl PathProber {
         payload[8..16].copy_from_slice(&now_us.to_le_bytes());
         // Remaining bytes are zero padding for MTU probing
 
-        self.pending.insert(id, PendingProbe { sent_at: Instant::now(), probe_size });
+        self.pending.insert(
+            id,
+            PendingProbe {
+                sent_at: Instant::now(),
+                probe_size,
+            },
+        );
         self.next_probe = Instant::now() + PROBE_INTERVAL;
         (id, payload)
     }
 
     /// Process a PathProbe echo response. Returns measured RTT if valid.
     pub fn on_echo(&mut self, payload: &[u8]) -> Option<Duration> {
-        if payload.len() < PROBE_HDR { return None; }
+        if payload.len() < PROBE_HDR {
+            return None;
+        }
         let id = u64::from_le_bytes(payload[0..8].try_into().ok()?);
 
         let probe = self.pending.remove(&id)?;
@@ -122,7 +130,9 @@ impl PathProber {
 }
 
 impl Default for PathProber {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[cfg(test)]

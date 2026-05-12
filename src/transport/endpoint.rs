@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::UdpSocket;
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{Mutex, mpsc};
 use tokio::task::JoinHandle;
 
 use crate::{
@@ -33,9 +33,13 @@ pub struct Endpoint {
 }
 
 impl Endpoint {
-    pub async fn bind(local_addr: SocketAddr, identity: IdentityKeypair) -> Result<Self, SeamError> {
+    pub async fn bind(
+        local_addr: SocketAddr,
+        identity: IdentityKeypair,
+    ) -> Result<Self, SeamError> {
         let socket = Arc::new(
-            UdpSocket::bind(local_addr).await
+            UdpSocket::bind(local_addr)
+                .await
                 .map_err(|e| SeamError::HandshakeFailed(e.to_string()))?,
         );
         let identity = Arc::new(identity);
@@ -81,7 +85,8 @@ impl Endpoint {
             &self.identity,
             server_x25519,
             server_kem_pk,
-        ).await?;
+        )
+        .await?;
 
         let shared = Arc::new(Mutex::new(conn));
         self.conns.lock().await.insert(remote, shared.clone());
@@ -119,7 +124,9 @@ async fn recv_loop(
                     remote,
                     identity.clone(),
                     cookie_factory.clone(),
-                ).await {
+                )
+                .await
+                {
                     Ok(v) => v,
                     Err(_) => continue,
                 };

@@ -36,11 +36,15 @@ impl KeySchedule {
         }
     }
 
-    pub fn key_phase(&self) -> bool { self.epoch & 1 == 1 }
+    pub fn key_phase(&self) -> bool {
+        self.epoch & 1 == 1
+    }
 
     /// Prepare (but do not activate) the next epoch's keys.
     pub fn prepare_next(&mut self) {
-        if self.next.is_some() { return; }
+        if self.next.is_some() {
+            return;
+        }
         let next_secret = blake3::derive_key("apex/key-update/v1", &self.current_secret);
         self.next = Some(PacketKeys::derive_from_secret(&next_secret));
     }
@@ -51,9 +55,10 @@ impl KeySchedule {
         let next_secret = blake3::derive_key("apex/key-update/v1", &self.current_secret);
         self.current_secret.zeroize();
         self.current_secret = next_secret;
-        self.current = self.next.take().unwrap_or_else(|| {
-            PacketKeys::derive_from_secret(&self.current_secret)
-        });
+        self.current = self
+            .next
+            .take()
+            .unwrap_or_else(|| PacketKeys::derive_from_secret(&self.current_secret));
         self.epoch = self.epoch.wrapping_add(1);
     }
 }
@@ -82,7 +87,10 @@ mod tests {
         k.rotate();
         assert_eq!(k.epoch, 1);
         assert_eq!(k.key_phase(), true);
-        assert_ne!(k.current.enc_key, enc_key_before, "keys must differ after rotation");
+        assert_ne!(
+            k.current.enc_key, enc_key_before,
+            "keys must differ after rotation"
+        );
     }
 
     #[test]

@@ -5,7 +5,7 @@
 /// cwnd/2 and cwnd = ssthresh (fast recovery).
 use std::time::{Duration, Instant};
 
-const MSS: u64 = 1400;           // max segment size in bytes
+const MSS: u64 = 1400; // max segment size in bytes
 const INIT_CWND: u64 = 10 * MSS; // RFC 6928: 10-segment initial window
 const MIN_CWND: u64 = 2 * MSS;
 
@@ -31,8 +31,12 @@ impl CongestionController {
         self.cwnd.saturating_sub(self.bytes_in_flight)
     }
 
-    pub fn cwnd(&self) -> u64 { self.cwnd }
-    pub fn bytes_in_flight(&self) -> u64 { self.bytes_in_flight }
+    pub fn cwnd(&self) -> u64 {
+        self.cwnd
+    }
+    pub fn bytes_in_flight(&self) -> u64 {
+        self.bytes_in_flight
+    }
 
     /// Call when a packet of `bytes` is sent.
     pub fn on_send(&mut self, bytes: u64) {
@@ -76,7 +80,9 @@ impl CongestionController {
 }
 
 impl Default for CongestionController {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[cfg(test)]

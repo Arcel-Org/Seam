@@ -2,5 +2,5 @@ pub mod arbiter;
 pub mod codec;
 pub mod gf;
 
-pub use arbiter::{FecArbiter, ArbiterMode};
-pub use codec::{FecEncoder, FecDecoder, FecRepairData, FEC_SOURCE_HDR, FEC_REPAIR_HDR};
+pub use arbiter::{ArbiterMode, FecArbiter};
+pub use codec::{FEC_REPAIR_HDR, FEC_SOURCE_HDR, FecDecoder, FecEncoder, FecRepairData};

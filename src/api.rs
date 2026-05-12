@@ -27,7 +27,7 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use tokio::net::UdpSocket;
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{Mutex, mpsc};
 use tokio::task::JoinHandle;
 
 use crate::{
@@ -44,8 +44,20 @@ const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 fn set_socket_buffers(socket: &UdpSocket, size: i32) {
     let fd = socket.as_raw_fd();
     unsafe {
-        libc::setsockopt(fd, libc::SOL_SOCKET, libc::SO_RCVBUF, &size as *const i32 as *const libc::c_void, std::mem::size_of::<i32>() as libc::socklen_t);
-        libc::setsockopt(fd, libc::SOL_SOCKET, libc::SO_SNDBUF, &size as *const i32 as *const libc::c_void, std::mem::size_of::<i32>() as libc::socklen_t);
+        libc::setsockopt(
+            fd,
+            libc::SOL_SOCKET,
+            libc::SO_RCVBUF,
+            &size as *const i32 as *const libc::c_void,
+            std::mem::size_of::<i32>() as libc::socklen_t,
+        );
+        libc::setsockopt(
+            fd,
+            libc::SOL_SOCKET,
+            libc::SO_SNDBUF,
+            &size as *const i32 as *const libc::c_void,
+            std::mem::size_of::<i32>() as libc::socklen_t,
+        );
     }
 }
 
@@ -64,20 +76,33 @@ pub struct SeamConnWriter {
 impl SeamConnWriter {
     /// Open a locally-initiated stream. Returns the new stream ID.
     pub async fn open_stream(&self) -> StreamId {
-        self.inner.lock().await
-            .session.as_mut().expect("not established").open_stream()
+        self.inner
+            .lock()
+            .await
+            .session
+            .as_mut()
+            .expect("not established")
+            .open_stream()
     }
 
     /// Open a stream for server-push (semantic alias for `open_stream`).
     pub async fn push_stream(&self) -> StreamId {
-        self.inner.lock().await
-            .session.as_mut().expect("not established").push_stream()
+        self.inner
+            .lock()
+            .await
+            .session
+            .as_mut()
+            .expect("not established")
+            .push_stream()
     }
 
     /// Write `data` into stream `sid` and flush to the network.
     pub async fn write(&self, sid: StreamId, data: &[u8]) -> Result<(), SeamError> {
         let mut g = self.inner.lock().await;
-        g.session.as_mut().ok_or_else(|| SeamError::HandshakeFailed("not connected".into()))?.send(sid, data)?;
+        g.session
+            .as_mut()
+            .ok_or_else(|| SeamError::HandshakeFailed("not connected".into()))?
+            .send(sid, data)?;
         g.flush().await
     }
 
@@ -86,7 +111,7 @@ impl SeamConnWriter {
         let mut g = self.inner.lock().await;
         let mut out = Vec::new();
         if let Some(session) = g.session.as_mut() {
-            let _ = session.read(sid, &mut out, max);  // ignore UnknownStream (stream may not have data yet)
+            let _ = session.read(sid, &mut out, max); // ignore UnknownStream (stream may not have data yet)
         }
         Ok(out)
     }
@@ -113,21 +138,35 @@ pub struct SeamConn {
 impl SeamConn {
     /// Open a locally-initiated stream. Returns the new stream ID.
     pub async fn open_stream(&self) -> StreamId {
-        self.inner.lock().await
-            .session.as_mut().expect("not established").open_stream()
+        self.inner
+            .lock()
+            .await
+            .session
+            .as_mut()
+            .expect("not established")
+            .open_stream()
     }
 
     /// Open a stream for server-push (semantic alias for `open_stream`).
     /// On a server-role connection this allocates even stream IDs.
     pub async fn push_stream(&self) -> StreamId {
-        self.inner.lock().await
-            .session.as_mut().expect("not established").push_stream()
+        self.inner
+            .lock()
+            .await
+            .session
+            .as_mut()
+            .expect("not established")
+            .push_stream()
     }
 
     /// Write `data` into stream `sid` and flush to the network.
     pub async fn write(&self, sid: StreamId, data: &[u8]) -> Result<(), SeamError> {
         let mut guard = self.inner.lock().await;
-        guard.session.as_mut().expect("not established").send(sid, data)?;
+        guard
+            .session
+            .as_mut()
+            .expect("not established")
+            .send(sid, data)?;
         guard.flush().await
     }
 
@@ -137,7 +176,11 @@ impl SeamConn {
     pub async fn read(&self, sid: StreamId, max: usize) -> Result<Vec<u8>, SeamError> {
         let mut guard = self.inner.lock().await;
         let mut out = Vec::new();
-        guard.session.as_mut().expect("not established").read(sid, &mut out, max)?;
+        guard
+            .session
+            .as_mut()
+            .expect("not established")
+            .read(sid, &mut out, max)?;
         Ok(out)
     }
 
@@ -149,14 +192,17 @@ impl SeamConn {
     /// Send an unreliable datagram (≤ max_datagram_size, default 1200 B).
     pub async fn send_datagram(&self, data: Bytes) -> Result<(), SeamError> {
         let mut guard = self.inner.lock().await;
-        guard.session.as_mut().expect("not established").send_datagram(data)?;
+        guard
+            .session
+            .as_mut()
+            .expect("not established")
+            .send_datagram(data)?;
         guard.flush().await
     }
 
     /// Drain the next received datagram, if any.
     pub async fn recv_datagram(&self) -> Option<Bytes> {
-        self.inner.lock().await
-            .session.as_mut()?.recv_datagram()
+        self.inner.lock().await.session.as_mut()?.recv_datagram()
     }
 
     /// Initiate a graceful close.
@@ -171,7 +217,13 @@ impl SeamConn {
 
     /// Session ID (shared with the peer after handshake).
     pub async fn session_id(&self) -> u64 {
-        self.inner.lock().await.session.as_ref().map(|s| s.id).unwrap_or(0)
+        self.inner
+            .lock()
+            .await
+            .session
+            .as_ref()
+            .map(|s| s.id)
+            .unwrap_or(0)
     }
 
     /// Flush pending stream data and background operations (retransmits, chaff, probes).
@@ -201,12 +253,20 @@ pub struct Client {
 
 impl Client {
     /// Bind to `local_addr` and prepare to connect.
-    pub async fn bind(local_addr: SocketAddr, identity: IdentityKeypair) -> Result<Self, SeamError> {
-        let socket = UdpSocket::bind(local_addr).await
+    pub async fn bind(
+        local_addr: SocketAddr,
+        identity: IdentityKeypair,
+    ) -> Result<Self, SeamError> {
+        let socket = UdpSocket::bind(local_addr)
+            .await
             .map_err(|e| SeamError::HandshakeFailed(e.to_string()))?;
         set_socket_buffers(&socket, 8 * 1024 * 1024);
         let socket = Arc::new(socket);
-        Ok(Self { socket, identity: Arc::new(identity), _recv_task: None })
+        Ok(Self {
+            socket,
+            identity: Arc::new(identity),
+            _recv_task: None,
+        })
     }
 
     /// Connect to a server at `remote`. Drives the 1.5-RTT cookie + noise handshake
@@ -223,15 +283,14 @@ impl Client {
             &self.identity,
             server_x25519,
             server_kem_pk,
-        ).await?;
+        )
+        .await?;
 
         // Drive handshake: receive packets until Established.
         let mut buf = vec![0u8; MAX_UDP];
         while !conn.is_established() {
-            let (n, _) = tokio::time::timeout(
-                HANDSHAKE_TIMEOUT,
-                self.socket.recv_from(&mut buf),
-            ).await
+            let (n, _) = tokio::time::timeout(HANDSHAKE_TIMEOUT, self.socket.recv_from(&mut buf))
+                .await
                 .map_err(|_| SeamError::HandshakeFailed("handshake timed out".into()))?
                 .map_err(|e| SeamError::HandshakeFailed(e.to_string()))?;
             conn.on_packet(&mut buf[..n].to_vec()).await?;
@@ -262,7 +321,9 @@ async fn client_recv_loop(socket: Arc<UdpSocket>, conn: SharedConn) {
         };
         let mut pkt = buf[..n].to_vec();
         let mut guard = conn.lock().await;
-        if guard.is_closed() { break; }
+        if guard.is_closed() {
+            break;
+        }
         let _ = guard.on_packet(&mut pkt).await;
     }
 }
@@ -279,8 +340,12 @@ pub struct Server {
 
 impl Server {
     /// Bind to `local_addr` and start accepting connections.
-    pub async fn bind(local_addr: SocketAddr, identity: IdentityKeypair) -> Result<Self, SeamError> {
-        let socket = UdpSocket::bind(local_addr).await
+    pub async fn bind(
+        local_addr: SocketAddr,
+        identity: IdentityKeypair,
+    ) -> Result<Self, SeamError> {
+        let socket = UdpSocket::bind(local_addr)
+            .await
             .map_err(|e| SeamError::HandshakeFailed(e.to_string()))?;
         set_socket_buffers(&socket, 8 * 1024 * 1024);
         let socket = Arc::new(socket);
@@ -300,7 +365,11 @@ impl Server {
             accept_tx,
         ));
 
-        Ok(Self { socket, accept_rx, _recv_task: recv_task })
+        Ok(Self {
+            socket,
+            accept_rx,
+            _recv_task: recv_task,
+        })
     }
 
     /// Wait for the next fully-established inbound connection.
@@ -339,13 +408,18 @@ async fn server_recv_loop(
 
         if let Some(conn) = conns.get(&remote) {
             let was_established = conn.lock().await.is_established();
-            { let _ = conn.lock().await.on_packet(&mut pkt).await; }
+            {
+                let _ = conn.lock().await.on_packet(&mut pkt).await;
+            }
             let is_established = conn.lock().await.is_established();
 
             if !was_established && is_established && !delivered.contains(&remote) {
                 delivered.insert(remote);
                 if let Some(events) = pending_events.remove(&remote) {
-                    let _ = accept_tx.send(SeamConn { inner: conn.clone(), events });
+                    let _ = accept_tx.send(SeamConn {
+                        inner: conn.clone(),
+                        events,
+                    });
                 }
             }
 
@@ -361,7 +435,9 @@ async fn server_recv_loop(
                 remote,
                 identity.clone(),
                 cookie_factory.clone(),
-            ).await {
+            )
+            .await
+            {
                 Ok(v) => v,
                 Err(_) => continue,
             };

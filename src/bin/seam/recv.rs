@@ -1,12 +1,12 @@
-use std::io::Write;
-use std::path::PathBuf;
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use clap::Args;
 use seam_protocol::{
     api::{SeamConn, Server},
     handshake::{IdentityKeypair, pk_to_bytes},
     session::stream::StreamId,
 };
+use std::io::Write;
+use std::path::PathBuf;
 
 use crate::proto::{self, read_frame, send_frame, wait_for_stream};
 
@@ -58,7 +58,10 @@ async fn receive_transfer(conn: &mut SeamConn, dest: &std::path::Path) -> Result
     let hello = read_frame(conn, ctrl_sid, &mut buf).await?;
     let _ = conn.tick().await;
     if hello.is_empty() || hello[0] != proto::HELLO {
-        bail!("expected HELLO, got {:02x}", hello.first().copied().unwrap_or(0));
+        bail!(
+            "expected HELLO, got {:02x}",
+            hello.first().copied().unwrap_or(0)
+        );
     }
     let compress = hello.len() > 1 && hello[1] == proto::COMPRESS_ZSTD;
 

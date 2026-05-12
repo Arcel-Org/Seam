@@ -1,14 +1,11 @@
-use pqcrypto_kyber::kyber768::{
-    self,
-    PublicKey as KemPublicKey,
-    SecretKey as KemSecretKey,
-    Ciphertext as KemCiphertext,
-};
-use pqcrypto_traits::kem::{PublicKey, Ciphertext, SharedSecret};
-use x25519_dalek::{StaticSecret, PublicKey as X25519Public};
-use rand::rngs::OsRng;
-use zeroize::{Zeroize, ZeroizeOnDrop};
 use crate::crypto::keys::PacketKeys;
+use pqcrypto_kyber::kyber768::{
+    self, Ciphertext as KemCiphertext, PublicKey as KemPublicKey, SecretKey as KemSecretKey,
+};
+use pqcrypto_traits::kem::{Ciphertext, PublicKey, SharedSecret};
+use rand::rngs::OsRng;
+use x25519_dalek::{PublicKey as X25519Public, StaticSecret};
+use zeroize::{Zeroize, ZeroizeOnDrop};
 
 /// Long-term identity key pair (X25519 + Kyber768 / ML-KEM-768).
 pub struct IdentityKeypair {
@@ -23,7 +20,12 @@ impl IdentityKeypair {
         let x25519_secret = StaticSecret::random_from_rng(OsRng);
         let x25519_public = X25519Public::from(&x25519_secret);
         let (kem_pk, kem_sk) = kyber768::keypair();
-        Self { x25519_secret, x25519_public, kem_pk, kem_sk }
+        Self {
+            x25519_secret,
+            x25519_public,
+            kem_pk,
+            kem_sk,
+        }
     }
 }
 

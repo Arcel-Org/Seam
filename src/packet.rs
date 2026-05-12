@@ -12,22 +12,22 @@ pub fn encode_buf_len(plaintext_len: usize) -> usize {
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PktType {
-    Initial   = 0x00,
+    Initial = 0x00,
     Handshake = 0x01,
-    Data      = 0x02,
-    Ack       = 0x03,
+    Data = 0x02,
+    Ack = 0x03,
     FecRepair = 0x04,
-    Chaff     = 0x05,
+    Chaff = 0x05,
     PathProbe = 0x06,
-    Close     = 0x07,
+    Close = 0x07,
     /// Unreliable, out-of-order application datagram. No retransmission,
     /// no reordering, not FEC-protected by default. Analogous to QUIC
     /// DATAGRAM frame (RFC 9221).
-    Datagram  = 0x08,
+    Datagram = 0x08,
     /// Signals the peer to roll traffic keys forward by one epoch.
     KeyUpdate = 0x09,
     /// Extends the peer's send-side flow-control window. Payload: 8-byte BE u64 new limit.
-    MaxData   = 0x0A,
+    MaxData = 0x0A,
 }
 
 impl TryFrom<u8> for PktType {

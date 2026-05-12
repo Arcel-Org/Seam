@@ -1,9 +1,9 @@
-use chacha20poly1305::{ChaCha20Poly1305, KeyInit, AeadInPlace, Tag};
 use crate::{
     crypto::{header::apply_header_protection, keys::PacketKeys, replay::ReplayWindow},
     error::SeamError,
-    packet::{PktType, HEADER_LEN, TAG_LEN, MIN_PACKET_LEN},
+    packet::{HEADER_LEN, MIN_PACKET_LEN, PktType, TAG_LEN},
 };
+use chacha20poly1305::{AeadInPlace, ChaCha20Poly1305, KeyInit, Tag};
 
 pub struct PacketDecoder {
     keys: PacketKeys,
@@ -12,14 +12,20 @@ pub struct PacketDecoder {
 
 impl PacketDecoder {
     pub fn new(keys: PacketKeys) -> Self {
-        Self { keys, replay: ReplayWindow::new() }
+        Self {
+            keys,
+            replay: ReplayWindow::new(),
+        }
     }
 
     /// Decode a packet in-place. Returns `(pkt_type, packet_number, plaintext_slice)`.
     /// The buffer is modified: header is unprotected, payload is decrypted.
     pub fn decode<'a>(&mut self, buf: &'a mut [u8]) -> Result<(PktType, u64, &'a [u8]), SeamError> {
         if buf.len() < MIN_PACKET_LEN {
-            return Err(SeamError::BufferTooSmall { need: MIN_PACKET_LEN, have: buf.len() });
+            return Err(SeamError::BufferTooSmall {
+                need: MIN_PACKET_LEN,
+                have: buf.len(),
+            });
         }
 
         // Remove header protection using first 16 bytes of ciphertext

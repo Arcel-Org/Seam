@@ -1,3 +1,4 @@
+use bytes::Bytes;
 /// Unreliable datagram queue. Per RFC 9221 for QUIC.
 ///
 /// Datagrams are:
@@ -9,7 +10,6 @@
 /// Use cases: real-time media (video/voice), gaming state updates, telemetry,
 /// anything where retransmit latency is worse than the loss itself.
 use std::collections::VecDeque;
-use bytes::Bytes;
 
 /// Maximum allowed datagram payload size. Leaves headroom for header+tag
 /// within a typical MTU.
@@ -70,7 +70,9 @@ impl DatagramQueue {
     /// Enqueue a received datagram for the application to read.
     /// Drops oldest if queue is full.
     pub fn receive(&mut self, data: Bytes) {
-        if data.len() > self.max_size { return; }
+        if data.len() > self.max_size {
+            return;
+        }
         while self.recv_queue.len() >= self.max_queue_depth {
             self.recv_queue.pop_front();
             self.dropped += 1;
@@ -83,12 +85,18 @@ impl DatagramQueue {
         self.recv_queue.pop_front()
     }
 
-    pub fn send_pending(&self) -> usize { self.send_queue.len() }
-    pub fn recv_pending(&self) -> usize { self.recv_queue.len() }
+    pub fn send_pending(&self) -> usize {
+        self.send_queue.len()
+    }
+    pub fn recv_pending(&self) -> usize {
+        self.recv_queue.len()
+    }
 }
 
 impl Default for DatagramQueue {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[cfg(test)]

@@ -1,6 +1,6 @@
-use anyhow::{bail, Result};
-use seam_protocol::{api::SeamConn, session::SessionEvent, SeamError};
+use anyhow::{Result, bail};
 use seam_protocol::session::stream::StreamId;
+use seam_protocol::{SeamError, api::SeamConn, session::SessionEvent};
 
 pub const HELLO: u8 = 0x01;
 pub const FILE_INFO: u8 = 0x02;
@@ -42,7 +42,10 @@ pub async fn read_frame(conn: &mut SeamConn, sid: StreamId, buf: &mut Vec<u8>) -
         }
         match conn.read_event().await {
             Some(SessionEvent::DataAvailable(s)) if s == sid => {
-                let data = conn.read(s, 65536).await.map_err(|e| anyhow::anyhow!("{e}"))?;
+                let data = conn
+                    .read(s, 65536)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("{e}"))?;
                 buf.extend_from_slice(&data);
             }
             Some(SessionEvent::StreamFinished(s)) if s == sid => {

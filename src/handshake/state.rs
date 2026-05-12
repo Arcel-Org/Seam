@@ -1,14 +1,13 @@
-use snow::Builder;
-use pqcrypto_kyber::kyber768::PublicKey as KemPublicKey;
 use crate::{
     crypto::keys::PacketKeys,
     error::SeamError,
     handshake::hybrid_keys::{
-        IdentityKeypair, HybridSharedSecret,
-        kem_encapsulate, kem_decapsulate,
-        pk_to_bytes, pk_from_bytes,
+        HybridSharedSecret, IdentityKeypair, kem_decapsulate, kem_encapsulate, pk_from_bytes,
+        pk_to_bytes,
     },
 };
+use pqcrypto_kyber::kyber768::PublicKey as KemPublicKey;
+use snow::Builder;
 
 const NOISE_PATTERN: &str = "Noise_XX_25519_ChaChaPoly_BLAKE2s";
 
@@ -27,7 +26,10 @@ pub struct ClientHandshake {
 }
 
 impl ClientHandshake {
-    pub fn new(local: &IdentityKeypair, server_x25519_static: &[u8; 32]) -> Result<Self, SeamError> {
+    pub fn new(
+        local: &IdentityKeypair,
+        server_x25519_static: &[u8; 32],
+    ) -> Result<Self, SeamError> {
         let noise = Builder::new(NOISE_PATTERN.parse().unwrap())
             .local_private_key(&local.x25519_secret.to_bytes())
             .remote_public_key(server_x25519_static)
@@ -37,7 +39,11 @@ impl ClientHandshake {
     }
 
     /// Msg1 (-> e, es): payload = length-prefixed server KEM public key bytes.
-    pub fn write_msg1(&mut self, server_kem_pk: &KemPublicKey, out: &mut Vec<u8>) -> Result<(), SeamError> {
+    pub fn write_msg1(
+        &mut self,
+        server_kem_pk: &KemPublicKey,
+        out: &mut Vec<u8>,
+    ) -> Result<(), SeamError> {
         let pk_bytes = pk_to_bytes(server_kem_pk);
         let payload = length_prefix(&pk_bytes);
         write_noise(&mut self.noise, &payload, out)
@@ -64,7 +70,9 @@ impl ClientHandshake {
 
         // Capture hash and peer static after writing msg3
         let hash = self.noise.get_handshake_hash().to_vec();
-        let peer_static: [u8; 32] = self.noise.get_remote_static()
+        let peer_static: [u8; 32] = self
+            .noise
+            .get_remote_static()
             .ok_or_else(|| SeamError::HandshakeFailed("no remote static".into()))?
             .try_into()
             .map_err(|_| SeamError::HandshakeFailed("bad static key length".into()))?;
@@ -93,13 +101,18 @@ impl ServerHandshake {
     /// Msg1: client sends our KEM PK (just reads it through noise, we ignore the payload).
     pub fn read_msg1(&mut self, msg: &[u8]) -> Result<(), SeamError> {
         let mut buf = vec![0u8; 65535];
-        self.noise.read_message(msg, &mut buf)
+        self.noise
+            .read_message(msg, &mut buf)
             .map_err(|e| SeamError::HandshakeFailed(e.to_string()))?;
         Ok(())
     }
 
     /// Msg2: we send our KEM public key in the payload so client can encapsulate against it.
-    pub fn write_msg2(&mut self, local_kem_pk: &KemPublicKey, out: &mut Vec<u8>) -> Result<(), SeamError> {
+    pub fn write_msg2(
+        &mut self,
+        local_kem_pk: &KemPublicKey,
+        out: &mut Vec<u8>,
+    ) -> Result<(), SeamError> {
         let pk_bytes = pk_to_bytes(local_kem_pk);
         let payload = length_prefix(&pk_bytes);
         write_noise(&mut self.noise, &payload, out)
@@ -123,7 +136,9 @@ impl ServerHandshake {
         };
 
         let hash = self.noise.get_handshake_hash().to_vec();
-        let peer_static: [u8; 32] = self.noise.get_remote_static()
+        let peer_static: [u8; 32] = self
+            .noise
+            .get_remote_static()
             .ok_or_else(|| SeamError::HandshakeFailed("no remote static".into()))?
             .try_into()
             .map_err(|_| SeamError::HandshakeFailed("bad static key length".into()))?;
@@ -136,17 +151,30 @@ impl ServerHandshake {
 // Shared helpers
 // ──────────────────────────────────────────────────────────────────────────────
 
-fn finish(hash: Vec<u8>, peer_static: [u8; 32], kem_shared: [u8; 32]) -> Result<HandshakeResult, SeamError> {
+fn finish(
+    hash: Vec<u8>,
+    peer_static: [u8; 32],
+    kem_shared: [u8; 32],
+) -> Result<HandshakeResult, SeamError> {
     let x25519_component = blake3::derive_key("apex/x25519-component/v1", &hash);
     let hybrid = HybridSharedSecret::new(kem_shared, x25519_component);
     let keys = hybrid.derive_packet_keys(&hash);
     let session_id = u64::from_le_bytes(hash[..8].try_into().unwrap());
-    Ok(HandshakeResult { session_id, keys, peer_static_pubkey: peer_static })
+    Ok(HandshakeResult {
+        session_id,
+        keys,
+        peer_static_pubkey: peer_static,
+    })
 }
 
-fn write_noise(hs: &mut snow::HandshakeState, payload: &[u8], out: &mut Vec<u8>) -> Result<(), SeamError> {
+fn write_noise(
+    hs: &mut snow::HandshakeState,
+    payload: &[u8],
+    out: &mut Vec<u8>,
+) -> Result<(), SeamError> {
     let mut buf = vec![0u8; 65535];
-    let n = hs.write_message(payload, &mut buf)
+    let n = hs
+        .write_message(payload, &mut buf)
         .map_err(|e| SeamError::HandshakeFailed(e.to_string()))?;
     out.extend_from_slice(&buf[..n]);
     Ok(())
@@ -154,7 +182,8 @@ fn write_noise(hs: &mut snow::HandshakeState, payload: &[u8], out: &mut Vec<u8>)
 
 fn read_noise(hs: &mut snow::HandshakeState, msg: &[u8]) -> Result<Vec<u8>, SeamError> {
     let mut buf = vec![0u8; 65535];
-    let n = hs.read_message(msg, &mut buf)
+    let n = hs
+        .read_message(msg, &mut buf)
         .map_err(|e| SeamError::HandshakeFailed(e.to_string()))?;
     Ok(buf[..n].to_vec())
 }
@@ -203,10 +232,14 @@ mod tests {
 
         // Msg3: client finishes
         let mut msg3 = Vec::new();
-        let client_result = client.write_msg3_and_finish(&server_kem_pk, &mut msg3).unwrap();
+        let client_result = client
+            .write_msg3_and_finish(&server_kem_pk, &mut msg3)
+            .unwrap();
 
         // Server finishes
-        let server_result = server.read_msg3_and_finish(&server_id.kem_sk, &msg3).unwrap();
+        let server_result = server
+            .read_msg3_and_finish(&server_id.kem_sk, &msg3)
+            .unwrap();
 
         assert_eq!(client_result.session_id, server_result.session_id);
     }

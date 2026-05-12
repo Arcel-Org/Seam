@@ -1,10 +1,9 @@
-use criterion::{criterion_group, criterion_main, Criterion};
-use seam_protocol::handshake::{
-    IdentityKeypair,
-    state::{ClientHandshake, ServerHandshake},
-    CookieFactory,
-};
+use criterion::{Criterion, criterion_group, criterion_main};
 use seam_protocol::crypto::keys::PacketKeys;
+use seam_protocol::handshake::{
+    CookieFactory, IdentityKeypair,
+    state::{ClientHandshake, ServerHandshake},
+};
 
 fn bench_keypair_gen(c: &mut Criterion) {
     c.bench_function("IdentityKeypair::generate", |b| {
@@ -52,11 +51,21 @@ fn bench_full_handshake(c: &mut Criterion) {
             let server_kem_pk = client.read_msg2(&msg2).unwrap();
 
             let mut msg3 = Vec::new();
-            let _client_result = client.write_msg3_and_finish(&server_kem_pk, &mut msg3).unwrap();
-            let _server_result = server.read_msg3_and_finish(&server_id.kem_sk, &msg3).unwrap();
+            let _client_result = client
+                .write_msg3_and_finish(&server_kem_pk, &mut msg3)
+                .unwrap();
+            let _server_result = server
+                .read_msg3_and_finish(&server_id.kem_sk, &msg3)
+                .unwrap();
         });
     });
 }
 
-criterion_group!(benches, bench_keypair_gen, bench_key_derivation, bench_cookie, bench_full_handshake);
+criterion_group!(
+    benches,
+    bench_keypair_gen,
+    bench_key_derivation,
+    bench_cookie,
+    bench_full_handshake
+);
 criterion_main!(benches);

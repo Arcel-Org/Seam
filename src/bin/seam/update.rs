@@ -1,4 +1,4 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use clap::Args;
 use serde::Deserialize;
 
@@ -45,7 +45,9 @@ pub fn run(args: UpdateArgs) -> Result<()> {
     }
 
     let target = current_target();
-    let asset = release.assets.iter()
+    let asset = release
+        .assets
+        .iter()
         .find(|a| a.name.contains(&target) && a.name.ends_with(".tar.gz"))
         .ok_or_else(|| anyhow::anyhow!("no release asset for target {target}"))?;
 

@@ -1,7 +1,7 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use std::io::BufRead;
-use std::process::{Child, Command, Stdio};
 use std::io::Write;
+use std::process::{Child, Command, Stdio};
 
 pub struct RemoteInfo {
     pub host: String,
@@ -19,9 +19,12 @@ impl RemoteInfo {
 
     fn ssh_base(&self) -> Vec<String> {
         let mut args = vec![
-            "-o".into(), "BatchMode=yes".into(),
-            "-o".into(), "StrictHostKeyChecking=accept-new".into(),
-            "-o".into(), "ConnectTimeout=10".into(),
+            "-o".into(),
+            "BatchMode=yes".into(),
+            "-o".into(),
+            "StrictHostKeyChecking=accept-new".into(),
+            "-o".into(),
+            "ConnectTimeout=10".into(),
         ];
         if let Some(p) = self.ssh_port {
             args.push("-p".into());
@@ -149,5 +152,12 @@ pub fn parse_remote(s: &str) -> Option<(RemoteInfo, String)> {
         (None, host_part.to_string())
     };
 
-    Some((RemoteInfo { host, user, ssh_port: None }, path))
+    Some((
+        RemoteInfo {
+            host,
+            user,
+            ssh_port: None,
+        },
+        path,
+    ))
 }

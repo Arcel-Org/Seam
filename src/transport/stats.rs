@@ -47,7 +47,9 @@ pub struct ConnectionStats {
 }
 
 impl ConnectionStats {
-    pub fn new() -> Self { Self::default() }
+    pub fn new() -> Self {
+        Self::default()
+    }
 
     /// Update RTT min/max given a new sample.
     pub fn record_rtt(&mut self, rtt: Duration) {

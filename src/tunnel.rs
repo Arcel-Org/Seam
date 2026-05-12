@@ -9,11 +9,11 @@ use std::task::{Context, Poll};
 
 use bytes::{Buf, Bytes, BytesMut};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
-use tokio::sync::{mpsc, Semaphore};
+use tokio::sync::{Semaphore, mpsc};
 
 use crate::{
     api::{SeamConn, SeamConnWriter},
-    session::{stream::StreamId, SessionEvent},
+    session::{SessionEvent, stream::StreamId},
 };
 
 struct MuxState {
@@ -61,9 +61,18 @@ impl SeamMux {
         let sid = self.writer.open_stream().await;
         let (data_tx, data_rx) = mpsc::unbounded_channel::<Bytes>();
         let (write_tx, write_rx) = mpsc::unbounded_channel::<Bytes>();
-        self.state.lock().unwrap().stream_senders.insert(sid, data_tx);
+        self.state
+            .lock()
+            .unwrap()
+            .stream_senders
+            .insert(sid, data_tx);
         tokio::spawn(stream_write_loop(sid, self.writer.clone(), write_rx));
-        SeamStream { sid, write_tx: Some(write_tx), data_rx, read_buf: BytesMut::new() }
+        SeamStream {
+            sid,
+            write_tx: Some(write_tx),
+            data_rx,
+            read_buf: BytesMut::new(),
+        }
     }
 
     /// Wait for the remote peer to push a new stream.
@@ -79,7 +88,12 @@ impl SeamMux {
         };
         let (write_tx, write_rx) = mpsc::unbounded_channel::<Bytes>();
         tokio::spawn(stream_write_loop(sid, self.writer.clone(), write_rx));
-        Some(SeamStream { sid, write_tx: Some(write_tx), data_rx, read_buf: BytesMut::new() })
+        Some(SeamStream {
+            sid,
+            write_tx: Some(write_tx),
+            data_rx,
+            read_buf: BytesMut::new(),
+        })
     }
 }
 
@@ -185,9 +199,15 @@ impl AsyncWrite for SeamStream {
         match self.write_tx.as_ref() {
             Some(tx) => match tx.send(Bytes::copy_from_slice(buf)) {
                 Ok(()) => Poll::Ready(Ok(buf.len())),
-                Err(_) => Poll::Ready(Err(io::Error::new(io::ErrorKind::BrokenPipe, "stream closed"))),
+                Err(_) => Poll::Ready(Err(io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    "stream closed",
+                ))),
             },
-            None => Poll::Ready(Err(io::Error::new(io::ErrorKind::BrokenPipe, "stream shut down"))),
+            None => Poll::Ready(Err(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "stream shut down",
+            ))),
         }
     }
 

@@ -1,6 +1,6 @@
+use bytes::Bytes;
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
-use bytes::Bytes;
 
 /// An in-flight packet tracked for retransmission.
 struct InFlight {
@@ -30,11 +30,14 @@ impl ArqTracker {
 
     /// Record a packet as sent.
     pub fn on_sent(&mut self, pkt_num: u64, data: Bytes) {
-        self.in_flight.insert(pkt_num, InFlight {
-            data,
-            sent_at: Instant::now(),
-            retransmits: 0,
-        });
+        self.in_flight.insert(
+            pkt_num,
+            InFlight {
+                data,
+                sent_at: Instant::now(),
+                retransmits: 0,
+            },
+        );
     }
 
     /// Record receipt of an ACK for `pkt_num`. Updates RTT estimates.

@@ -54,8 +54,12 @@ impl AckRanges {
         }
     }
 
-    pub fn has_pending_ack(&self) -> bool { self.ack_pending }
-    pub fn is_empty(&self) -> bool { self.received.is_empty() }
+    pub fn has_pending_ack(&self) -> bool {
+        self.ack_pending
+    }
+    pub fn is_empty(&self) -> bool {
+        self.received.is_empty()
+    }
 
     /// Build a single ACK frame payload covering the current receive set.
     /// After building, the pending-ACK flag is cleared but the ranges are
@@ -63,16 +67,17 @@ impl AckRanges {
     pub fn build_frame(&mut self) -> Vec<u8> {
         let mut out = Vec::with_capacity(32);
         if self.received.is_empty() {
-            out.extend_from_slice(&0u64.to_le_bytes());   // largest_acked
-            out.extend_from_slice(&0u64.to_le_bytes());   // ack_delay_us
-            out.extend_from_slice(&0u16.to_le_bytes());   // range_count
-            out.extend_from_slice(&0u64.to_le_bytes());   // first_range_length
+            out.extend_from_slice(&0u64.to_le_bytes()); // largest_acked
+            out.extend_from_slice(&0u64.to_le_bytes()); // ack_delay_us
+            out.extend_from_slice(&0u16.to_le_bytes()); // range_count
+            out.extend_from_slice(&0u64.to_le_bytes()); // first_range_length
             self.ack_pending = false;
             return out;
         }
 
         let largest = *self.received.iter().next_back().unwrap();
-        let ack_delay_us = self.largest_received_at
+        let ack_delay_us = self
+            .largest_received_at
             .map(|t| t.elapsed().as_micros() as u64)
             .unwrap_or(0);
 
@@ -120,12 +125,16 @@ impl AckRanges {
 }
 
 impl Default for AckRanges {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 /// Parse an ACK frame. Returns a vector of inclusive (start, end) packet-number ranges.
 pub fn parse_ack_frame(frame: &[u8]) -> Option<(u64, u64, Vec<(u64, u64)>)> {
-    if frame.len() < 8 + 8 + 2 + 8 { return None; }
+    if frame.len() < 8 + 8 + 2 + 8 {
+        return None;
+    }
     let largest = u64::from_le_bytes(frame[0..8].try_into().ok()?);
     let ack_delay_us = u64::from_le_bytes(frame[8..16].try_into().ok()?);
     let range_count = u16::from_le_bytes(frame[16..18].try_into().ok()?) as usize;
@@ -138,7 +147,9 @@ pub fn parse_ack_frame(frame: &[u8]) -> Option<(u64, u64, Vec<(u64, u64)>)> {
 
     let mut off = 26;
     for _ in 0..range_count {
-        if frame.len() < off + 16 { return None; }
+        if frame.len() < off + 16 {
+            return None;
+        }
         let gap = u64::from_le_bytes(frame[off..off + 8].try_into().ok()?);
         let length = u64::from_le_bytes(frame[off + 8..off + 16].try_into().ok()?);
         off += 16;
@@ -167,7 +178,9 @@ mod tests {
     #[test]
     fn contiguous_range_ack() {
         let mut a = AckRanges::new();
-        for pn in 10..=15 { a.on_received(pn, true); }
+        for pn in 10..=15 {
+            a.on_received(pn, true);
+        }
         let frame = a.build_frame();
         let (largest, _, ranges) = parse_ack_frame(&frame).unwrap();
         assert_eq!(largest, 15);
@@ -178,7 +191,9 @@ mod tests {
     fn multi_range_with_gaps() {
         let mut a = AckRanges::new();
         // Received: 1,2,3 (gap 4,5,6) 7 (gap 8) 9,10
-        for pn in [1u64, 2, 3, 7, 9, 10] { a.on_received(pn, true); }
+        for pn in [1u64, 2, 3, 7, 9, 10] {
+            a.on_received(pn, true);
+        }
         let frame = a.build_frame();
         let (largest, _, ranges) = parse_ack_frame(&frame).unwrap();
         assert_eq!(largest, 10);

@@ -1,6 +1,6 @@
-use std::collections::BTreeMap;
-use bytes::{Bytes, BytesMut};
 use crate::error::SeamError;
+use bytes::{Bytes, BytesMut};
+use std::collections::BTreeMap;
 
 pub type StreamId = u32;
 
@@ -23,7 +23,7 @@ pub struct Stream {
     /// no more data is emitted until the peer advances the window.
     send_max_data: u64,
     // Receive side
-    recv_offset: u64,         // next expected byte offset
+    recv_offset: u64,               // next expected byte offset
     recv_buf: BTreeMap<u64, Bytes>, // out-of-order segments keyed by offset
     /// Per-stream receive limit (bytes). Attempting to buffer beyond this
     /// is rejected to prevent unbounded memory growth per stream.
@@ -31,7 +31,7 @@ pub struct Stream {
     recv_buffered: u64,
     fin_received: Option<u64>,
     fin_sent: bool,
-    fin_flushed: bool,  // true once a FIN DATA frame has been emitted
+    fin_flushed: bool, // true once a FIN DATA frame has been emitted
 }
 
 impl Stream {
@@ -168,7 +168,9 @@ impl Stream {
     pub fn read(&mut self, out: &mut Vec<u8>, max_bytes: usize) -> usize {
         let mut read = 0;
         while read < max_bytes {
-            let Some((&offset, _)) = self.recv_buf.iter().next() else { break };
+            let Some((&offset, _)) = self.recv_buf.iter().next() else {
+                break;
+            };
             if offset > self.recv_offset {
                 // Gap — waiting for earlier segment
                 break;
@@ -185,7 +187,8 @@ impl Stream {
     }
 
     pub fn is_recv_finished(&self) -> bool {
-        self.fin_received.map_or(false, |fin_off| self.recv_offset >= fin_off)
+        self.fin_received
+            .map_or(false, |fin_off| self.recv_offset >= fin_off)
     }
 
     pub fn is_send_finished(&self) -> bool {

@@ -41,7 +41,9 @@ impl BufferPool {
 
     /// Return a buffer to the pool. Dropped if the pool is at capacity.
     pub fn release(&self, buf: Vec<u8>) {
-        if buf.capacity() < self.buf_capacity { return; }
+        if buf.capacity() < self.buf_capacity {
+            return;
+        }
         if let Ok(mut pool) = self.inner.lock() {
             if pool.len() < self.max_pool_size {
                 pool.push(buf);
@@ -53,7 +55,9 @@ impl BufferPool {
         self.inner.lock().map(|p| p.len()).unwrap_or(0)
     }
 
-    pub fn is_empty(&self) -> bool { self.len() == 0 }
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
 
     pub fn clone_handle(&self) -> Self {
         Self {

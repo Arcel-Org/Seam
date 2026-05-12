@@ -1,6 +1,6 @@
-use criterion::{criterion_group, criterion_main, BatchSize, BenchmarkId, Criterion, Throughput};
-use seam_protocol::{PacketDecoder, PacketEncoder, PacketKeys, PktType};
+use criterion::{BatchSize, BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use seam_protocol::packet::{HEADER_LEN, TAG_LEN};
+use seam_protocol::{PacketDecoder, PacketEncoder, PacketKeys, PktType};
 
 const SECRET: &[u8] = b"bench-secret-key-32-bytes-padded";
 
@@ -58,7 +58,11 @@ fn bench_roundtrip(c: &mut Criterion) {
     group.bench_function("encode_decode_1400b", |b| {
         let enc = PacketEncoder::new(PacketKeys::derive_from_secret(SECRET), 1);
         b.iter_batched(
-            || { let mut pkt = vec![0u8; HEADER_LEN + 1400 + TAG_LEN]; enc.encode(PktType::Data, &payload, &mut pkt).unwrap(); pkt },
+            || {
+                let mut pkt = vec![0u8; HEADER_LEN + 1400 + TAG_LEN];
+                enc.encode(PktType::Data, &payload, &mut pkt).unwrap();
+                pkt
+            },
             |mut pkt| {
                 let mut dec = PacketDecoder::new(PacketKeys::derive_from_secret(SECRET));
                 let _ = dec.decode(&mut pkt).unwrap();
@@ -76,5 +80,11 @@ fn bench_key_derivation(c: &mut Criterion) {
     });
 }
 
-criterion_group!(benches, bench_encode, bench_decode, bench_roundtrip, bench_key_derivation);
+criterion_group!(
+    benches,
+    bench_encode,
+    bench_decode,
+    bench_roundtrip,
+    bench_key_derivation
+);
 criterion_main!(benches);

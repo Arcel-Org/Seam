@@ -1,11 +1,14 @@
-use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-use seam_protocol::{PacketDecoder, PacketEncoder, PacketKeys};
-use seam_protocol::session::{Session, stream::{PRIORITY_DEFAULT, PRIORITY_HIGH, PRIORITY_LOW}};
+use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
+use seam_protocol::session::rack::RackTracker;
+use seam_protocol::session::{
+    Session,
+    stream::{PRIORITY_DEFAULT, PRIORITY_HIGH, PRIORITY_LOW},
+};
 use seam_protocol::transport::bbr::Bbr;
 use seam_protocol::transport::cc::{CongestionControl, Cubic};
 use seam_protocol::transport::pacer::Pacer;
 use seam_protocol::transport::pool::BufferPool;
-use seam_protocol::session::rack::RackTracker;
+use seam_protocol::{PacketDecoder, PacketEncoder, PacketKeys};
 
 const SECRET: &[u8] = b"session-bench-key-32-bytes-exact";
 const SESSION_ID: u64 = 0xDEADBEEF_CAFEBABE;
@@ -31,30 +34,38 @@ fn bench_stream_flush(c: &mut Criterion) {
             });
         });
 
-        group.bench_with_input(BenchmarkId::new("4_streams_equal_priority", size), &size, |b, &sz| {
-            b.iter(|| {
-                let mut sess = make_session();
-                for _ in 0..4 {
-                    let sid = sess.open_stream();
-                    sess.send(sid, &vec![0xABu8; sz / 4]).unwrap();
-                }
-                sess.flush().unwrap()
-            });
-        });
+        group.bench_with_input(
+            BenchmarkId::new("4_streams_equal_priority", size),
+            &size,
+            |b, &sz| {
+                b.iter(|| {
+                    let mut sess = make_session();
+                    for _ in 0..4 {
+                        let sid = sess.open_stream();
+                        sess.send(sid, &vec![0xABu8; sz / 4]).unwrap();
+                    }
+                    sess.flush().unwrap()
+                });
+            },
+        );
 
-        group.bench_with_input(BenchmarkId::new("4_streams_mixed_priority", size), &size, |b, &sz| {
-            b.iter(|| {
-                let mut sess = make_session();
-                // One high-priority stream + three low-priority
-                let high = sess.open_stream_with_priority(PRIORITY_HIGH);
-                sess.send(high, &vec![0xABu8; sz / 4]).unwrap();
-                for _ in 0..3 {
-                    let sid = sess.open_stream_with_priority(PRIORITY_LOW);
-                    sess.send(sid, &vec![0xABu8; sz / 4]).unwrap();
-                }
-                sess.flush().unwrap()
-            });
-        });
+        group.bench_with_input(
+            BenchmarkId::new("4_streams_mixed_priority", size),
+            &size,
+            |b, &sz| {
+                b.iter(|| {
+                    let mut sess = make_session();
+                    // One high-priority stream + three low-priority
+                    let high = sess.open_stream_with_priority(PRIORITY_HIGH);
+                    sess.send(high, &vec![0xABu8; sz / 4]).unwrap();
+                    for _ in 0..3 {
+                        let sid = sess.open_stream_with_priority(PRIORITY_LOW);
+                        sess.send(sid, &vec![0xABu8; sz / 4]).unwrap();
+                    }
+                    sess.flush().unwrap()
+                });
+            },
+        );
     }
     group.finish();
 }
@@ -155,8 +166,8 @@ fn bench_buffer_pool(c: &mut Criterion) {
 }
 
 fn bench_datagram_queue(c: &mut Criterion) {
-    use seam_protocol::session::datagram::DatagramQueue;
     use bytes::Bytes;
+    use seam_protocol::session::datagram::DatagramQueue;
     let mut group = c.benchmark_group("datagram_queue");
 
     group.bench_function("send_poll_1200B", |b| {

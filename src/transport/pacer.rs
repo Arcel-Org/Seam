@@ -74,11 +74,15 @@ impl Pacer {
         Duration::from_secs_f64(secs)
     }
 
-    pub fn rate_bytes_per_sec(&self) -> u64 { self.rate as u64 }
+    pub fn rate_bytes_per_sec(&self) -> u64 {
+        self.rate as u64
+    }
 }
 
 impl Default for Pacer {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[cfg(test)]
@@ -116,7 +120,10 @@ mod tests {
         p.last_refill = Instant::now() - Duration::from_millis(1);
         let slow = p.available();
 
-        assert!(fast > slow, "faster rate should give more tokens: {fast} vs {slow}");
+        assert!(
+            fast > slow,
+            "faster rate should give more tokens: {fast} vs {slow}"
+        );
     }
 
     #[test]

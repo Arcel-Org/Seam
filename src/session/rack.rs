@@ -1,3 +1,4 @@
+use bytes::Bytes;
 /// RACK-TLP loss detection (RFC 8985).
 ///
 /// RACK ("Recent ACKnowledgment") detects losses based on packet send time
@@ -12,7 +13,6 @@
 /// Wire-compatible with existing ARQ: the caller just feeds send/ack events.
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
-use bytes::Bytes;
 
 /// RACK reorder window as a fraction of SRTT.
 const RACK_REORDER_FRAC_NUM: u32 = 1;
@@ -62,9 +62,15 @@ impl RackTracker {
 
     /// Record a packet transmission.
     pub fn on_sent(&mut self, pkt_num: u64, data: Bytes, size: u64) {
-        self.in_flight.insert(pkt_num, InFlightPacket {
-            data, sent_at: Instant::now(), size, retransmits: 0,
-        });
+        self.in_flight.insert(
+            pkt_num,
+            InFlightPacket {
+                data,
+                sent_at: Instant::now(),
+                size,
+                retransmits: 0,
+            },
+        );
     }
 
     /// Record receipt of an ACK. Updates RTT and RACK reference time.
@@ -94,7 +100,8 @@ impl RackTracker {
 
         // Recompute reorder window: max(1ms, 1/4 × SRTT)
         if self.srtt_us > 0 {
-            let frac_us = self.srtt_us * RACK_REORDER_FRAC_NUM as u64 / RACK_REORDER_FRAC_DEN as u64;
+            let frac_us =
+                self.srtt_us * RACK_REORDER_FRAC_NUM as u64 / RACK_REORDER_FRAC_DEN as u64;
             self.reorder_window = Duration::from_micros(frac_us).max(Duration::from_millis(1));
         }
 
@@ -126,9 +133,13 @@ impl RackTracker {
     }
 
     fn detect_losses(&mut self) -> Vec<(u64, Bytes, u64)> {
-        let Some(reference) = self.rack_xmit_time else { return Vec::new(); };
+        let Some(reference) = self.rack_xmit_time else {
+            return Vec::new();
+        };
         let threshold = reference.checked_sub(self.reorder_window);
-        let Some(threshold) = threshold else { return Vec::new(); };
+        let Some(threshold) = threshold else {
+            return Vec::new();
+        };
 
         let mut lost = Vec::new();
         let mut keys_to_remove = Vec::new();
@@ -160,10 +171,18 @@ impl RackTracker {
         }
     }
 
-    pub fn srtt(&self) -> Duration { Duration::from_micros(self.srtt_us) }
-    pub fn rttvar(&self) -> Duration { Duration::from_micros(self.rttvar_us) }
-    pub fn min_rtt(&self) -> Duration { self.min_rtt }
-    pub fn in_flight_count(&self) -> usize { self.in_flight.len() }
+    pub fn srtt(&self) -> Duration {
+        Duration::from_micros(self.srtt_us)
+    }
+    pub fn rttvar(&self) -> Duration {
+        Duration::from_micros(self.rttvar_us)
+    }
+    pub fn min_rtt(&self) -> Duration {
+        self.min_rtt
+    }
+    pub fn in_flight_count(&self) -> usize {
+        self.in_flight.len()
+    }
     pub fn in_flight_bytes(&self) -> u64 {
         self.in_flight.values().map(|p| p.size).sum()
     }
@@ -176,7 +195,9 @@ impl RackTracker {
 }
 
 impl Default for RackTracker {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[cfg(test)]

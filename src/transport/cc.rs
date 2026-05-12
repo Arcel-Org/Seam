@@ -91,8 +91,12 @@ impl CongestionControl for Cubic {
         (self.cwnd as u64).saturating_sub(self.bytes_in_flight)
     }
 
-    fn cwnd(&self) -> u64 { self.cwnd as u64 }
-    fn bytes_in_flight(&self) -> u64 { self.bytes_in_flight }
+    fn cwnd(&self) -> u64 {
+        self.cwnd as u64
+    }
+    fn bytes_in_flight(&self) -> u64 {
+        self.bytes_in_flight
+    }
 
     fn on_send(&mut self, bytes: u64) {
         self.bytes_in_flight = self.bytes_in_flight.saturating_add(bytes);
@@ -160,7 +164,9 @@ impl CongestionControl for Cubic {
 }
 
 impl Default for Cubic {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 // ── AIMD (kept as fallback / reference) ──────────────────────────────────────
@@ -184,9 +190,15 @@ impl Aimd {
 }
 
 impl CongestionControl for Aimd {
-    fn available(&self) -> u64 { self.cwnd.saturating_sub(self.bytes_in_flight) }
-    fn cwnd(&self) -> u64 { self.cwnd }
-    fn bytes_in_flight(&self) -> u64 { self.bytes_in_flight }
+    fn available(&self) -> u64 {
+        self.cwnd.saturating_sub(self.bytes_in_flight)
+    }
+    fn cwnd(&self) -> u64 {
+        self.cwnd
+    }
+    fn bytes_in_flight(&self) -> u64 {
+        self.bytes_in_flight
+    }
 
     fn on_send(&mut self, bytes: u64) {
         self.bytes_in_flight = self.bytes_in_flight.saturating_add(bytes);
@@ -205,7 +217,9 @@ impl CongestionControl for Aimd {
     fn on_loss(&mut self) {
         let now = Instant::now();
         if let Some(last) = self.last_loss {
-            if now.duration_since(last) < Duration::from_millis(200) { return; }
+            if now.duration_since(last) < Duration::from_millis(200) {
+                return;
+            }
         }
         self.last_loss = Some(now);
         self.ssthresh = (self.cwnd / 2).max(2 * MSS);
@@ -220,7 +234,9 @@ impl CongestionControl for Aimd {
 }
 
 impl Default for Aimd {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[cfg(test)]

@@ -1,3 +1,4 @@
+use crate::transport::cc::{CongestionControl, MSS};
 /// BBRv1 congestion controller (Cardwell et al., 2016).
 ///
 /// Unlike loss-based CC (AIMD/CUBIC), BBR models the path as a pipe with:
@@ -18,9 +19,8 @@
 /// latency simultaneously; on highly lossy short-RTT links CUBIC may still
 /// win. The pluggable `CongestionControl` trait lets callers A/B at runtime.
 use std::time::{Duration, Instant};
-use crate::transport::cc::{CongestionControl, MSS};
 
-const STARTUP_GAIN: f64 = 2.89;  // 2/ln(2)
+const STARTUP_GAIN: f64 = 2.89; // 2/ln(2)
 const DRAIN_GAIN: f64 = 1.0 / STARTUP_GAIN;
 const PROBE_GAINS: [f64; 8] = [1.25, 0.75, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0];
 
@@ -30,7 +30,12 @@ const PROBE_RTT_DURATION: Duration = Duration::from_millis(200);
 const MIN_PIPE_CWND: u64 = 4 * MSS;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum BbrState { Startup, Drain, ProbeBW, ProbeRTT }
+enum BbrState {
+    Startup,
+    Drain,
+    ProbeBW,
+    ProbeRTT,
+}
 
 pub struct Bbr {
     state: BbrState,
@@ -121,7 +126,9 @@ impl Bbr {
     }
 
     fn check_full_pipe(&mut self) {
-        if self.full_pipe || self.state != BbrState::Startup { return; }
+        if self.full_pipe || self.state != BbrState::Startup {
+            return;
+        }
         // Plateau detection: 3 rounds without 25% BtlBw growth
         if self.btl_bw >= self.prior_bw * 1.25 {
             self.prior_bw = self.btl_bw;
@@ -150,7 +157,9 @@ impl Bbr {
 
     fn maybe_enter_probe_rtt(&mut self) {
         let now = Instant::now();
-        if now.duration_since(self.rtprop_stamp) >= RTPROP_WINDOW && self.state != BbrState::ProbeRTT {
+        if now.duration_since(self.rtprop_stamp) >= RTPROP_WINDOW
+            && self.state != BbrState::ProbeRTT
+        {
             self.state = BbrState::ProbeRTT;
             self.probe_rtt_done_stamp = Some(now + PROBE_RTT_DURATION);
         }
@@ -169,9 +178,15 @@ impl Bbr {
 }
 
 impl CongestionControl for Bbr {
-    fn available(&self) -> u64 { self.cwnd.saturating_sub(self.bytes_in_flight) }
-    fn cwnd(&self) -> u64 { self.cwnd }
-    fn bytes_in_flight(&self) -> u64 { self.bytes_in_flight }
+    fn available(&self) -> u64 {
+        self.cwnd.saturating_sub(self.bytes_in_flight)
+    }
+    fn cwnd(&self) -> u64 {
+        self.cwnd
+    }
+    fn bytes_in_flight(&self) -> u64 {
+        self.bytes_in_flight
+    }
 
     fn on_send(&mut self, bytes: u64) {
         self.bytes_in_flight = self.bytes_in_flight.saturating_add(bytes);
@@ -183,7 +198,10 @@ impl CongestionControl for Bbr {
 
         // Measure delivery rate
         let now = Instant::now();
-        let interval = now.duration_since(self.delivered_time).as_secs_f64().max(0.000_001);
+        let interval = now
+            .duration_since(self.delivered_time)
+            .as_secs_f64()
+            .max(0.000_001);
         let sample_bw = bytes as f64 / interval;
         self.update_bw(sample_bw);
         self.delivered_time = now;
@@ -193,7 +211,9 @@ impl CongestionControl for Bbr {
         match self.state {
             BbrState::Startup => {
                 self.check_full_pipe();
-                if self.full_pipe { self.enter_drain(); }
+                if self.full_pipe {
+                    self.enter_drain();
+                }
             }
             BbrState::Drain => {
                 if self.bytes_in_flight <= self.target_cwnd(1.0) {
@@ -239,7 +259,9 @@ impl CongestionControl for Bbr {
 }
 
 impl Default for Bbr {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[cfg(test)]

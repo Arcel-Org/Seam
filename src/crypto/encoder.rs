@@ -1,10 +1,10 @@
-use std::sync::atomic::{AtomicU64, Ordering};
-use chacha20poly1305::{ChaCha20Poly1305, KeyInit, AeadInPlace};
 use crate::{
     crypto::{header::apply_header_protection, keys::PacketKeys},
     error::SeamError,
-    packet::{PktType, HEADER_LEN, encode_buf_len},
+    packet::{HEADER_LEN, PktType, encode_buf_len},
 };
+use chacha20poly1305::{AeadInPlace, ChaCha20Poly1305, KeyInit};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 pub struct PacketEncoder {
     keys: PacketKeys,
@@ -14,7 +14,11 @@ pub struct PacketEncoder {
 
 impl PacketEncoder {
     pub fn new(keys: PacketKeys, session_id: u64) -> Self {
-        Self { keys, session_id, next_pkt_num: AtomicU64::new(0) }
+        Self {
+            keys,
+            session_id,
+            next_pkt_num: AtomicU64::new(0),
+        }
     }
 
     /// Return the packet number that will be used by the *next* call to `encode`.
@@ -25,10 +29,18 @@ impl PacketEncoder {
 
     /// Encode a packet into `out`. Returns bytes written.
     /// `out` must be at least `encode_buf_len(plaintext.len())` bytes.
-    pub fn encode(&self, pkt_type: PktType, plaintext: &[u8], out: &mut [u8]) -> Result<usize, SeamError> {
+    pub fn encode(
+        &self,
+        pkt_type: PktType,
+        plaintext: &[u8],
+        out: &mut [u8],
+    ) -> Result<usize, SeamError> {
         let needed = encode_buf_len(plaintext.len());
         if out.len() < needed {
-            return Err(SeamError::BufferTooSmall { need: needed, have: out.len() });
+            return Err(SeamError::BufferTooSmall {
+                need: needed,
+                have: out.len(),
+            });
         }
 
         let pkt_num = self.next_pkt_num.fetch_add(1, Ordering::Relaxed);

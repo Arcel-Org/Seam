@@ -7,7 +7,10 @@ pub struct ReplayWindow {
 
 impl ReplayWindow {
     pub fn new() -> Self {
-        Self { base_seq: 0, bitmap: [0u64; 16] }
+        Self {
+            base_seq: 0,
+            bitmap: [0u64; 16],
+        }
     }
 
     pub fn check_and_insert(&mut self, seq: u64) -> Result<(), SeamError> {

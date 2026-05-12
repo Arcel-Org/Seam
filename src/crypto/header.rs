@@ -1,4 +1,7 @@
-use chacha20::{ChaCha20, cipher::{KeyIvInit, StreamCipherSeek, StreamCipher}};
+use chacha20::{
+    ChaCha20,
+    cipher::{KeyIvInit, StreamCipher, StreamCipherSeek},
+};
 
 /// Apply (or remove — it's symmetric) header protection.
 ///

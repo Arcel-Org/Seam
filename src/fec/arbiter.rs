@@ -6,8 +6,8 @@
 /// retransmission RTT.
 /// Above 15% we go pure FEC because ARQ retransmits are hopeless.
 
-const THRESHOLD_LOW: f32  = 0.01;  // 1%
-const THRESHOLD_HIGH: f32 = 0.15;  // 15%
+const THRESHOLD_LOW: f32 = 0.01; // 1%
+const THRESHOLD_HIGH: f32 = 0.15; // 15%
 
 /// Exponentially weighted moving average for loss rate.
 struct EwmaLoss {
@@ -17,11 +17,18 @@ struct EwmaLoss {
 
 impl EwmaLoss {
     fn new() -> Self {
-        Self { value: 0.0, alpha: 0.125 } // RFC 6298 style
+        Self {
+            value: 0.0,
+            alpha: 0.125,
+        } // RFC 6298 style
     }
 
     fn update(&mut self, lost: u64, total: u64) -> f32 {
-        let sample = if total == 0 { 0.0 } else { lost as f32 / total as f32 };
+        let sample = if total == 0 {
+            0.0
+        } else {
+            lost as f32 / total as f32
+        };
         if self.value == 0.0 {
             self.value = sample;
         } else {
@@ -82,7 +89,8 @@ impl FecArbiter {
             ArbiterMode::PureArq
         } else if loss_rate < THRESHOLD_HIGH {
             // Scale repair count with loss rate: at 1% → r=1, at 15% → r=3
-            let r = 1u8 + ((loss_rate - THRESHOLD_LOW) / (THRESHOLD_HIGH - THRESHOLD_LOW) * 2.0) as u8;
+            let r =
+                1u8 + ((loss_rate - THRESHOLD_LOW) / (THRESHOLD_HIGH - THRESHOLD_LOW) * 2.0) as u8;
             ArbiterMode::HybridFecArq { k: 10, r }
         } else {
             // High loss — aggressive FEC, no ARQ
@@ -109,10 +117,18 @@ impl FecArbiter {
         match self.mode {
             ArbiterMode::PureArq => 0,
             ArbiterMode::HybridFecArq { k, r } => {
-                if source_count >= k { r } else { (source_count as f32 / k as f32 * r as f32) as u8 }
+                if source_count >= k {
+                    r
+                } else {
+                    (source_count as f32 / k as f32 * r as f32) as u8
+                }
             }
             ArbiterMode::PureFec { k, r } => {
-                if source_count >= k { r } else { (source_count as f32 / k as f32 * r as f32) as u8 }
+                if source_count >= k {
+                    r
+                } else {
+                    (source_count as f32 / k as f32 * r as f32) as u8
+                }
             }
         }
     }

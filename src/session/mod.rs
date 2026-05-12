@@ -5,20 +5,20 @@ pub mod flow;
 pub mod rack;
 pub mod stream;
 
+use bytes::Bytes;
 use std::collections::HashMap;
 use std::time::Duration;
-use bytes::Bytes;
 
 use crate::{
-    crypto::{encoder::PacketEncoder, decoder::PacketDecoder},
+    crypto::{decoder::PacketDecoder, encoder::PacketEncoder},
     error::SeamError,
     packet::PktType,
     session::{
-        ack::{parse_ack_frame, AckRanges},
+        ack::{AckRanges, parse_ack_frame},
         arq::ArqTracker,
         datagram::DatagramQueue,
         flow::FlowWindow,
-        stream::{Stream, StreamId, Priority, PRIORITY_DEFAULT},
+        stream::{PRIORITY_DEFAULT, Priority, Stream, StreamId},
     },
 };
 
@@ -46,7 +46,10 @@ pub enum Role {
 impl Role {
     /// Parity bit of locally-initiated stream IDs (Client=1 odd, Server=0 even).
     fn local_parity(self) -> u32 {
-        match self { Role::Client => 1, Role::Server => 0 }
+        match self {
+            Role::Client => 1,
+            Role::Server => 0,
+        }
     }
 }
 
@@ -76,7 +79,7 @@ impl Default for SessionLimits {
 // TODO: shrink once CC correctly exempts ACK/MaxData packets from bytes_in_flight,
 // so MaxData can reliably replenish the window mid-transfer.
 const DEFAULT_WINDOW: u64 = 256 << 20;
-const MAX_PAYLOAD: usize = 1400;    // conservative MTU
+const MAX_PAYLOAD: usize = 1400; // conservative MTU
 
 pub struct Session {
     pub id: u64,
@@ -117,8 +120,12 @@ impl Session {
         decoder: PacketDecoder,
         limits: SessionLimits,
     ) -> Self {
-        let datagrams = DatagramQueue::with_limits(limits.max_datagram_size, limits.max_datagram_queue);
-        let next_stream_id = match role { Role::Client => 1, Role::Server => 2 };
+        let datagrams =
+            DatagramQueue::with_limits(limits.max_datagram_size, limits.max_datagram_queue);
+        let next_stream_id = match role {
+            Role::Client => 1,
+            Role::Server => 2,
+        };
         Self {
             id,
             role,
@@ -178,9 +185,12 @@ impl Session {
     /// Queue an unreliable datagram for sending.
     /// Returns an error if the payload exceeds max_datagram_size.
     pub fn send_datagram(&mut self, data: Bytes) -> Result<(), SeamError> {
-        self.datagrams.send(data).map_err(|sz| SeamError::BufferTooSmall {
-            need: sz, have: self.limits.max_datagram_size,
-        })
+        self.datagrams
+            .send(data)
+            .map_err(|sz| SeamError::BufferTooSmall {
+                need: sz,
+                have: self.limits.max_datagram_size,
+            })
     }
 
     /// Read the next received datagram, if any.
@@ -189,10 +199,16 @@ impl Session {
     }
 
     pub fn datagram_stats(&self) -> (usize, usize, u64) {
-        (self.datagrams.send_pending(), self.datagrams.recv_pending(), self.datagrams.dropped)
+        (
+            self.datagrams.send_pending(),
+            self.datagrams.recv_pending(),
+            self.datagrams.dropped,
+        )
     }
 
-    pub fn limits(&self) -> &SessionLimits { &self.limits }
+    pub fn limits(&self) -> &SessionLimits {
+        &self.limits
+    }
 
     /// Accept a remotely-initiated stream (called when a Data frame arrives for an unknown id).
     fn get_or_create_stream(&mut self, id: StreamId) -> &mut Stream {
@@ -204,7 +220,9 @@ impl Session {
     /// Write `data` into a stream's send buffer.
     pub fn send(&mut self, stream_id: StreamId, data: &[u8]) -> Result<(), SeamError> {
         self.send_window.reserve(data.len() as u64)?;
-        let stream = self.streams.get_mut(&stream_id)
+        let stream = self
+            .streams
+            .get_mut(&stream_id)
             .ok_or(SeamError::UnknownStream(stream_id))?;
         stream.write(data)?;
         Ok(())
@@ -230,12 +248,14 @@ impl Session {
         for sid in stream_ids {
             loop {
                 let stream = self.streams.get_mut(&sid).unwrap();
-                let Some((offset, chunk)) = stream.poll_send(MAX_PAYLOAD - 14) else { break };
+                let Some((offset, chunk)) = stream.poll_send(MAX_PAYLOAD - 14) else {
+                    break;
+                };
 
                 // Frame: type(1) + flags(1) + len(2) + stream_id(4) + offset(8) = 16 bytes header
                 let mut frame = Vec::with_capacity(16 + chunk.len());
                 frame.push(0x01u8); // FrameType::Stream
-                frame.push(0u8);    // flags (bit 0 = FIN)
+                frame.push(0u8); // flags (bit 0 = FIN)
                 frame.extend_from_slice(&(chunk.len() as u16).to_le_bytes());
                 frame.extend_from_slice(&sid.to_le_bytes());
                 frame.extend_from_slice(&offset.to_le_bytes());
@@ -355,13 +375,17 @@ impl Session {
 
     fn handle_data_frame(&mut self, frame: Vec<u8>) -> Result<Vec<SessionEvent>, SeamError> {
         // Parse: type(1) + flags(1) + len(2) + stream_id(4) + offset(8) + data
-        if frame.len() < 16 { return Ok(vec![]); }
+        if frame.len() < 16 {
+            return Ok(vec![]);
+        }
         let data_len = u16::from_le_bytes([frame[2], frame[3]]) as usize;
         let stream_id = u32::from_le_bytes([frame[4], frame[5], frame[6], frame[7]]);
         let offset = u64::from_le_bytes(frame[8..16].try_into().unwrap());
         let is_fin = frame[1] & 0x01 != 0;
 
-        if frame.len() < 16 + data_len { return Ok(vec![]); }
+        if frame.len() < 16 + data_len {
+            return Ok(vec![]);
+        }
         let data = bytes::Bytes::copy_from_slice(&frame[16..16 + data_len]);
 
         let mut events = Vec::new();
@@ -436,8 +460,15 @@ impl Session {
 
     // ── Read ─────────────────────────────────────────────────────────────────
 
-    pub fn read(&mut self, stream_id: StreamId, out: &mut Vec<u8>, max: usize) -> Result<usize, SeamError> {
-        let stream = self.streams.get_mut(&stream_id)
+    pub fn read(
+        &mut self,
+        stream_id: StreamId,
+        out: &mut Vec<u8>,
+        max: usize,
+    ) -> Result<usize, SeamError> {
+        let stream = self
+            .streams
+            .get_mut(&stream_id)
             .ok_or(SeamError::UnknownStream(stream_id))?;
         Ok(stream.read(out, max))
     }
@@ -445,7 +476,12 @@ impl Session {
     // ── Transport helpers ────────────────────────────────────────────────────
 
     /// Encode a single non-stream packet (e.g. Chaff, PathProbe) using session keys.
-    pub fn encode_raw(&self, pkt_type: PktType, payload: &[u8], out: &mut [u8]) -> Result<usize, SeamError> {
+    pub fn encode_raw(
+        &self,
+        pkt_type: PktType,
+        payload: &[u8],
+        out: &mut [u8],
+    ) -> Result<usize, SeamError> {
         self.encoder.encode(pkt_type, payload, out)
     }
 
@@ -466,11 +502,7 @@ impl Session {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::crypto::{
-        decoder::PacketDecoder,
-        encoder::PacketEncoder,
-        keys::PacketKeys,
-    };
+    use crate::crypto::{decoder::PacketDecoder, encoder::PacketEncoder, keys::PacketKeys};
 
     fn make_session_pair() -> (Session, Session) {
         let secret = [0x42u8; 32];
@@ -525,8 +557,13 @@ mod tests {
 
         // Client receives the packet
         let events = client.receive_packet(&mut pkts[0].clone()).unwrap();
-        let has_new = events.iter().any(|e| matches!(e, SessionEvent::NewStream(2)));
-        assert!(has_new, "client should see NewStream(2) for server-pushed stream");
+        let has_new = events
+            .iter()
+            .any(|e| matches!(e, SessionEvent::NewStream(2)));
+        assert!(
+            has_new,
+            "client should see NewStream(2) for server-pushed stream"
+        );
 
         let mut out = Vec::new();
         let n = client.read(sid, &mut out, 256).unwrap();
@@ -545,7 +582,11 @@ mod tests {
 
         // Server receives it fine (server role, parity=0; stream 1 has parity 1 — remote ✓)
         let events = server.receive_packet(&mut pkts[0].clone()).unwrap();
-        assert!(events.iter().any(|e| matches!(e, SessionEvent::NewStream(1))));
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, SessionEvent::NewStream(1)))
+        );
 
         // Now craft a frame as if the server received a NEW stream with even ID 2 from the client.
         // This would be a protocol violation: server (local_parity=0) receiving a new stream
@@ -579,13 +620,13 @@ mod tests {
         let keys = PacketKeys::derive_from_secret(&secret);
         let mut sender = Session::with_role(
             99,
-            Role::Client,  // sends odd IDs
+            Role::Client, // sends odd IDs
             PacketEncoder::new(keys.clone(), 99),
             PacketDecoder::new(keys.clone()),
         );
         let mut receiver = Session::with_role(
             99,
-            Role::Client,  // also client role — will reject odd-ID NEW streams from "peer"
+            Role::Client, // also client role — will reject odd-ID NEW streams from "peer"
             PacketEncoder::new(keys.clone(), 99),
             PacketDecoder::new(keys.clone()),
         );

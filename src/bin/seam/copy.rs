@@ -1,15 +1,15 @@
-use std::net::SocketAddr;
-use std::path::{Path, PathBuf};
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use clap::Args;
 use indicatif::{ProgressBar, ProgressStyle};
 use seam_protocol::{
     api::Client,
     handshake::{IdentityKeypair, pk_from_bytes},
 };
+use std::net::SocketAddr;
+use std::path::{Path, PathBuf};
 
 use crate::{
-    proto::{self, read_frame, send_frame, COMPRESS_NONE, COMPRESS_ZSTD},
+    proto::{self, COMPRESS_NONE, COMPRESS_ZSTD, read_frame, send_frame},
     ssh,
 };
 
@@ -51,8 +51,9 @@ pub async fn run(args: CopyArgs) -> Result<()> {
         if ssh::parse_remote(&args.src).is_some() {
             bail!("remote source not yet supported — use: seam cp /local user@host:/remote");
         }
-        let (remote, remote_path) = ssh::parse_remote(&args.dest)
-            .ok_or_else(|| anyhow::anyhow!("DEST must be remote (user@host:/path) or use --direct"))?;
+        let (remote, remote_path) = ssh::parse_remote(&args.dest).ok_or_else(|| {
+            anyhow::anyhow!("DEST must be remote (user@host:/path) or use --direct")
+        })?;
 
         let seam_bin = match remote.seam_path() {
             Some(p) => p,
@@ -95,7 +96,14 @@ pub async fn run(args: CopyArgs) -> Result<()> {
     let ctrl_sid = conn.open_stream().await;
 
     // HELLO
-    let hello = [proto::HELLO, if compress { COMPRESS_ZSTD } else { COMPRESS_NONE }];
+    let hello = [
+        proto::HELLO,
+        if compress {
+            COMPRESS_ZSTD
+        } else {
+            COMPRESS_NONE
+        },
+    ];
     send_frame(&conn, ctrl_sid, &hello).await?;
 
     // Wait for ACK
@@ -141,7 +149,10 @@ fn collect_files(src: &Path) -> Result<Vec<(String, std::fs::Metadata)>> {
         let name = src.file_name().unwrap().to_string_lossy().to_string();
         out.push((name, src.metadata()?));
     } else {
-        for entry in walkdir::WalkDir::new(src).into_iter().filter_map(|e| e.ok()) {
+        for entry in walkdir::WalkDir::new(src)
+            .into_iter()
+            .filter_map(|e| e.ok())
+        {
             if entry.file_type().is_file() {
                 let rel = entry
                     .path()
@@ -207,9 +218,7 @@ async fn send_file(
     Ok(())
 }
 
-fn parse_ready(
-    line: &str,
-) -> Result<(u16, [u8; 32], pqcrypto_kyber::kyber768::PublicKey)> {
+fn parse_ready(line: &str) -> Result<(u16, [u8; 32], pqcrypto_kyber::kyber768::PublicKey)> {
     let mut port = None;
     let mut x25519 = None;
     let mut kem = None;
@@ -227,8 +236,7 @@ fn parse_ready(
         } else if let Some(v) = part.strip_prefix("KEM=") {
             let bytes = hex::decode(v).context("bad KEM hex")?;
             kem = Some(
-                pk_from_bytes(&bytes)
-                    .ok_or_else(|| anyhow::anyhow!("invalid KEM public key"))?,
+                pk_from_bytes(&bytes).ok_or_else(|| anyhow::anyhow!("invalid KEM public key"))?,
             );
         }
     }

@@ -13,12 +13,11 @@ use tokio::sync::mpsc;
 use pqcrypto_kyber::kyber768::PublicKey as KemPublicKey;
 
 use crate::{
-    crypto::{encoder::PacketEncoder, decoder::PacketDecoder},
+    crypto::{decoder::PacketDecoder, encoder::PacketEncoder},
     error::SeamError,
     fec::{ArbiterMode, FecArbiter, FecDecoder, FecEncoder},
     handshake::{
-        CookieFactory,
-        IdentityKeypair,
+        CookieFactory, IdentityKeypair,
         state::{ClientHandshake, HandshakeResult, ServerHandshake},
     },
     packet::PktType,
@@ -36,10 +35,10 @@ use crate::{
 // CookieEcho (msg1 wrapper):  type(1) = 0x12  + cookie(32) + msg1_len(2) + msg1
 // All other handshake bytes are passed directly through the Noise state machine.
 
-const PKT_COOKIE_REQ:       u8 = 0x10;
+const PKT_COOKIE_REQ: u8 = 0x10;
 const PKT_COOKIE_CHALLENGE: u8 = 0x11;
-const PKT_COOKIE_ECHO:      u8 = 0x12;
-const PKT_HANDSHAKE_MSG:    u8 = 0x13;
+const PKT_COOKIE_ECHO: u8 = 0x12;
+const PKT_HANDSHAKE_MSG: u8 = 0x13;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConnPhase {
@@ -98,7 +97,9 @@ impl Connection {
         server_kem_pk: &KemPublicKey,
     ) -> Result<(Self, mpsc::UnboundedReceiver<SessionEvent>), SeamError> {
         // Send cookie request (single byte)
-        socket.send_to(&[PKT_COOKIE_REQ], remote).await
+        socket
+            .send_to(&[PKT_COOKIE_REQ], remote)
+            .await
             .map_err(|e| SeamError::HandshakeFailed(e.to_string()))?;
 
         let client_hs = ClientHandshake::new(local_identity, server_x25519)?;
@@ -124,7 +125,9 @@ impl Connection {
         let cookie = cookie_factory.generate(addr_bytes.as_bytes());
         let mut challenge = vec![PKT_COOKIE_CHALLENGE];
         challenge.extend_from_slice(&cookie);
-        socket.send_to(&challenge, remote).await
+        socket
+            .send_to(&challenge, remote)
+            .await
             .map_err(|e| SeamError::HandshakeFailed(e.to_string()))?;
 
         let (tx, rx) = mpsc::unbounded_channel();
@@ -141,8 +144,12 @@ impl Connection {
         event_tx: mpsc::UnboundedSender<SessionEvent>,
     ) -> Self {
         Self {
-            remote, phase, socket,
-            client_hs: None, server_hs: None, server_identity: None,
+            remote,
+            phase,
+            socket,
+            client_hs: None,
+            server_hs: None,
+            server_identity: None,
             cookie_factory: None,
             _server_kem_pk: None,
             session: None,
@@ -179,13 +186,15 @@ impl Connection {
     // ── Ingress ──────────────────────────────────────────────────────────────
 
     pub async fn on_packet(&mut self, buf: &mut Vec<u8>) -> Result<(), SeamError> {
-        if buf.is_empty() { return Ok(()); }
+        if buf.is_empty() {
+            return Ok(());
+        }
         match self.phase {
             ConnPhase::ClientWaitChallenge => self.client_rx_challenge(buf).await?,
-            ConnPhase::ClientWaitMsg2      => self.client_rx_msg2(buf).await?,
-            ConnPhase::ServerWaitCookie    => self.server_rx_cookie_echo(buf).await?,
-            ConnPhase::ServerWaitMsg3      => self.server_rx_msg3(buf).await?,
-            ConnPhase::Established         => self.on_data_packet(buf).await?,
+            ConnPhase::ClientWaitMsg2 => self.client_rx_msg2(buf).await?,
+            ConnPhase::ServerWaitCookie => self.server_rx_cookie_echo(buf).await?,
+            ConnPhase::ServerWaitMsg3 => self.server_rx_msg3(buf).await?,
+            ConnPhase::Established => self.on_data_packet(buf).await?,
             ConnPhase::Draining | ConnPhase::Closed => {}
         }
         Ok(())
@@ -194,13 +203,19 @@ impl Connection {
     // Client received cookie challenge → echo it back with msg1
     async fn client_rx_challenge(&mut self, buf: &[u8]) -> Result<(), SeamError> {
         if buf.len() < 1 + 32 || buf[0] != PKT_COOKIE_CHALLENGE {
-            return Err(SeamError::HandshakeFailed("expected cookie challenge".into()));
+            return Err(SeamError::HandshakeFailed(
+                "expected cookie challenge".into(),
+            ));
         }
         let cookie: [u8; 32] = buf[1..33].try_into().unwrap();
 
-        let hs = self.client_hs.as_mut()
+        let hs = self
+            .client_hs
+            .as_mut()
             .ok_or_else(|| SeamError::HandshakeFailed("no client hs".into()))?;
-        let kem_pk = self._server_kem_pk.as_ref()
+        let kem_pk = self
+            ._server_kem_pk
+            .as_ref()
             .ok_or_else(|| SeamError::HandshakeFailed("no server kem pk".into()))?;
         let mut msg1 = Vec::new();
         hs.write_msg1(kem_pk, &mut msg1)?;
@@ -210,7 +225,9 @@ impl Connection {
         echo.extend_from_slice(&cookie);
         echo.extend_from_slice(&(msg1.len() as u16).to_le_bytes());
         echo.extend_from_slice(&msg1);
-        self.socket.send_to(&echo, self.remote).await
+        self.socket
+            .send_to(&echo, self.remote)
+            .await
             .map_err(|e| SeamError::HandshakeFailed(e.to_string()))?;
         self.phase = ConnPhase::ClientWaitMsg2;
         Ok(())
@@ -219,7 +236,9 @@ impl Connection {
     // Client received msg2 → write msg3 → established
     async fn client_rx_msg2(&mut self, buf: &[u8]) -> Result<(), SeamError> {
         let payload = strip_type(buf, PKT_HANDSHAKE_MSG)?;
-        let hs = self.client_hs.as_mut()
+        let hs = self
+            .client_hs
+            .as_mut()
             .ok_or_else(|| SeamError::HandshakeFailed("no client hs".into()))?;
         let server_kem_pk = hs.read_msg2(payload)?;
 
@@ -229,7 +248,9 @@ impl Connection {
 
         let mut pkt = vec![PKT_HANDSHAKE_MSG];
         pkt.extend_from_slice(&msg3);
-        self.socket.send_to(&pkt, self.remote).await
+        self.socket
+            .send_to(&pkt, self.remote)
+            .await
             .map_err(|e| SeamError::HandshakeFailed(e.to_string()))?;
         self.finish_handshake(result);
         Ok(())
@@ -243,7 +264,9 @@ impl Connection {
         let cookie: &[u8; 32] = buf[1..33].try_into().unwrap();
         let addr_bytes = self.remote.to_string();
 
-        let factory = self.cookie_factory.as_ref()
+        let factory = self
+            .cookie_factory
+            .as_ref()
             .ok_or_else(|| SeamError::HandshakeFailed("no cookie factory".into()))?;
         if !factory.verify(addr_bytes.as_bytes(), cookie) {
             return Err(SeamError::HandshakeFailed("invalid cookie".into()));
@@ -256,7 +279,9 @@ impl Connection {
         let msg1 = &buf[35..35 + msg1_len];
 
         // Allocate server handshake state only after cookie is verified
-        let identity = self.server_identity.as_ref()
+        let identity = self
+            .server_identity
+            .as_ref()
             .ok_or_else(|| SeamError::HandshakeFailed("no server identity".into()))?;
         let mut server_hs = ServerHandshake::new(identity)?;
         server_hs.read_msg1(msg1)?;
@@ -266,7 +291,9 @@ impl Connection {
 
         let mut pkt = vec![PKT_HANDSHAKE_MSG];
         pkt.extend_from_slice(&msg2);
-        self.socket.send_to(&pkt, self.remote).await
+        self.socket
+            .send_to(&pkt, self.remote)
+            .await
             .map_err(|e| SeamError::HandshakeFailed(e.to_string()))?;
 
         self.server_hs = Some(server_hs);
@@ -277,9 +304,13 @@ impl Connection {
     // Server received msg3 → finish
     async fn server_rx_msg3(&mut self, buf: &[u8]) -> Result<(), SeamError> {
         let payload = strip_type(buf, PKT_HANDSHAKE_MSG)?;
-        let hs = self.server_hs.take()
+        let hs = self
+            .server_hs
+            .take()
             .ok_or_else(|| SeamError::HandshakeFailed("no server hs".into()))?;
-        let identity = self.server_identity.as_ref()
+        let identity = self
+            .server_identity
+            .as_ref()
             .ok_or_else(|| SeamError::HandshakeFailed("no server identity".into()))?;
         let result = hs.read_msg3_and_finish(&identity.kem_sk, payload)?;
         self.finish_handshake(result);
@@ -287,7 +318,9 @@ impl Connection {
     }
 
     async fn on_data_packet(&mut self, buf: &mut Vec<u8>) -> Result<(), SeamError> {
-        let session = self.session.as_mut()
+        let session = self
+            .session
+            .as_mut()
             .ok_or_else(|| SeamError::HandshakeFailed("no session".into()))?;
         let events = session.receive_packet(buf)?;
         for ev in events {
@@ -300,7 +333,12 @@ impl Connection {
         // Immediately flush a MaxData window-update if one was queued during
         // packet processing, so the sender's flow-control window is replenished
         // without waiting for the application to call tick().
-        if self.session.as_ref().map(|s| s.has_pending_max_data()).unwrap_or(false) {
+        if self
+            .session
+            .as_ref()
+            .map(|s| s.has_pending_max_data())
+            .unwrap_or(false)
+        {
             self.flush().await?;
         }
         Ok(())
@@ -315,10 +353,14 @@ impl Connection {
         };
 
         let packets = session.flush()?;
-        if packets.is_empty() { return Ok(()); }
+        if packets.is_empty() {
+            return Ok(());
+        }
 
         let (fec_k, fec_r) = match self.fec_arbiter.mode {
-            ArbiterMode::HybridFecArq { k, r } | ArbiterMode::PureFec { k, r } => (Some(k), Some(r)),
+            ArbiterMode::HybridFecArq { k, r } | ArbiterMode::PureFec { k, r } => {
+                (Some(k), Some(r))
+            }
             ArbiterMode::PureArq => (None, None),
         };
 
@@ -330,15 +372,21 @@ impl Connection {
             if self.cc.available() < size {
                 break;
             }
-            self.socket.send_to(&pkt, self.remote).await
+            self.socket
+                .send_to(&pkt, self.remote)
+                .await
                 .map_err(|e| SeamError::HandshakeFailed(e.to_string()))?;
             self.cc.on_send(size);
             self.send_counter += 1;
 
             if let (Some(k), Some(r)) = (fec_k, fec_r) {
                 let gid = self.fec_group_id;
-                let enc = self.fec_enc.get_or_insert_with(|| FecEncoder::new(gid, k, r));
-                if enc.group_id != gid { *enc = FecEncoder::new(gid, k, r); }
+                let enc = self
+                    .fec_enc
+                    .get_or_insert_with(|| FecEncoder::new(gid, k, r));
+                if enc.group_id != gid {
+                    *enc = FecEncoder::new(gid, k, r);
+                }
                 if let Some(repairs) = enc.push_source(&pkt) {
                     self.fec_group_id = self.fec_group_id.wrapping_add(1);
                     for rep in &repairs {
@@ -351,14 +399,21 @@ impl Connection {
     }
 
     pub async fn maybe_send_chaff(&mut self) -> Result<(), SeamError> {
-        if !self.chaff.should_send() { return Ok(()); }
-        let session = match self.session.as_mut() { Some(s) => s, None => return Ok(()) };
+        if !self.chaff.should_send() {
+            return Ok(());
+        }
+        let session = match self.session.as_mut() {
+            Some(s) => s,
+            None => return Ok(()),
+        };
         let payload = ChaffScheduler::payload(self.send_counter);
         let padded = self.chaff.pad_to_mtu(&payload, self.prober.path_mtu);
         let mut out = vec![0u8; 32 + padded.len() + 16];
         let n = session.encode_raw(PktType::Chaff, &padded, &mut out)?;
         out.truncate(n);
-        self.socket.send_to(&out, self.remote).await
+        self.socket
+            .send_to(&out, self.remote)
+            .await
             .map_err(|e| SeamError::HandshakeFailed(e.to_string()))?;
         self.chaff.mark_sent(self.send_counter);
         self.send_counter += 1;
@@ -366,23 +421,37 @@ impl Connection {
     }
 
     pub async fn maybe_send_probe(&mut self) -> Result<(), SeamError> {
-        if !self.prober.should_probe() { return Ok(()); }
+        if !self.prober.should_probe() {
+            return Ok(());
+        }
         let (_, payload) = self.prober.build_probe();
-        let session = match self.session.as_mut() { Some(s) => s, None => return Ok(()) };
+        let session = match self.session.as_mut() {
+            Some(s) => s,
+            None => return Ok(()),
+        };
         let mut out = vec![0u8; 32 + payload.len() + 16];
         let n = session.encode_raw(PktType::PathProbe, &payload, &mut out)?;
         out.truncate(n);
-        self.socket.send_to(&out, self.remote).await
+        self.socket
+            .send_to(&out, self.remote)
+            .await
             .map_err(|e| SeamError::HandshakeFailed(e.to_string()))?;
         Ok(())
     }
 
     pub async fn retransmit_expired(&mut self) -> Result<(), SeamError> {
-        let session = match self.session.as_mut() { Some(s) => s, None => return Ok(()) };
+        let session = match self.session.as_mut() {
+            Some(s) => s,
+            None => return Ok(()),
+        };
         let expired = session.drain_retransmits();
-        if !expired.is_empty() { self.cc.on_timeout(); }
+        if !expired.is_empty() {
+            self.cc.on_timeout();
+        }
         for (_, data) in expired {
-            self.socket.send_to(&data, self.remote).await
+            self.socket
+                .send_to(&data, self.remote)
+                .await
                 .map_err(|e| SeamError::HandshakeFailed(e.to_string()))?;
         }
         Ok(())
@@ -396,11 +465,17 @@ impl Connection {
         }
     }
 
-    pub fn is_established(&self) -> bool { self.phase == ConnPhase::Established }
-    pub fn is_closed(&self) -> bool { matches!(self.phase, ConnPhase::Closed | ConnPhase::Draining) }
-    pub fn close(&mut self) { self.phase = ConnPhase::Draining; }
+    pub fn is_established(&self) -> bool {
+        self.phase == ConnPhase::Established
+    }
+    pub fn is_closed(&self) -> bool {
+        matches!(self.phase, ConnPhase::Closed | ConnPhase::Draining)
+    }
+    pub fn close(&mut self) {
+        self.phase = ConnPhase::Draining;
+    }
 
-        /// Allow overriding the CC implementation (e.g. for testing or ML controller).
+    /// Allow overriding the CC implementation (e.g. for testing or ML controller).
     pub fn set_congestion_controller(&mut self, cc: Box<dyn CongestionControl>) {
         self.cc = cc;
     }
@@ -408,9 +483,10 @@ impl Connection {
 
 fn strip_type(buf: &[u8], expected: u8) -> Result<&[u8], SeamError> {
     if buf.is_empty() || buf[0] != expected {
-        return Err(SeamError::HandshakeFailed(
-            format!("expected pkt type 0x{expected:02x}, got 0x{:02x}", buf.first().copied().unwrap_or(0xff))
-        ));
+        return Err(SeamError::HandshakeFailed(format!(
+            "expected pkt type 0x{expected:02x}, got 0x{:02x}",
+            buf.first().copied().unwrap_or(0xff)
+        )));
     }
     Ok(&buf[1..])
 }

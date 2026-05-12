@@ -12,9 +12,9 @@ pub mod stats;
 mod tests;
 
 pub use bbr::Bbr;
-pub use cc::{CongestionControl, Cubic, Aimd};
+pub use cc::{Aimd, CongestionControl, Cubic};
 pub use chaff::ChaffScheduler;
-pub use connection::{Connection, ConnPhase};
+pub use connection::{ConnPhase, Connection};
 pub use endpoint::Endpoint;
 pub use pacer::Pacer;
 pub use pool::BufferPool;

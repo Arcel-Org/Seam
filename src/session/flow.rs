@@ -11,7 +11,10 @@ pub struct FlowWindow {
 
 impl FlowWindow {
     pub fn new(initial_limit: u64) -> Self {
-        Self { limit: initial_limit, consumed: 0 }
+        Self {
+            limit: initial_limit,
+            consumed: 0,
+        }
     }
 
     /// Try to reserve `n` bytes. Returns Ok(()) if within limit.

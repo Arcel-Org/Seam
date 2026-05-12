@@ -14,7 +14,10 @@ pub struct CookieFactory {
 
 impl CookieFactory {
     pub fn new(secret: [u8; 32]) -> Self {
-        Self { secret, bucket_secs: 30 }
+        Self {
+            secret,
+            bucket_secs: 30,
+        }
     }
 
     fn bucket(&self) -> u64 {
@@ -35,7 +38,11 @@ impl CookieFactory {
     pub fn verify(&self, client_addr: &[u8], cookie: &[u8; 32]) -> bool {
         let b = self.bucket();
         let cur = self.compute(client_addr, b);
-        let prev = if b > 0 { self.compute(client_addr, b - 1) } else { [0u8; 32] };
+        let prev = if b > 0 {
+            self.compute(client_addr, b - 1)
+        } else {
+            [0u8; 32]
+        };
         // Always compute both to avoid timing differences between "current valid"
         // and "previous valid" cases.
         let ct_cur = cur.ct_eq(cookie);

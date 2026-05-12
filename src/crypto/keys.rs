@@ -9,7 +9,11 @@ pub struct PacketKeys {
 
 impl PacketKeys {
     pub fn new(enc_key: [u8; 32], hp_key: [u8; 32], nonce_base: [u8; 12]) -> Self {
-        Self { enc_key, hp_key, nonce_base }
+        Self {
+            enc_key,
+            hp_key,
+            nonce_base,
+        }
     }
 
     /// Derive all keys from a single 32-byte traffic secret using BLAKE3.
@@ -19,6 +23,10 @@ impl PacketKeys {
         let nb_full: [u8; 32] = blake3::derive_key("apex/nonce-base/v1", secret);
         let mut nonce_base = [0u8; 12];
         nonce_base.copy_from_slice(&nb_full[..12]);
-        Self { enc_key, hp_key, nonce_base }
+        Self {
+            enc_key,
+            hp_key,
+            nonce_base,
+        }
     }
 }

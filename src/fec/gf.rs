@@ -64,7 +64,9 @@ pub fn inv(a: u8) -> u8 {
 /// The compiler typically auto-vectorizes the XOR loop for scalar=1.
 pub fn mul_add_slice(dst: &mut [u8], src: &[u8], scalar: u8) {
     debug_assert_eq!(dst.len(), src.len());
-    if scalar == 0 { return; }
+    if scalar == 0 {
+        return;
+    }
 
     let len = dst.len();
     let chunks = len / 8;
@@ -74,17 +76,19 @@ pub fn mul_add_slice(dst: &mut [u8], src: &[u8], scalar: u8) {
         // Hot path: pure XOR — compiler can auto-vectorize this
         for i in 0..chunks {
             let b = i * 8;
-            dst[b]   ^= src[b];
-            dst[b+1] ^= src[b+1];
-            dst[b+2] ^= src[b+2];
-            dst[b+3] ^= src[b+3];
-            dst[b+4] ^= src[b+4];
-            dst[b+5] ^= src[b+5];
-            dst[b+6] ^= src[b+6];
-            dst[b+7] ^= src[b+7];
+            dst[b] ^= src[b];
+            dst[b + 1] ^= src[b + 1];
+            dst[b + 2] ^= src[b + 2];
+            dst[b + 3] ^= src[b + 3];
+            dst[b + 4] ^= src[b + 4];
+            dst[b + 5] ^= src[b + 5];
+            dst[b + 6] ^= src[b + 6];
+            dst[b + 7] ^= src[b + 7];
         }
         let base = chunks * 8;
-        for i in 0..rem { dst[base + i] ^= src[base + i]; }
+        for i in 0..rem {
+            dst[base + i] ^= src[base + i];
+        }
         return;
     }
 
@@ -92,19 +96,55 @@ pub fn mul_add_slice(dst: &mut [u8], src: &[u8], scalar: u8) {
     let log_s = LOG[scalar as usize] as usize;
     for i in 0..chunks {
         let b = i * 8;
-        dst[b]   ^= if src[b]   != 0 { EXP[log_s + LOG[src[b]   as usize] as usize] } else { 0 };
-        dst[b+1] ^= if src[b+1] != 0 { EXP[log_s + LOG[src[b+1] as usize] as usize] } else { 0 };
-        dst[b+2] ^= if src[b+2] != 0 { EXP[log_s + LOG[src[b+2] as usize] as usize] } else { 0 };
-        dst[b+3] ^= if src[b+3] != 0 { EXP[log_s + LOG[src[b+3] as usize] as usize] } else { 0 };
-        dst[b+4] ^= if src[b+4] != 0 { EXP[log_s + LOG[src[b+4] as usize] as usize] } else { 0 };
-        dst[b+5] ^= if src[b+5] != 0 { EXP[log_s + LOG[src[b+5] as usize] as usize] } else { 0 };
-        dst[b+6] ^= if src[b+6] != 0 { EXP[log_s + LOG[src[b+6] as usize] as usize] } else { 0 };
-        dst[b+7] ^= if src[b+7] != 0 { EXP[log_s + LOG[src[b+7] as usize] as usize] } else { 0 };
+        dst[b] ^= if src[b] != 0 {
+            EXP[log_s + LOG[src[b] as usize] as usize]
+        } else {
+            0
+        };
+        dst[b + 1] ^= if src[b + 1] != 0 {
+            EXP[log_s + LOG[src[b + 1] as usize] as usize]
+        } else {
+            0
+        };
+        dst[b + 2] ^= if src[b + 2] != 0 {
+            EXP[log_s + LOG[src[b + 2] as usize] as usize]
+        } else {
+            0
+        };
+        dst[b + 3] ^= if src[b + 3] != 0 {
+            EXP[log_s + LOG[src[b + 3] as usize] as usize]
+        } else {
+            0
+        };
+        dst[b + 4] ^= if src[b + 4] != 0 {
+            EXP[log_s + LOG[src[b + 4] as usize] as usize]
+        } else {
+            0
+        };
+        dst[b + 5] ^= if src[b + 5] != 0 {
+            EXP[log_s + LOG[src[b + 5] as usize] as usize]
+        } else {
+            0
+        };
+        dst[b + 6] ^= if src[b + 6] != 0 {
+            EXP[log_s + LOG[src[b + 6] as usize] as usize]
+        } else {
+            0
+        };
+        dst[b + 7] ^= if src[b + 7] != 0 {
+            EXP[log_s + LOG[src[b + 7] as usize] as usize]
+        } else {
+            0
+        };
     }
     let base = chunks * 8;
     for i in 0..rem {
         let s = src[base + i];
-        dst[base + i] ^= if s != 0 { EXP[log_s + LOG[s as usize] as usize] } else { 0 };
+        dst[base + i] ^= if s != 0 {
+            EXP[log_s + LOG[s as usize] as usize]
+        } else {
+            0
+        };
     }
 }
 

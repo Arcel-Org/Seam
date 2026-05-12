@@ -11,7 +11,7 @@ mod tests {
         handshake::{CookieFactory, IdentityKeypair},
         session::SessionEvent,
         transport::{
-            cc::{Aimd, Cubic, CongestionControl, MSS},
+            cc::{Aimd, CongestionControl, Cubic, MSS},
             chaff::ChaffScheduler,
             congestion::CongestionController,
             connection::{ConnPhase, Connection},
@@ -54,44 +54,64 @@ mod tests {
 
         // Client sends CookieRequest (0x10)
         let (mut client, _) = Connection::connect(
-            client_sock.clone(), server_addr, &client_id,
-            &server_x25519, &server_id.kem_pk,
-        ).await.unwrap();
+            client_sock.clone(),
+            server_addr,
+            &client_id,
+            &server_x25519,
+            &server_id.kem_pk,
+        )
+        .await
+        .unwrap();
         assert_eq!(client.phase, ConnPhase::ClientWaitChallenge);
 
         let mut buf = vec![0u8; 65535];
 
         // Server receives CookieRequest → accept_challenge sends CookieChallenge
         let (n, _) = timeout(Duration::from_secs(2), server_sock.recv_from(&mut buf))
-            .await.unwrap().unwrap();
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(buf[0], 0x10, "expected cookie request");
         let (mut server, _) = Connection::accept_challenge(
-            server_sock.clone(), client_addr, server_id.clone(), cookie_factory,
-        ).await.unwrap();
+            server_sock.clone(),
+            client_addr,
+            server_id.clone(),
+            cookie_factory,
+        )
+        .await
+        .unwrap();
         assert_eq!(server.phase, ConnPhase::ServerWaitCookie);
         let _ = n; // consumed above
 
         // Client receives CookieChallenge → sends CookieEcho + msg1
         let (n, _) = timeout(Duration::from_secs(2), client_sock.recv_from(&mut buf))
-            .await.unwrap().unwrap();
+            .await
+            .unwrap()
+            .unwrap();
         client.on_packet(&mut buf[..n].to_vec()).await.unwrap();
         assert_eq!(client.phase, ConnPhase::ClientWaitMsg2);
 
         // Server receives CookieEcho+msg1 → verifies cookie, sends msg2
         let (n, _) = timeout(Duration::from_secs(2), server_sock.recv_from(&mut buf))
-            .await.unwrap().unwrap();
+            .await
+            .unwrap()
+            .unwrap();
         server.on_packet(&mut buf[..n].to_vec()).await.unwrap();
         assert_eq!(server.phase, ConnPhase::ServerWaitMsg3);
 
         // Client receives msg2 → sends msg3 → Established
         let (n, _) = timeout(Duration::from_secs(2), client_sock.recv_from(&mut buf))
-            .await.unwrap().unwrap();
+            .await
+            .unwrap()
+            .unwrap();
         client.on_packet(&mut buf[..n].to_vec()).await.unwrap();
         assert_eq!(client.phase, ConnPhase::Established);
 
         // Server receives msg3 → Established
         let (n, _) = timeout(Duration::from_secs(2), server_sock.recv_from(&mut buf))
-            .await.unwrap().unwrap();
+            .await
+            .unwrap()
+            .unwrap();
         server.on_packet(&mut buf[..n].to_vec()).await.unwrap();
         assert_eq!(server.phase, ConnPhase::Established);
 
@@ -133,19 +153,28 @@ mod tests {
     fn cubic_loss_applies_beta() {
         let mut cc = Cubic::new();
         // Get into CA
-        for _ in 0..200 { cc.on_send(MSS); cc.on_ack(MSS, Duration::from_millis(10)); }
+        for _ in 0..200 {
+            cc.on_send(MSS);
+            cc.on_ack(MSS, Duration::from_millis(10));
+        }
         let before = cc.cwnd() as f64;
         cc.on_loss();
         let after = cc.cwnd() as f64;
         // Should be ≈ β * before (0.7)
-        assert!(after < before * 0.75, "CUBIC loss: {after} should be < 0.75 * {before}");
+        assert!(
+            after < before * 0.75,
+            "CUBIC loss: {after} should be < 0.75 * {before}"
+        );
         assert!(after > before * 0.65, "CUBIC loss too aggressive");
     }
 
     #[test]
     fn cubic_timeout_restarts_at_mss() {
         let mut cc = Cubic::new();
-        for _ in 0..50 { cc.on_send(MSS); cc.on_ack(MSS, Duration::from_millis(10)); }
+        for _ in 0..50 {
+            cc.on_send(MSS);
+            cc.on_ack(MSS, Duration::from_millis(10));
+        }
         cc.on_timeout();
         assert_eq!(cc.cwnd(), MSS);
         assert_eq!(cc.bytes_in_flight(), 0);
@@ -170,9 +199,13 @@ mod tests {
     fn fec_arbiter_mode_switching() {
         let mut arb = FecArbiter::new();
         assert_eq!(arb.mode, ArbiterMode::PureArq);
-        for _ in 0..30 { arb.on_ack_epoch(8, 100, 20_000); }
+        for _ in 0..30 {
+            arb.on_ack_epoch(8, 100, 20_000);
+        }
         assert!(arb.mode.uses_fec());
-        for _ in 0..60 { arb.on_ack_epoch(0, 100, 20_000); }
+        for _ in 0..60 {
+            arb.on_ack_epoch(0, 100, 20_000);
+        }
         assert_eq!(arb.mode, ArbiterMode::PureArq, "should recover to PureArq");
     }
 
@@ -254,9 +287,14 @@ mod tests {
         let cookie_factory = Arc::new(CookieFactory::new([0xCDu8; 32]));
 
         let (mut client, _) = Connection::connect(
-            client_sock.clone(), server_addr, &client_id,
-            &server_id.x25519_public.to_bytes(), &server_id.kem_pk,
-        ).await.unwrap();
+            client_sock.clone(),
+            server_addr,
+            &client_id,
+            &server_id.x25519_public.to_bytes(),
+            &server_id.kem_pk,
+        )
+        .await
+        .unwrap();
 
         let mut buf = vec![0u8; 65535];
 
@@ -265,8 +303,13 @@ mod tests {
         assert_eq!(buf[0], 0x10);
         let _ = n;
         let (mut server, mut server_events) = Connection::accept_challenge(
-            server_sock.clone(), client_addr, server_id.clone(), cookie_factory,
-        ).await.unwrap();
+            server_sock.clone(),
+            client_addr,
+            server_id.clone(),
+            cookie_factory,
+        )
+        .await
+        .unwrap();
         let (n, _) = client_sock.recv_from(&mut buf).await.unwrap(); // challenge
         client.on_packet(&mut buf[..n].to_vec()).await.unwrap();
         let (n, _) = server_sock.recv_from(&mut buf).await.unwrap(); // echo + msg1
@@ -281,20 +324,37 @@ mod tests {
 
         // Client sends stream data
         let sid = client.session.as_mut().unwrap().open_stream();
-        client.session.as_mut().unwrap().send(sid, b"hello apex protocol").unwrap();
+        client
+            .session
+            .as_mut()
+            .unwrap()
+            .send(sid, b"hello apex protocol")
+            .unwrap();
         client.flush().await.unwrap();
 
         // Server receives
         let (n, _) = timeout(Duration::from_secs(2), server_sock.recv_from(&mut buf))
-            .await.unwrap().unwrap();
+            .await
+            .unwrap()
+            .unwrap();
         server.on_packet(&mut buf[..n].to_vec()).await.unwrap();
 
         let event = timeout(Duration::from_millis(100), server_events.recv())
-            .await.unwrap().unwrap();
-        assert!(matches!(event, SessionEvent::NewStream(_) | SessionEvent::DataAvailable(_)));
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            event,
+            SessionEvent::NewStream(_) | SessionEvent::DataAvailable(_)
+        ));
 
         let mut out = Vec::new();
-        let n = server.session.as_mut().unwrap().read(1, &mut out, 1024).unwrap_or(0);
+        let n = server
+            .session
+            .as_mut()
+            .unwrap()
+            .read(1, &mut out, 1024)
+            .unwrap_or(0);
         assert_eq!(n, 19);
         assert_eq!(&out, b"hello apex protocol");
     }
@@ -323,16 +383,26 @@ mod tests {
         let cookie_factory = Arc::new(CookieFactory::new([0xEEu8; 32]));
 
         let (mut client, _) = Connection::connect(
-            client_sock.clone(), server_addr, &client_id,
-            &server_id.x25519_public.to_bytes(), &server_id.kem_pk,
-        ).await.unwrap();
+            client_sock.clone(),
+            server_addr,
+            &client_id,
+            &server_id.x25519_public.to_bytes(),
+            &server_id.kem_pk,
+        )
+        .await
+        .unwrap();
 
         let mut buf = vec![0u8; 65535];
 
         let (_, _) = server_sock.recv_from(&mut buf).await.unwrap();
         let (mut server, mut server_events) = Connection::accept_challenge(
-            server_sock.clone(), client_addr, server_id.clone(), cookie_factory,
-        ).await.unwrap();
+            server_sock.clone(),
+            client_addr,
+            server_id.clone(),
+            cookie_factory,
+        )
+        .await
+        .unwrap();
 
         // Drive handshake
         let (n, _) = client_sock.recv_from(&mut buf).await.unwrap();
@@ -346,17 +416,25 @@ mod tests {
 
         // Send unreliable datagram
         use bytes::Bytes;
-        client.session.as_mut().unwrap()
-            .send_datagram(Bytes::from_static(b"datagram-payload-xyz")).unwrap();
+        client
+            .session
+            .as_mut()
+            .unwrap()
+            .send_datagram(Bytes::from_static(b"datagram-payload-xyz"))
+            .unwrap();
         client.flush().await.unwrap();
 
         let (n, _) = timeout(Duration::from_secs(2), server_sock.recv_from(&mut buf))
-            .await.unwrap().unwrap();
+            .await
+            .unwrap()
+            .unwrap();
         server.on_packet(&mut buf[..n].to_vec()).await.unwrap();
 
         // Expect DatagramReceived event
         let evt = timeout(Duration::from_millis(100), server_events.recv())
-            .await.unwrap().unwrap();
+            .await
+            .unwrap()
+            .unwrap();
         assert!(matches!(evt, SessionEvent::DatagramReceived));
 
         let received = server.session.as_mut().unwrap().recv_datagram().unwrap();
@@ -405,7 +483,11 @@ mod tests {
         let cap = buf.capacity();
         pool.release(buf);
         let buf2 = pool.acquire();
-        assert_eq!(buf2.capacity(), cap, "should have reused the same allocation");
+        assert_eq!(
+            buf2.capacity(),
+            cap,
+            "should have reused the same allocation"
+        );
     }
 
     // ── ConnectionStats ──────────────────────────────────────────────────────
@@ -432,22 +514,36 @@ mod tests {
         let session = server.session.as_mut().unwrap();
         session.send(sid, b"server push payload").unwrap();
         let pkts = session.flush().unwrap();
-        assert!(!pkts.is_empty(), "server flush should produce at least one packet");
+        assert!(
+            !pkts.is_empty(),
+            "server flush should produce at least one packet"
+        );
 
         // Deliver the encoded packet directly to the client session.
-        let events = client.session.as_mut().unwrap()
-            .receive_packet(&mut pkts[0].clone()).unwrap();
+        let events = client
+            .session
+            .as_mut()
+            .unwrap()
+            .receive_packet(&mut pkts[0].clone())
+            .unwrap();
 
-        let has_new = events.iter().any(|e| matches!(e, SessionEvent::NewStream(s) if s % 2 == 0));
-        assert!(has_new, "client should receive NewStream with even ID: {events:?}");
+        let has_new = events
+            .iter()
+            .any(|e| matches!(e, SessionEvent::NewStream(s) if s % 2 == 0));
+        assert!(
+            has_new,
+            "client should receive NewStream with even ID: {events:?}"
+        );
 
         let mut out = Vec::new();
-        let n = client.session.as_mut().unwrap()
+        let n = client
+            .session
+            .as_mut()
+            .unwrap()
             .read(sid, &mut out, 256)
             .unwrap_or(0);
         assert_eq!(&out[..n], b"server push payload");
     }
-
 
     // ── High-level Client/Server API ─────────────────────────────────────────
 
@@ -490,7 +586,10 @@ mod tests {
         );
 
         // Session IDs must match
-        assert_eq!(client_conn.session_id().await, server_conn.session_id().await);
+        assert_eq!(
+            client_conn.session_id().await,
+            server_conn.session_id().await
+        );
 
         // Client sends a stream
         let sid = client_conn.open_stream().await;
@@ -503,12 +602,14 @@ mod tests {
             .expect("server event timed out")
             .expect("no event");
         assert!(
-            matches!(event, SessionEvent::DataAvailable(_) | SessionEvent::NewStream(_)),
+            matches!(
+                event,
+                SessionEvent::DataAvailable(_) | SessionEvent::NewStream(_)
+            ),
             "unexpected event: {event:?}"
         );
 
         let data = sconn.read(sid, 256).await.unwrap();
         assert_eq!(data, b"hello from client");
     }
-
 }

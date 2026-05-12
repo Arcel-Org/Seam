@@ -1,3 +1,4 @@
+use crate::error::SeamError;
 /// 0-RTT session resumption via encrypted session tickets.
 ///
 /// ⚠️  **WEAKER FORWARD SECRECY**: Session tickets derive from the long-term
@@ -11,9 +12,7 @@
 ///
 /// Ticket wire format (encrypted with server's ticket key via ChaCha20Poly1305):
 ///   session_id(8) + traffic_secret(32) + expiry_unix_secs(8) + nonce(12)
-
 use chacha20poly1305::{AeadInPlace, ChaCha20Poly1305, KeyInit};
-use crate::error::SeamError;
 use rand::{RngCore, rngs::OsRng};
 
 pub const WEAKER_FS_WARNING: &str =
@@ -28,7 +27,9 @@ pub struct TicketKey {
 }
 
 impl TicketKey {
-    pub fn new(key: [u8; 32]) -> Self { Self { key } }
+    pub fn new(key: [u8; 32]) -> Self {
+        Self { key }
+    }
 
     /// Issue a new session ticket for `session_id` / `traffic_secret`.
     pub fn issue(&self, session_id: u64, traffic_secret: &[u8; 32]) -> Vec<u8> {
@@ -75,19 +76,10 @@ impl TicketKey {
             return Err(SeamError::AuthFailed);
         }
 
-        let session_id = u64::from_le_bytes(
-            ct[0..8]
-                .try_into()
-                .map_err(|_| SeamError::AuthFailed)?,
-        );
-        let traffic_secret: [u8; 32] = ct[8..40]
-            .try_into()
-            .map_err(|_| SeamError::AuthFailed)?;
-        let expiry = u64::from_le_bytes(
-            ct[40..48]
-                .try_into()
-                .map_err(|_| SeamError::AuthFailed)?,
-        );
+        let session_id =
+            u64::from_le_bytes(ct[0..8].try_into().map_err(|_| SeamError::AuthFailed)?);
+        let traffic_secret: [u8; 32] = ct[8..40].try_into().map_err(|_| SeamError::AuthFailed)?;
+        let expiry = u64::from_le_bytes(ct[40..48].try_into().map_err(|_| SeamError::AuthFailed)?);
 
         if unix_now() > expiry {
             return Err(SeamError::HandshakeFailed("ticket expired".into()));
@@ -105,7 +97,10 @@ pub struct SessionTicket {
 
 impl SessionTicket {
     pub fn new(session_id: u64, traffic_secret: [u8; 32]) -> Self {
-        Self { session_id, traffic_secret }
+        Self {
+            session_id,
+            traffic_secret,
+        }
     }
 
     pub fn to_bytes(&self) -> Vec<u8> {
@@ -116,10 +111,15 @@ impl SessionTicket {
     }
 
     pub fn from_bytes(buf: &[u8]) -> Option<Self> {
-        if buf.len() != 40 { return None; }
+        if buf.len() != 40 {
+            return None;
+        }
         let session_id = u64::from_le_bytes(buf[0..8].try_into().ok()?);
         let traffic_secret: [u8; 32] = buf[8..40].try_into().ok()?;
-        Some(Self { session_id, traffic_secret })
+        Some(Self {
+            session_id,
+            traffic_secret,
+        })
     }
 }
 

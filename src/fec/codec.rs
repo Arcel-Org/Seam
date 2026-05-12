@@ -1,3 +1,4 @@
+use super::gf;
 /// Systematic Reed-Solomon FEC codec over GF(2^8).
 ///
 /// Encoding: [I_k | C] where C is a Cauchy parity matrix.
@@ -10,10 +11,9 @@
 /// Wire format for FecSource envelope (prepended when FEC active):
 ///   group_id(4) + source_idx(1) + k(1) + r(1)
 use std::collections::HashMap;
-use super::gf;
 
-pub const FEC_SOURCE_HDR: usize = 7;  // group_id(4) + source_idx(1) + k(1) + r(1)
-pub const FEC_REPAIR_HDR: usize = 9;  // group_id(4) + repair_idx(1) + k(1) + r(1) + padded_len(2)
+pub const FEC_SOURCE_HDR: usize = 7; // group_id(4) + source_idx(1) + k(1) + r(1)
+pub const FEC_REPAIR_HDR: usize = 9; // group_id(4) + repair_idx(1) + k(1) + r(1) + padded_len(2)
 
 /// Cauchy matrix element: C[i][j] = 1 / (i XOR (r + j))
 /// i ∈ [0, r), j ∈ [0, k). All (i XOR (r+j)) are distinct and non-zero for
@@ -56,15 +56,22 @@ impl FecRepairData {
     }
 
     pub fn from_bytes(buf: &[u8]) -> Option<Self> {
-        if buf.len() < FEC_REPAIR_HDR { return None; }
+        if buf.len() < FEC_REPAIR_HDR {
+            return None;
+        }
         let group_id = u32::from_le_bytes(buf[0..4].try_into().ok()?);
         let repair_idx = buf[4];
         let k = buf[5];
         let r = buf[6];
         let padded_len = u16::from_le_bytes(buf[7..9].try_into().ok()?);
-        if buf.len() < FEC_REPAIR_HDR + padded_len as usize { return None; }
+        if buf.len() < FEC_REPAIR_HDR + padded_len as usize {
+            return None;
+        }
         Some(Self {
-            group_id, repair_idx, k, r,
+            group_id,
+            repair_idx,
+            k,
+            r,
             padded_len,
             data: buf[FEC_REPAIR_HDR..FEC_REPAIR_HDR + padded_len as usize].to_vec(),
         })
@@ -73,7 +80,14 @@ impl FecRepairData {
 
 impl FecEncoder {
     pub fn new(group_id: u32, k: u8, r: u8) -> Self {
-        Self { group_id, k, r, sources: Vec::with_capacity(k as usize), padded_len: 0, source_idx: 0 }
+        Self {
+            group_id,
+            k,
+            r,
+            sources: Vec::with_capacity(k as usize),
+            padded_len: 0,
+            source_idx: 0,
+        }
     }
 
     /// Build the FEC source envelope to prepend to the original payload.
@@ -101,7 +115,9 @@ impl FecEncoder {
 
     /// Force flush a partial group (end of stream). Returns repairs or None if empty.
     pub fn flush(&mut self) -> Option<Vec<FecRepairData>> {
-        if self.sources.is_empty() { return None; }
+        if self.sources.is_empty() {
+            return None;
+        }
         let actual_k = self.sources.len() as u8;
         Some(self.emit_repairs(actual_k))
     }
@@ -150,11 +166,20 @@ struct GroupState {
 
 impl GroupState {
     fn new(k: u8, r: u8, padded_len: usize) -> Self {
-        Self { k, r, padded_len, sources: HashMap::new(), repairs: HashMap::new(), recovered: false }
+        Self {
+            k,
+            r,
+            padded_len,
+            sources: HashMap::new(),
+            repairs: HashMap::new(),
+            recovered: false,
+        }
     }
 
     fn try_recover(&mut self) -> Option<Vec<(u8, Vec<u8>)>> {
-        if self.recovered { return None; }
+        if self.recovered {
+            return None;
+        }
         let have_src = self.sources.len() as u8;
         let have_rep = self.repairs.len() as u8;
 
@@ -162,15 +187,21 @@ impl GroupState {
             self.recovered = true;
             return Some(vec![]);
         }
-        if have_src + have_rep < self.k { return None; }
+        if have_src + have_rep < self.k {
+            return None;
+        }
 
         let k = self.k as usize;
         let r = self.r;
         let len = self.padded_len;
 
-        let missing: Vec<u8> = (0..self.k).filter(|i| !self.sources.contains_key(i)).collect();
+        let missing: Vec<u8> = (0..self.k)
+            .filter(|i| !self.sources.contains_key(i))
+            .collect();
         let n_missing = missing.len();
-        if have_rep < n_missing as u8 { return None; }
+        if have_rep < n_missing as u8 {
+            return None;
+        }
 
         // Select rows: all available sources + first n_missing repairs.
         let mut avail_rep: Vec<u8> = self.repairs.keys().copied().collect();
@@ -211,7 +242,8 @@ impl GroupState {
         }
 
         // After elimination mat = I; rhs[i] = source[i] for all i.
-        let recovered: Vec<(u8, Vec<u8>)> = missing.iter()
+        let recovered: Vec<(u8, Vec<u8>)> = missing
+            .iter()
             .map(|&mi| (mi, rhs[mi as usize].clone()))
             .collect();
 
@@ -237,9 +269,13 @@ fn gauss_rhs(mat: &mut Vec<Vec<u8>>, rhs: &mut Vec<Vec<u8>>, k: usize, rhs_len: 
         }
 
         for r in 0..k {
-            if r == col { continue; }
+            if r == col {
+                continue;
+            }
             let factor = mat[r][col];
-            if factor == 0 { continue; }
+            if factor == 0 {
+                continue;
+            }
             for j in 0..k {
                 let v = gf::mul(factor, mat[col][j]);
                 mat[r][j] ^= v;
@@ -257,12 +293,22 @@ pub struct FecDecoder {
 
 impl FecDecoder {
     pub fn new() -> Self {
-        Self { groups: HashMap::new() }
+        Self {
+            groups: HashMap::new(),
+        }
     }
 
     /// Process an incoming source packet (with FEC source envelope already stripped).
-    pub fn add_source(&mut self, group_id: u32, source_idx: u8, k: u8, r: u8, data: &[u8]) -> Option<Vec<(u8, Vec<u8>)>> {
-        let group = self.groups
+    pub fn add_source(
+        &mut self,
+        group_id: u32,
+        source_idx: u8,
+        k: u8,
+        r: u8,
+        data: &[u8],
+    ) -> Option<Vec<(u8, Vec<u8>)>> {
+        let group = self
+            .groups
             .entry(group_id)
             .or_insert_with(|| GroupState::new(k, r, data.len()));
 
@@ -275,7 +321,8 @@ impl FecDecoder {
 
     /// Process an incoming repair packet.
     pub fn add_repair(&mut self, repair: &FecRepairData) -> Option<Vec<(u8, Vec<u8>)>> {
-        let group = self.groups
+        let group = self
+            .groups
             .entry(repair.group_id)
             .or_insert_with(|| GroupState::new(repair.k, repair.r, repair.padded_len as usize));
 
@@ -292,13 +339,17 @@ impl FecDecoder {
 }
 
 impl Default for FecDecoder {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 /// Parse a FEC source envelope from the front of a buffer.
 /// Returns (group_id, source_idx, k, r, inner_payload).
 pub fn parse_source_envelope(buf: &[u8]) -> Option<(u32, u8, u8, u8, &[u8])> {
-    if buf.len() < FEC_SOURCE_HDR { return None; }
+    if buf.len() < FEC_SOURCE_HDR {
+        return None;
+    }
     let group_id = u32::from_le_bytes(buf[0..4].try_into().ok()?);
     let source_idx = buf[4];
     let k = buf[5];
@@ -332,12 +383,15 @@ mod tests {
 
     #[test]
     fn test_single_loss_recovery() {
-        let k = 4u8; let r = 2u8;
+        let k = 4u8;
+        let r = 2u8;
         let (sources, repairs) = encode_group(k, r, 80);
         let mut dec = FecDecoder::new();
 
         for (i, src) in sources.iter().enumerate() {
-            if i == 2 { continue; }
+            if i == 2 {
+                continue;
+            }
             dec.add_source(1, i as u8, k, r, src);
         }
         let recovered = dec.add_repair(&repairs[0]).expect("should recover");
@@ -349,13 +403,16 @@ mod tests {
 
     #[test]
     fn test_double_loss_recovery() {
-        let k = 6u8; let r = 3u8;
+        let k = 6u8;
+        let r = 3u8;
         let (sources, repairs) = encode_group(k, r, 64);
         let mut dec = FecDecoder::new();
 
         let gid = repairs[0].group_id;
         for (i, src) in sources.iter().enumerate() {
-            if i == 1 || i == 4 { continue; }
+            if i == 1 || i == 4 {
+                continue;
+            }
             dec.add_source(gid, i as u8, k, r, src);
         }
         dec.add_repair(&repairs[0]);

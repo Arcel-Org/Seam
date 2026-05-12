@@ -1,5 +1,3 @@
-use crate::{crypto::keys::PacketKeys, error::SeamError};
-use zeroize::{Zeroize, ZeroizeOnDrop};
 /// 0-RTT session resumption via encrypted session tickets.
 ///
 /// ⚠️  **WEAKER FORWARD SECRECY**: Session tickets store the derived traffic
@@ -8,8 +6,10 @@ use zeroize::{Zeroize, ZeroizeOnDrop};
 ///
 /// Ticket wire format (encrypted with server's ticket key via ChaCha20Poly1305):
 ///   session_id(8) + packet_keys(76) + expiry_unix_secs(8) + nonce(12)
+use crate::{crypto::keys::PacketKeys, error::SeamError};
 use chacha20poly1305::{AeadInPlace, ChaCha20Poly1305, KeyInit};
 use rand::{RngCore, rngs::OsRng};
+use zeroize::{Zeroize, ZeroizeOnDrop};
 
 const TICKET_PLAINTEXT_LEN: usize = 8 + 76 + 8; // session_id + keys + expiry
 const TICKET_LEN: usize = TICKET_PLAINTEXT_LEN + 12 + 16; // + nonce + tag

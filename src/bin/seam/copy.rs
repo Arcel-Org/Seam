@@ -333,6 +333,11 @@ pub async fn receive_file(
     }
     let name = String::from_utf8(info_frame[11..11 + name_len].to_vec())?;
 
+    // Reject path traversal and absolute paths.
+    if name.contains("..") || std::path::Path::new(&name).is_absolute() {
+        bail!("refusing dangerous filename: {name}");
+    }
+
     let out_path = dest.join(&name);
     if let Some(parent) = out_path.parent() {
         std::fs::create_dir_all(parent)?;

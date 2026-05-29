@@ -11,7 +11,7 @@
 </div>
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/North9-Labs/Seam/main/install.sh | sh
+curl -fsSL https://install.north9.org/seam.sh | sh
 ```
 
 Seam replaces `scp`, `netcat`, and `ssh -L` with a single tool that is faster on real-world links and safe against quantum computers. All traffic uses a hybrid Noise_XX + ML-KEM-768 handshake so session keys cannot be decrypted even if elliptic-curve cryptography is broken in the future.
@@ -48,13 +48,13 @@ seam transfers the same data in about 30% less wall time than scp on a clean loc
 ## Install
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/North9-Labs/Seam/main/install.sh | sh
+curl -fsSL https://install.north9.org/seam.sh | sh
 ```
 
 Installs to `~/.local/bin/seam`. Override:
 
 ```sh
-SEAM_INSTALL_DIR=/usr/local/bin curl -fsSL https://raw.githubusercontent.com/North9-Labs/Seam/main/install.sh | sh
+SEAM_INSTALL_DIR=/usr/local/bin curl -fsSL https://install.north9.org/seam.sh | sh
 ```
 
 The installer verifies a SHA-256 checksum before placing the binary.

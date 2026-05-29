@@ -1,6 +1,7 @@
 use anyhow::{Context, Result, bail};
 use clap::Args;
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 
 const REPO: &str = "North9-Labs/Seam";
 const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -45,6 +46,7 @@ pub fn run(args: UpdateArgs) -> Result<()> {
     }
 
     let target = current_target();
+    let tag_name = release.tag_name.clone();
     let asset = release
         .assets
         .iter()
@@ -60,8 +62,18 @@ pub fn run(args: UpdateArgs) -> Result<()> {
 
     let tmpdir = tempfile::tempdir().context("tempdir")?;
     let archive_path = tmpdir.path().join("seam.tar.gz");
-    let mut archive = std::fs::File::create(&archive_path)?;
-    std::io::copy(&mut resp.into_reader(), &mut archive)?;
+    let mut archive_file = std::fs::File::create(&archive_path)?;
+    std::io::copy(&mut resp.into_reader(), &mut archive_file)?;
+    drop(archive_file);
+
+    // Verify SHA-256 checksum against checksums.sha256 from the release.
+    let checksum_url = format!(
+        "https://github.com/{REPO}/releases/download/{tag_name}/checksums.sha256"
+    );
+    match verify_checksum(&archive_path, &asset.name, &checksum_url) {
+        Ok(()) => println!("checksum verified"),
+        Err(e) => bail!("checksum verification failed: {e}"),
+    }
 
     // Extract
     let archive = std::fs::File::open(&archive_path)?;
@@ -97,6 +109,42 @@ pub fn run(args: UpdateArgs) -> Result<()> {
     std::fs::rename(&tmp_new, &current_exe).context("replace binary")?;
 
     println!("updated to seam {latest}");
+    Ok(())
+}
+
+/// Download `checksums.sha256`, find the line for `asset_name`, and verify
+/// that the SHA-256 of `archive_path` matches.
+fn verify_checksum(
+    archive_path: &std::path::Path,
+    asset_name: &str,
+    checksum_url: &str,
+) -> Result<()> {
+    let body = ureq::get(checksum_url)
+        .set("User-Agent", &format!("seam/{CURRENT_VERSION}"))
+        .call()
+        .context("fetch checksums.sha256")?
+        .into_string()
+        .context("read checksums.sha256")?;
+
+    let expected_hex = body
+        .lines()
+        .find_map(|line| {
+            // Format: "<hex>  <filename>" or "<hex> <filename>"
+            let mut parts = line.splitn(2, ' ');
+            let hex = parts.next()?.trim();
+            let name = parts.next()?.trim().trim_start_matches('*');
+            if name == asset_name { Some(hex.to_string()) } else { None }
+        })
+        .ok_or_else(|| anyhow::anyhow!("no checksum entry for {asset_name} in checksums.sha256"))?;
+
+    let data = std::fs::read(archive_path).context("read archive for checksum")?;
+    let actual_hex = hex::encode(Sha256::digest(&data));
+
+    if actual_hex != expected_hex {
+        bail!(
+            "checksum mismatch\n  expected: {expected_hex}\n  actual:   {actual_hex}"
+        );
+    }
     Ok(())
 }
 

@@ -154,6 +154,10 @@ pub async fn run(args: TunnelArgs) -> Result<()> {
 // ── Server ────────────────────────────────────────────────────────────────────
 
 pub async fn run_recv(args: TunnelRecvArgs) -> Result<()> {
+    if args.remote_host.is_empty() {
+        bail!("remote_host must not be empty");
+    }
+
     let id = IdentityKeypair::generate();
     let x25519_hex = hex::encode(id.x25519_public.as_bytes());
     let kem_hex = hex::encode(pk_to_bytes(&id.kem_pk));
@@ -183,10 +187,6 @@ pub async fn run_recv(args: TunnelRecvArgs) -> Result<()> {
                 let _ = tokio::io::copy_bidirectional(&mut s, &mut tcp).await;
             }
         });
-    }
-
-    if args.remote_host.is_empty() {
-        bail!("remote_host must not be empty");
     }
 
     Ok(())

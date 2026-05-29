@@ -172,6 +172,15 @@ impl RemoteInfo {
     }
 }
 
+/// Parse `"user@host"` into `(Option<user>, host)`.
+pub fn parse_userhost(s: &str) -> (Option<String>, String) {
+    if let Some(at) = s.find('@') {
+        (Some(s[..at].to_string()), s[at + 1..].to_string())
+    } else {
+        (None, s.to_string())
+    }
+}
+
 /// Parse `"user@host:/path"` or `"host:/path"` into `(RemoteInfo, remote_path)`.
 /// Respects `~/.ssh/config` via `ssh -G` when no explicit user/port is given.
 pub fn parse_remote(s: &str) -> Option<(RemoteInfo, String)> {

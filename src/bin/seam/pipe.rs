@@ -95,15 +95,7 @@ pub async fn run(args: PipeArgs) -> Result<()> {
         let conn = connect::dial("127.0.0.1", port, x25519, kem_pk).await?;
         (conn, None)
     } else {
-        // Parse user@host (no path — pipe doesn't use a path)
-        let (user, host) = if let Some(at) = args.remote.find('@') {
-            (
-                Some(args.remote[..at].to_string()),
-                args.remote[at + 1..].to_string(),
-            )
-        } else {
-            (None, args.remote.clone())
-        };
+        let (user, host) = ssh::parse_userhost(&args.remote);
         let remote = ssh::RemoteInfo {
             host: host.clone(),
             user,

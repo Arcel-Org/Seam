@@ -21,7 +21,7 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 #[derive(Parser)]
 #[command(name = "seam", version, about, long_about = None, disable_help_subcommand = true)]
 pub struct Cli {
-    /// Increase verbosity (repeat for more: -v, -vv)
+    /// Increase verbosity (repeat for more: -v, -vv, -vvv)
     #[arg(short, long, global = true, action = clap::ArgAction::Count)]
     verbose: u8,
 
@@ -59,6 +59,10 @@ enum Commands {
     #[command(name = "ls")]
     Ls(ls::LsArgs),
 
+    /// Check system readiness and diagnose common problems
+    #[command(name = "doctor")]
+    Doctor(doctor::DoctorArgs),
+
     /// Generate shell completion scripts
     #[command(name = "completions")]
     Completions(completions::CompletionsArgs),
@@ -91,6 +95,8 @@ fn print_splash() {
     eprintln!("    pipe     Bidirectional pipe        seam pipe user@host -- bash");
     eprintln!("    tunnel   TCP port forward          seam tunnel 8080:user@host:3000");
     eprintln!("    bench    Measure throughput        seam bench user@host");
+    eprintln!("    ls       List remote files         seam ls user@host:/path");
+    eprintln!("    doctor   System readiness check    seam doctor");
     eprintln!("    update   Self-update               seam update");
     eprintln!();
     eprintln!("  Run  seam <command> --help  for flags and options.");
@@ -123,6 +129,7 @@ async fn main() -> Result<()> {
         Some(Commands::Update(args)) => update::run(args),
         Some(Commands::Config(args)) => config::run(args),
         Some(Commands::Ls(args)) => ls::run(args).await,
+        Some(Commands::Doctor(args)) => doctor::run(args),
         Some(Commands::Completions(args)) => completions::run(args),
         Some(Commands::Recv(args)) => recv::run(args).await,
         Some(Commands::Send(args)) => send::run(args).await,

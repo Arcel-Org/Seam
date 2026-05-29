@@ -4,12 +4,12 @@ use clap::Args;
 #[derive(Args)]
 pub struct DoctorArgs {}
 
-#[allow(dead_code)]
 pub fn run(_args: DoctorArgs) -> Result<()> {
     let mut ok = true;
+    let version = env!("CARGO_PKG_VERSION");
 
     eprintln!("  ┌──────────────────────────────────────────────────────────┐");
-    eprintln!("  │  seam doctor                                             │");
+    eprintln!("  │  seam doctor  (v{version:<43})│");
     eprintln!("  └──────────────────────────────────────────────────────────┘");
     eprintln!();
 
@@ -119,7 +119,6 @@ pub fn run(_args: DoctorArgs) -> Result<()> {
     Ok(())
 }
 
-#[allow(dead_code)]
 fn try_udp_buffer_test() -> Option<(usize, usize)> {
     use socket2::{Domain, Socket, Type};
     let sock = Socket::new(Domain::IPV4, Type::DGRAM, None).ok()?;

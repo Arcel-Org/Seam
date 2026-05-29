@@ -38,6 +38,7 @@ which = "7"
 flate2 = "1"
 tar = "0.4"
 clap_complete = "4.6.5"
+sha2 = "0.10"
 toml = "1.1.2"
 ml-kem = { version = "0.3", features = ["getrandom", "zeroize"] }
 

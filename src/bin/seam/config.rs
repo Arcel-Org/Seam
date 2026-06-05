@@ -98,7 +98,7 @@ impl Config {
         Ok(cfg)
     }
 
-    /// Save current config to disk, creating parent directories if needed.
+    /// Save current config to disk atomically (write tmp then rename).
     pub fn save(&self) -> Result<()> {
         let path = Self::config_path();
         if let Some(parent) = path.parent() {
@@ -106,7 +106,9 @@ impl Config {
                 .with_context(|| format!("create config dir {}", parent.display()))?;
         }
         let text = toml::to_string_pretty(self).context("serialize config")?;
-        std::fs::write(&path, text).with_context(|| format!("write config {}", path.display()))?;
+        let tmp = path.with_extension("toml.tmp");
+        std::fs::write(&tmp, &text).with_context(|| format!("write config tmp {}", tmp.display()))?;
+        std::fs::rename(&tmp, &path).with_context(|| format!("atomic rename config {}", path.display()))?;
         Ok(())
     }
 

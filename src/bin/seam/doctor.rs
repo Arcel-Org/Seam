@@ -88,7 +88,27 @@ pub fn run(_args: DoctorArgs) -> Result<()> {
         eprintln!("  !  no persistent identity key — one will be generated on first use");
     }
 
-    // ── 6. UDP socket buffer sizes ──────────────────────────────────────
+    // ── 6. Config file ──────────────────────────────────────────────────
+    let cfg = super::config::Config::load().ok().unwrap_or_default();
+    let cfg_path = super::config::Config::config_path();
+    if cfg_path.exists() {
+        eprintln!("  ✓  config at {}", cfg_path.display());
+        let cipher = &cfg.cipher;
+        if cipher == "aes256gcm" {
+            if is_aes_ni_available() {
+                eprintln!("  ✓  cipher: aes256gcm (AES-NI detected — hardware accelerated)");
+            } else {
+                eprintln!("  !  cipher: aes256gcm but no AES-NI detected — software fallback may be slow");
+                eprintln!("     consider: seam config set cipher chacha20poly1305");
+            }
+        } else {
+            eprintln!("  ✓  cipher: {} (default)", cipher);
+        }
+    } else {
+        eprintln!("  ·  no config file — using defaults ({})", cfg_path.display());
+    }
+
+    // ── 7. UDP socket buffer sizes ──────────────────────────────────────
     match try_udp_buffer_test() {
         Some((rx, tx)) => {
             eprintln!("  ✓  UDP socket buffers: rx={} B, tx={} B", rx, tx);
@@ -117,6 +137,20 @@ pub fn run(_args: DoctorArgs) -> Result<()> {
         std::process::exit(1);
     }
     Ok(())
+}
+
+/// Returns true if AES-NI hardware acceleration is available on this CPU.
+/// On non-x86 platforms always returns true (NEON/ARMv8 crypto is always present
+/// when the binary is compiled for that target, so ChaCha vs AES is less critical).
+fn is_aes_ni_available() -> bool {
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    {
+        is_x86_feature_detected!("aes")
+    }
+    #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
+    {
+        true
+    }
 }
 
 fn try_udp_buffer_test() -> Option<(usize, usize)> {

@@ -4,6 +4,7 @@ pub mod datagram;
 pub mod flow;
 pub mod rack;
 pub mod ratchet_session;
+pub mod resume;
 pub mod stream;
 
 use bytes::Bytes;

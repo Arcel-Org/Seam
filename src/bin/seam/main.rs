@@ -1,3 +1,4 @@
+mod audit;
 mod bench;
 mod completions;
 mod config;
@@ -250,29 +251,90 @@ async fn main() -> Result<()> {
     // Make pin policy available globally via thread-local (accessed by connect::dial).
     connect::set_pin_policy(pin_policy);
 
+    // ── Audit log helper ──────────────────────────────────────────────────────
+    // Logs invocation at start and exit code at end. Hidden internal subcommands
+    // (_shell-recv, _send, recv, etc.) are excluded — they run on the remote side
+    // and are not client-initiated operations.
+    macro_rules! audited {
+        ($subcmd:expr, $remote:expr, $args_list:expr, $body:expr) => {{
+            let _ts = audit::now_rfc3339();
+            let _result: Result<()> = $body;
+            audit::log(&audit::AuditEntry {
+                ts: _ts,
+                subcommand: $subcmd,
+                remote: $remote,
+                args: $args_list,
+                exit_code: Some(if _result.is_ok() { 0 } else { 1 }),
+                bytes_tx: None,
+                fips_mode: fips_active,
+                pid: std::process::id(),
+            });
+            _result
+        }};
+    }
+
     match cli.command {
         None => {
             print_splash();
             Ok(())
         }
-        Some(Commands::Forward(args)) => forward::run(args, fips_active).await,
-        Some(Commands::Sync(args)) => sync::run(args, fips_active).await,
-        Some(Commands::Copy(args)) => copy::run(args, fips_active).await,
-        Some(Commands::Pipe(args)) => pipe::run(args).await,
-        Some(Commands::Tunnel(args)) => tunnel::run(args).await,
-        Some(Commands::Fwd(args)) => fwd::run(args).await,
-        Some(Commands::Bench(args)) => bench::run(args).await,
-        Some(Commands::Ping(args)) => ping::run(args).await,
-        Some(Commands::Key(args)) => key::run(args),
-        Some(Commands::Stats(args)) => stats::run(args).await,
-        Some(Commands::Update(args)) => update::run(args),
-        Some(Commands::Config(args)) => config::run(args),
-        Some(Commands::Shell(args)) => shell::run(args).await,
-        Some(Commands::Ls(args)) => ls::run(args).await,
-        Some(Commands::Doctor(args)) => doctor::run(args),
-        Some(Commands::Version(args)) => version::run(args),
+        Some(Commands::Forward(args)) => {
+            let remote = args.remote.clone();
+            audited!("forward", &remote, vec![], forward::run(args, fips_active).await)
+        }
+        Some(Commands::Sync(args)) => {
+            let remote = if args.dest.contains('@') { args.dest.clone() }
+                         else { args.src.clone() };
+            audited!("sync", &remote, vec![], sync::run(args, fips_active).await)
+        }
+        Some(Commands::Copy(args)) => {
+            let remote = if args.dest.contains('@') { args.dest.clone() }
+                         else { args.src.clone() };
+            audited!("cp", &remote, vec![], copy::run(args, fips_active).await)
+        }
+        Some(Commands::Pipe(args)) => {
+            let remote = args.remote.clone();
+            audited!("pipe", &remote, vec![], pipe::run(args).await)
+        }
+        Some(Commands::Tunnel(args)) => {
+            let remote = args.spec.clone();
+            audited!("tunnel", &remote, vec![], tunnel::run(args).await)
+        }
+        Some(Commands::Fwd(args)) => {
+            let remote = args.remote_spec.clone();
+            audited!("fwd", &remote, vec![], fwd::run(args).await)
+        }
+        Some(Commands::Bench(args)) => {
+            let remote = args.remote.clone();
+            audited!("bench", &remote, vec![], bench::run(args).await)
+        }
+        Some(Commands::Ping(args)) => {
+            let remote = args.remote.clone();
+            audited!("ping", &remote, vec![], ping::run(args).await)
+        }
+        Some(Commands::Key(args)) => audited!("key", "", vec![], key::run(args)),
+        Some(Commands::Stats(args)) => {
+            let remote = args.remote.clone();
+            audited!("stats", &remote, vec![], stats::run(args).await)
+        }
+        Some(Commands::Update(args)) => audited!("update", "", vec![], update::run(args)),
+        Some(Commands::Config(args)) => audited!("config", "", vec![], config::run(args)),
+        Some(Commands::Shell(args)) => {
+            let remote = args.remote.clone();
+            audited!("shell", &remote, vec![], shell::run(args).await)
+        }
+        Some(Commands::Ls(args)) => {
+            let remote = args.remote.clone();
+            audited!("ls", &remote, vec![], ls::run(args).await)
+        }
+        Some(Commands::Doctor(args)) => audited!("doctor", "", vec![], doctor::run(args)),
+        Some(Commands::Version(args)) => audited!("version", "", vec![], version::run(args)),
         Some(Commands::Completions(args)) => completions::run(args),
-        Some(Commands::Proxy(args)) => proxy::run(args, fips_active).await,
+        Some(Commands::Proxy(args)) => {
+            let remote = args.remote.clone();
+            audited!("proxy", &remote, vec![], proxy::run(args, fips_active).await)
+        }
+        // Hidden internal subcommands — not audited (remote side, not client-initiated)
         Some(Commands::ForwardRecv(args)) => forward::run_recv(args).await,
         Some(Commands::SyncRecv(args)) => sync::run_recv(args, fips_active).await,
         Some(Commands::ShellRecv(args)) => shell::run_recv(args).await,

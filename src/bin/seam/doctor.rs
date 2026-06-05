@@ -338,6 +338,75 @@ pub fn run(_args: DoctorArgs) -> Result<()> {
         }
     }
 
+    // ── 7.10. known_hosts integrity check ──────────────────────────────────────
+    match check_known_hosts_integrity() {
+        KnownHostsStatus::NotFound => {
+            eprintln!("  ·  known_hosts: not found (no TOFU pins stored yet)");
+        }
+        KnownHostsStatus::Empty => {
+            eprintln!("  ✓  known_hosts: exists but empty (no pins yet)");
+        }
+        KnownHostsStatus::Ok { count } => {
+            eprintln!("  ✓  known_hosts: {} pinned host(s) — integrity OK", count);
+        }
+        KnownHostsStatus::ParseError(e) => {
+            eprintln!("  ✗  known_hosts: parse error — file may be corrupt: {e}");
+            eprintln!("     This could indicate tampering. Inspect manually:");
+            let path = dirs::config_dir()
+                .unwrap_or_else(|| std::path::PathBuf::from("."))
+                .join("seam")
+                .join("known_hosts");
+            eprintln!("       {}", path.display());
+            ok = false;
+        }
+        KnownHostsStatus::SuspiciousEntries { hosts } => {
+            eprintln!("  !  known_hosts: {} pinned host(s) found", hosts.len());
+            eprintln!("  !  WARNING: the following hosts have malformed fingerprints (possible TOFU bypass):");
+            for h in &hosts {
+                eprintln!("       {h}");
+            }
+            eprintln!("     Review and re-pin with: seam key --remove-pin <host>  then reconnect");
+            ok = false;
+        }
+        KnownHostsStatus::PermissionsWrong { mode } => {
+            eprintln!(
+                "  !  known_hosts: permissions 0o{:o} — should be 0o600 (others can read your pins)",
+                mode
+            );
+            let path = dirs::config_dir()
+                .unwrap_or_else(|| std::path::PathBuf::from("."))
+                .join("seam")
+                .join("known_hosts");
+            eprintln!("     fix: chmod 600 {}", path.display());
+        }
+    }
+
+    // ── 7.11. Audit log health ──────────────────────────────────────────────────
+    {
+        let (exists, size, last) = super::audit::audit_health();
+        if exists {
+            eprintln!(
+                "  ✓  audit log: {} ({} bytes)",
+                super::audit::audit_log_path_display().display(),
+                size
+            );
+            if let Some(preview) = last {
+                // Show just the timestamp from the last entry to confirm recency.
+                if let Some(ts) = serde_json::from_str::<serde_json::Value>(&preview)
+                    .ok()
+                    .and_then(|v| v["ts"].as_str().map(|s| s.to_string()))
+                {
+                    eprintln!("     last entry: {ts}");
+                }
+            }
+        } else {
+            eprintln!(
+                "  ·  audit log: not yet created (will be at {})",
+                super::audit::audit_log_path_display().display()
+            );
+        }
+    }
+
     // ── 8. Summary tips ──────────────────────────────────────────────────
     eprintln!();
     eprintln!("  Tips");
@@ -570,6 +639,102 @@ fn probe_path_mtu_loopback() -> anyhow::Result<usize> {
     }
 
     Ok(effective_mtu)
+}
+
+/// Result of the known_hosts integrity check.
+enum KnownHostsStatus {
+    /// File does not exist yet.
+    NotFound,
+    /// File exists but contains no pins.
+    Empty,
+    /// File parses correctly with `count` valid entries.
+    Ok { count: usize },
+    /// File exists but has entries with malformed fingerprints (< 64 hex chars).
+    SuspiciousEntries { hosts: Vec<String> },
+    /// File exists but could not be parsed.
+    ParseError(String),
+    /// File has wrong permissions (readable by others).
+    #[allow(dead_code)]
+    PermissionsWrong { mode: u32 },
+}
+
+/// Read and validate the known_hosts file.
+///
+/// Checks performed:
+///   1. File exists and is readable.
+///   2. Each non-comment line has exactly two fields (host + fingerprint).
+///   3. Each fingerprint is exactly 64 lowercase hex characters (SHA-256).
+///   4. File permissions are 0o600 (Unix only).
+///
+/// A fingerprint shorter than 64 chars could indicate a truncation attack
+/// where an attacker replaces a full key hash with a prefix that matches
+/// multiple keys. We flag these as suspicious.
+fn check_known_hosts_integrity() -> KnownHostsStatus {
+    let path = dirs::config_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join("seam")
+        .join("known_hosts");
+
+    if !path.exists() {
+        return KnownHostsStatus::NotFound;
+    }
+
+    // Check permissions on Unix.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(m) = std::fs::metadata(&path) {
+            let mode = m.permissions().mode() & 0o777;
+            if mode & 0o077 != 0 {
+                return KnownHostsStatus::PermissionsWrong { mode };
+            }
+        }
+    }
+
+    let text = match std::fs::read_to_string(&path) {
+        Ok(t) => t,
+        Err(e) => return KnownHostsStatus::ParseError(e.to_string()),
+    };
+
+    let mut count = 0usize;
+    let mut suspicious: Vec<String> = Vec::new();
+
+    for (lineno, line) in text.lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let parts: Vec<&str> = line.splitn(2, ' ').collect();
+        if parts.len() != 2 {
+            return KnownHostsStatus::ParseError(format!(
+                "line {}: expected 'host fingerprint', got: {:?}",
+                lineno + 1,
+                line
+            ));
+        }
+        let host = parts[0];
+        let fp = parts[1].trim();
+
+        // A valid SHA-256 fingerprint is exactly 64 lowercase hex characters.
+        // Shorter fingerprints could be a truncation / prefix-substitution attack.
+        if fp.len() != 64 || !fp.chars().all(|c| c.is_ascii_hexdigit()) {
+            suspicious.push(format!(
+                "{host} (fingerprint has {} chars, expected 64)",
+                fp.len()
+            ));
+        }
+        count += 1;
+    }
+
+    if !suspicious.is_empty() {
+        return KnownHostsStatus::SuspiciousEntries { hosts: suspicious };
+    }
+
+    if count == 0 {
+        KnownHostsStatus::Empty
+    } else {
+        KnownHostsStatus::Ok { count }
+    }
 }
 
 fn try_udp_buffer_test() -> Option<(usize, usize)> {

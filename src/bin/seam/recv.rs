@@ -123,15 +123,35 @@ async fn receive_file(
         std::fs::create_dir_all(parent)?;
     }
 
-    // Check for partial file and resume if possible.
-    let existing = out_path.metadata().map(|m| m.len()).unwrap_or(0);
-    let resume_from = if existing > 0 && existing < size {
+    // ── Partial-file resume using .seam-partial staging ──────────────────────
+    // We write to `<name>.seam-partial` during transfer and atomically rename
+    // to the final name on successful checksum verification. This ensures:
+    //   1. The output file is never left in a partial/corrupt state.
+    //   2. If a previous transfer was interrupted, we resume from the partial.
+    //   3. On checksum mismatch we delete the partial and signal the sender.
+    let partial_path = {
+        let mut p = out_path.clone();
+        let mut fname = p.file_name().unwrap_or_default().to_owned();
+        fname.push(".seam-partial");
+        p.set_file_name(fname);
+        p
+    };
+
+    // Check whether a compatible partial exists for resuming.
+    let partial_size = partial_path.metadata().map(|m| m.len()).unwrap_or(0);
+    let resume_from = if partial_size > 0 && partial_size < size {
+        eprintln!("  resuming {name}: found {partial_size} of {size} bytes in partial file");
         let mut resume_frame = Vec::with_capacity(1 + 8);
         resume_frame.push(proto::RESUME);
-        resume_frame.extend_from_slice(&existing.to_be_bytes());
+        resume_frame.extend_from_slice(&partial_size.to_be_bytes());
         send_frame(conn, ctrl_sid, &resume_frame).await?;
-        existing
+        partial_size
     } else {
+        // No usable partial — sender will send from byte 0.
+        if partial_path.exists() {
+            // Stale or complete-but-unfinished partial — remove it.
+            let _ = std::fs::remove_file(&partial_path);
+        }
         0
     };
 
@@ -139,7 +159,7 @@ async fn receive_file(
         .write(true)
         .create(true)
         .truncate(resume_from == 0)
-        .open(&out_path)?;
+        .open(&partial_path)?;
     if resume_from > 0 {
         file.seek(SeekFrom::Start(resume_from))?;
     }
@@ -167,6 +187,9 @@ async fn receive_file(
             received += raw.len() as u64;
         }
     }
+    // Flush and sync before verifying integrity.
+    file.flush()?;
+    drop(file);
 
     // Verify checksum sent by the sender (SHA-256 in FIPS mode, BLAKE3 otherwise).
     let cksum_frame = read_frame(conn, ctrl_sid, buf).await?;
@@ -174,16 +197,23 @@ async fn receive_file(
         let expected = &cksum_frame[1..33];
         let actual = hasher.finalize();
         if actual == expected {
+            // ── Atomic promotion: partial → final path ────────────────────────
+            std::fs::rename(&partial_path, &out_path)?;
             send_frame(conn, ctrl_sid, &[proto::ACK]).await?;
             eprintln!("received: {name} ({size} bytes) [{algo_name} OK: {}]",
                 hex::encode(&expected[..8]));
         } else {
-            bail!("{algo_name} integrity check FAILED for {name}: expected {} got {}",
+            // ── Checksum mismatch: remove corrupted partial ───────────────────
+            // Do NOT keep the partial — it is corrupt. The caller will need to
+            // restart the transfer from byte 0 on the next attempt.
+            let _ = std::fs::remove_file(&partial_path);
+            bail!("{algo_name} integrity check FAILED for {name}: expected {} got {} — partial deleted, retry transfer",
                 hex::encode(expected),
                 hex::encode(actual));
         }
     } else {
-        // Older peer without checksum support — still accept the file.
+        // Older peer without checksum support — promote the partial anyway.
+        std::fs::rename(&partial_path, &out_path)?;
         eprintln!("received: {name} ({size} bytes) [no integrity check]");
     }
     Ok(())

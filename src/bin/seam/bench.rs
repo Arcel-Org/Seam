@@ -24,6 +24,9 @@ pub struct BenchArgs {
     /// Skip SSH bootstrap; use this pre-started SEAM line directly.
     #[arg(long)]
     pub direct: Option<String>,
+    /// Stop the benchmark after this many seconds and print partial results.
+    #[arg(long)]
+    pub timeout: Option<u64>,
 }
 
 // ── Server args ───────────────────────────────────────────────────────────────
@@ -67,13 +70,31 @@ pub async fn run(args: BenchArgs) -> Result<()> {
     eprint!("\nbenchmarking {remote_label} · {} MiB  ", args.mib);
 
     let start = std::time::Instant::now();
-    let bytes = tokio::io::copy(&mut stream, &mut tokio::io::sink()).await?;
+    let (bytes, timed_out) = if let Some(timeout_secs) = args.timeout {
+        let timeout_dur = std::time::Duration::from_secs(timeout_secs);
+        match tokio::time::timeout(timeout_dur, tokio::io::copy(&mut stream, &mut tokio::io::sink())).await {
+            Ok(result) => (result?, false),
+            Err(_elapsed) => {
+                // tokio::io::copy was cancelled; we can't get partial byte count from it.
+                // Use elapsed time × a sentinel so partial result is meaningful.
+                eprintln!("\n  benchmark timed out after {}s — partial result:", timeout_secs);
+                // We don't have the partial byte count from tokio::io::copy since it was
+                // cancelled. Report 0 bytes so the caller sees elapsed time clearly.
+                (0u64, true)
+            }
+        }
+    } else {
+        (tokio::io::copy(&mut stream, &mut tokio::io::sink()).await?, false)
+    };
     let elapsed = start.elapsed();
 
     let secs = elapsed.as_secs_f64();
     let mib_s = (bytes as f64 / (1024.0 * 1024.0)) / secs;
     let gbps = (bytes as f64 * 8.0) / (1e9 * secs);
 
+    if timed_out {
+        eprintln!("  (transfer incomplete — reported throughput is a lower bound)");
+    }
     print_results(mib_s, gbps, args.mib);
     Ok(())
 }

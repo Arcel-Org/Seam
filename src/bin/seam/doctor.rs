@@ -137,6 +137,15 @@ pub fn run(_args: DoctorArgs) -> Result<()> {
         }
     }
 
+    // ── 7.5. UDP loopback self-test ──────────────────────────────────────────
+    match try_udp_loopback_echo() {
+        Ok(rtt_us) => eprintln!("  ✓  UDP loopback self-test passed (RTT: {}µs)", rtt_us),
+        Err(e) => {
+            eprintln!("  !  UDP loopback self-test failed: {e}");
+            eprintln!("     Seam requires UDP. Check firewall rules if this is unexpected.");
+        }
+    }
+
     // ── 8. MTU / fragmentation ──────────────────────────────────────────
     eprintln!();
     eprintln!("  Tips");
@@ -166,6 +175,28 @@ fn is_aes_ni_available() -> bool {
     {
         true
     }
+}
+
+fn try_udp_loopback_echo() -> anyhow::Result<u128> {
+    use std::net::UdpSocket;
+    use std::time::Instant;
+
+    let server = UdpSocket::bind("127.0.0.1:0")?;
+    let server_addr = server.local_addr()?;
+    server.set_read_timeout(Some(std::time::Duration::from_secs(2)))?;
+
+    let client = UdpSocket::bind("127.0.0.1:0")?;
+    client.set_read_timeout(Some(std::time::Duration::from_secs(2)))?;
+
+    let t0 = Instant::now();
+    client.send_to(b"SEAM_DOCTOR_PING", server_addr)?;
+
+    let mut buf = [0u8; 32];
+    let (n, peer) = server.recv_from(&mut buf)?;
+    server.send_to(&buf[..n], peer)?;
+
+    client.recv_from(&mut buf)?;
+    Ok(t0.elapsed().as_micros())
 }
 
 fn try_udp_buffer_test() -> Option<(usize, usize)> {

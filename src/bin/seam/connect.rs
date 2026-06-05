@@ -68,7 +68,11 @@ pub async fn dial(
         .parse()
         .context("bad address")?;
     let id = IdentityKeypair::load_or_generate(identity_path())
-        .unwrap_or_else(|_| IdentityKeypair::generate());
+        .unwrap_or_else(|e| {
+            eprintln!("warning: could not load identity key ({e}) — using ephemeral key");
+            eprintln!("         run: seam doctor  to diagnose");
+            IdentityKeypair::generate()
+        });
     let mut client = Client::bind("0.0.0.0:0".parse()?, id)
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;

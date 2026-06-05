@@ -147,4 +147,84 @@ mod tests {
             decoder.decode(&mut buf).unwrap();
         }
     }
+
+    /// Packet at exactly the last slot of the window (offset = 1023) must be accepted.
+    #[test]
+    fn test_window_boundary_last_slot_accepted() {
+        let secret = b"boundary-last-slot-32bytes-paddd";
+        let enc_keys = PacketKeys::derive_from_secret(secret);
+        let dec_keys = PacketKeys::derive_from_secret(secret);
+        let encoder = PacketEncoder::new(enc_keys, 0xABCD);
+        let mut decoder = PacketDecoder::new(dec_keys);
+
+        // Encode seq 0 to anchor base_seq = 0
+        let mut buf0 = vec![0u8; HEADER_LEN + 4 + TAG_LEN];
+        encoder.encode(PktType::Data, b"anch", &mut buf0).unwrap();
+        decoder.decode(&mut buf0).unwrap();
+
+        // Encode seq 1 through 1022 (skip decoding to leave base_seq = 0)
+        for _ in 1..1023 {
+            let mut buf = vec![0u8; HEADER_LEN + 4 + TAG_LEN];
+            encoder.encode(PktType::Data, b"skip", &mut buf).unwrap();
+            // do NOT decode — we only want to advance the encoder counter
+            let _ = buf; // suppress unused warning
+        }
+
+        // seq 1023 is the last valid slot in the window when base_seq = 0 (offset = 1023 < 1024)
+        let mut buf_boundary = vec![0u8; HEADER_LEN + 4 + TAG_LEN];
+        encoder.encode(PktType::Data, b"bndl", &mut buf_boundary).unwrap();
+        // Decode the skipped packets first (1 .. 1022) is impractical here; instead we
+        // decode only the boundary packet which requires sliding.  The important assertion
+        // is that the decode does NOT return a TooOld / Replay error.
+        assert!(
+            decoder.decode(&mut buf_boundary).is_ok(),
+            "seq 1023 (window boundary) must be accepted"
+        );
+    }
+
+    /// A packet whose sequence number is exactly one slot past the tail of the current
+    /// window (i.e. already evicted by sliding) must be rejected as TooOld.
+    #[test]
+    fn test_window_boundary_just_outside_rejected() {
+        use crate::crypto::replay::ReplayWindow;
+        use crate::error::SeamError;
+
+        let mut w = ReplayWindow::new();
+
+        // Accept seq 1023, which is the last valid slot when base_seq = 0.
+        w.check_and_insert(1023).unwrap();
+
+        // Now accept seq 1024 — this slides the window so base_seq advances by 1.
+        // After the slide, base_seq = 1 and seq 0 falls outside the window.
+        w.check_and_insert(1024).unwrap();
+
+        // seq 0 is now below base_seq and must be rejected.
+        let result = w.check_and_insert(0);
+        assert!(
+            matches!(result, Err(SeamError::TooOld(0))),
+            "seq 0 just outside window must be TooOld, got {:?}",
+            result
+        );
+    }
+
+    /// A duplicate packet that was already accepted must be rejected as Replay,
+    /// even when the packet number sits exactly at the current window boundary.
+    #[test]
+    fn test_duplicate_at_boundary_rejected() {
+        use crate::crypto::replay::ReplayWindow;
+        use crate::error::SeamError;
+
+        let mut w = ReplayWindow::new();
+
+        // Accept the packet at the top of the window (offset = 1023).
+        w.check_and_insert(1023).unwrap();
+
+        // A second attempt with the same seq must be rejected as Replay.
+        let result = w.check_and_insert(1023);
+        assert!(
+            matches!(result, Err(SeamError::Replay(1023))),
+            "duplicate at window boundary must be Replay, got {:?}",
+            result
+        );
+    }
 }

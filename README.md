@@ -5,6 +5,7 @@
 **Post-quantum encrypted communications over UDP — written in Rust.**
 
 [![CI](https://github.com/North9-Labs/Seam/actions/workflows/ci.yml/badge.svg)](https://github.com/North9-Labs/Seam/actions/workflows/ci.yml)
+[![Security Audit](https://github.com/North9-Labs/Seam/actions/workflows/security.yml/badge.svg)](https://github.com/North9-Labs/Seam/actions/workflows/security.yml)
 [![License: AGPL v3](https://img.shields.io/badge/license-AGPL%20v3-blue.svg)](LICENSE)
 [![Rust 1.88+](https://img.shields.io/badge/rust-1.88+-orange.svg)](#build-from-source)
 

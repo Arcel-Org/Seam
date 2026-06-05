@@ -43,6 +43,10 @@ struct PreSnapshot {
     cwnd_bytes: u64,
 }
 
+// Simple protocol byte written by the client to signal which direction a stream carries.
+const DIR_DOWNLOAD: u8 = 0x01; // server → client
+const DIR_UPLOAD: u8 = 0x02;   // client → server
+
 // ── Client ────────────────────────────────────────────────────────────────────
 
 pub async fn run(args: StatsArgs) -> Result<()> {
@@ -76,27 +80,53 @@ pub async fn run(args: StatsArgs) -> Result<()> {
     };
 
     let mux = SeamMux::new(conn);
-    let mut stream = mux.open_stream().await;
+
+    // Open two streams: one for download (server→client) and one for upload (client→server).
+    let mut dl_stream = mux.open_stream().await;
+    let mut ul_stream = mux.open_stream().await;
+
+    // Tell the server which direction each stream carries.
+    dl_stream.write_all(&[DIR_DOWNLOAD]).await?;
+    ul_stream.write_all(&[DIR_UPLOAD]).await?;
 
     eprint!("\nmeasuring connection to {remote_label} for {duration_secs}s  ");
 
     let start = std::time::Instant::now();
-    let deadline =
-        tokio::time::Instant::now() + std::time::Duration::from_secs(duration_secs);
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(duration_secs);
 
+    let ul_buf = vec![0u8; 64 * 1024];
     let mut bytes_recv: u64 = 0;
-    let mut buf = vec![0u8; 32 * 1024];
+    let mut bytes_sent: u64 = 0;
+    let mut dl_buf = vec![0u8; 32 * 1024];
+    let mut dl_done = false;
+    let mut ul_done = false;
+
     loop {
-        match tokio::time::timeout_at(deadline, stream.read(&mut buf)).await {
-            Ok(Ok(0)) | Err(_) => break,
-            Ok(Ok(n)) => bytes_recv += n as u64,
-            Ok(Err(_)) => break,
+        if dl_done && ul_done {
+            break;
+        }
+        tokio::select! {
+            result = dl_stream.read(&mut dl_buf), if !dl_done => {
+                match result {
+                    Ok(0) | Err(_) => dl_done = true,
+                    Ok(n) => bytes_recv += n as u64,
+                }
+            }
+            result = ul_stream.write_all(&ul_buf), if !ul_done => {
+                match result {
+                    Ok(()) => bytes_sent += ul_buf.len() as u64,
+                    Err(_) => ul_done = true,
+                }
+            }
+            _ = tokio::time::sleep_until(deadline) => {
+                break;
+            }
         }
     }
     let elapsed = start.elapsed();
     eprintln!();
 
-    print_stats(&remote_label, &pre, bytes_recv, elapsed);
+    print_stats(&remote_label, &pre, bytes_recv, bytes_sent, elapsed);
     Ok(())
 }
 
@@ -104,10 +134,12 @@ fn print_stats(
     remote: &str,
     pre: &PreSnapshot,
     bytes_recv: u64,
+    bytes_sent: u64,
     elapsed: std::time::Duration,
 ) {
     let secs = elapsed.as_secs_f64().max(0.001);
-    let throughput_mib = (bytes_recv as f64) / (1024.0 * 1024.0) / secs;
+    let dl_mib = (bytes_recv as f64) / (1024.0 * 1024.0) / secs;
+    let ul_mib = (bytes_sent as f64) / (1024.0 * 1024.0) / secs;
     let rtt_ms = pre.srtt.as_secs_f64() * 1000.0;
     let cwnd_kib = pre.cwnd_bytes / 1024;
 
@@ -118,9 +150,16 @@ fn print_stats(
     eprintln!("  {:<28} {:.1} ms", "Smoothed RTT:", rtt_ms);
     eprintln!(
         "  {:<28} {:.1} MiB/s  ({} MiB in {:.1}s)",
-        "Throughput (recv):",
-        throughput_mib,
+        "Download (recv):",
+        dl_mib,
         bytes_recv / (1024 * 1024),
+        secs,
+    );
+    eprintln!(
+        "  {:<28} {:.1} MiB/s  ({} MiB in {:.1}s)",
+        "Upload (sent):",
+        ul_mib,
+        bytes_sent / (1024 * 1024),
         secs,
     );
     eprintln!("  {:<28} {} bytes", "Path MTU:", pre.path_mtu);
@@ -149,18 +188,34 @@ pub async fn run_recv(args: StatsRecvArgs) -> Result<()> {
         .await
         .ok_or_else(|| anyhow!("no connection"))?;
     let mux = SeamMux::new(conn);
-    let mut stream = mux
-        .accept_stream()
-        .await
-        .ok_or_else(|| anyhow!("no stream"))?;
 
-    // Send a continuous stream of zeros for the client's measurement window.
-    // The client will read until its deadline and then drop the stream.
-    let buf = vec![0u8; 64 * 1024];
-    loop {
-        if stream.write_all(&buf).await.is_err() {
-            break;
-        }
+    // Accept both streams the client opens (download + upload direction bytes).
+    // Each stream starts with one direction byte.
+    for _ in 0..2 {
+        let mux = mux.clone();
+        tokio::spawn(async move {
+            let Some(mut stream) = mux.accept_stream().await else { return };
+            let mut dir = [0u8; 1];
+            if stream.read_exact(&mut dir).await.is_err() { return; }
+            match dir[0] {
+                DIR_DOWNLOAD => {
+                    // Server→client: saturate the stream with zeros.
+                    let buf = vec![0u8; 64 * 1024];
+                    loop {
+                        if stream.write_all(&buf).await.is_err() { break; }
+                    }
+                }
+                DIR_UPLOAD => {
+                    // Client→server: drain and discard.
+                    let mut sink = vec![0u8; 64 * 1024];
+                    while stream.read(&mut sink).await.map(|n| n > 0).unwrap_or(false) {}
+                }
+                _ => {}
+            }
+        });
     }
+
+    // Keep the mux alive until both spawns finish (connection drop signals shutdown).
+    tokio::time::sleep(std::time::Duration::from_secs(300)).await;
     Ok(())
 }

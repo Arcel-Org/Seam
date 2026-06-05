@@ -17,6 +17,7 @@ mod pipe;
 mod proto;
 mod proxy;
 mod recv;
+mod scan;
 mod send;
 mod serve;
 mod shell;
@@ -171,6 +172,10 @@ enum Commands {
     #[command(name = "health")]
     Health(health::HealthArgs),
 
+    /// Scan TCP ports on a target host or CIDR range through a post-quantum Seam tunnel
+    #[command(name = "scan")]
+    Scan(scan::ScanArgs),
+
     // Hidden internal subcommands — started by SSH bootstrap, not for direct use
     #[command(name = "_forward-recv", hide = true)]
     ForwardRecv(forward::ForwardRecvArgs),
@@ -222,6 +227,7 @@ fn print_splash() {
     eprintln!("    health   Health-check seam serve      seam health user@host");
     eprintln!("    bench    Measure throughput        seam bench user@host");
     eprintln!("    perf     Crypto performance self-test  seam perf");
+    eprintln!("    scan     Port scanner (PQ-encrypted)  seam scan 10.0.0.0/24 --ports 22,80,443");
     eprintln!("    proxy    SOCKS5 proxy                seam proxy user@host --port 1080");
     eprintln!("    ping     Latency measurement        seam ping user@host");
     eprintln!("    key      Show identity public key    seam key");
@@ -368,6 +374,10 @@ async fn main() -> Result<()> {
         Some(Commands::Health(args)) => {
             let remote = args.remote.clone();
             audited!("health", &remote, vec![], health::run(args, fips_active).await)
+        }
+        Some(Commands::Scan(args)) => {
+            let target = args.target.clone();
+            audited!("scan", &target, vec![], scan::run_scan(args).await)
         }
         // Hidden internal subcommands — not audited (remote side, not client-initiated)
         Some(Commands::ForwardRecv(args)) => forward::run_recv(args).await,

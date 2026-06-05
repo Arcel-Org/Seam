@@ -4,12 +4,14 @@ mod config;
 mod connect;
 mod copy;
 mod doctor;
+mod fwd;
 mod ls;
 mod pipe;
 mod proto;
 mod recv;
 mod send;
 mod ssh;
+mod stats;
 mod tunnel;
 mod update;
 
@@ -43,9 +45,17 @@ enum Commands {
     #[command(name = "tunnel")]
     Tunnel(tunnel::TunnelArgs),
 
+    /// Reverse port forward: remote listens, connections forwarded to local (like ssh -R)
+    #[command(name = "fwd")]
+    Fwd(fwd::FwdArgs),
+
     /// Measure transfer throughput to a remote host
     #[command(name = "bench")]
     Bench(bench::BenchArgs),
+
+    /// Show connection statistics (RTT, throughput, MTU, cwnd)
+    #[command(name = "stats")]
+    Stats(stats::StatsArgs),
 
     /// Update seam to the latest release
     #[command(name = "update")]
@@ -80,6 +90,10 @@ enum Commands {
     TunnelRecv(tunnel::TunnelRecvArgs),
     #[command(name = "_bench-recv", hide = true)]
     BenchRecv(bench::BenchRecvArgs),
+    #[command(name = "_fwd-recv", hide = true)]
+    FwdRecv(fwd::FwdRecvArgs),
+    #[command(name = "_stats-recv", hide = true)]
+    StatsRecv(stats::StatsRecvArgs),
 }
 
 fn print_splash() {
@@ -94,7 +108,9 @@ fn print_splash() {
     eprintln!("    cp       Copy files               seam cp ./file user@host:/path");
     eprintln!("    pipe     Bidirectional pipe        seam pipe user@host -- bash");
     eprintln!("    tunnel   TCP port forward          seam tunnel 8080:user@host:3000");
+    eprintln!("    fwd      Reverse port forward      seam fwd user@host:3000 8080");
     eprintln!("    bench    Measure throughput        seam bench user@host");
+    eprintln!("    stats    Connection statistics     seam stats user@host");
     eprintln!("    ls       List remote files         seam ls user@host:/path");
     eprintln!("    doctor   System readiness check    seam doctor");
     eprintln!("    update   Self-update               seam update");
@@ -125,7 +141,9 @@ async fn main() -> Result<()> {
         Some(Commands::Copy(args)) => copy::run(args).await,
         Some(Commands::Pipe(args)) => pipe::run(args).await,
         Some(Commands::Tunnel(args)) => tunnel::run(args).await,
+        Some(Commands::Fwd(args)) => fwd::run(args).await,
         Some(Commands::Bench(args)) => bench::run(args).await,
+        Some(Commands::Stats(args)) => stats::run(args).await,
         Some(Commands::Update(args)) => update::run(args),
         Some(Commands::Config(args)) => config::run(args),
         Some(Commands::Ls(args)) => ls::run(args).await,
@@ -137,5 +155,7 @@ async fn main() -> Result<()> {
         Some(Commands::PipeRecv(args)) => pipe::run_recv(args).await,
         Some(Commands::TunnelRecv(args)) => tunnel::run_recv(args).await,
         Some(Commands::BenchRecv(args)) => bench::run_recv(args).await,
+        Some(Commands::FwdRecv(args)) => fwd::run_recv(args).await,
+        Some(Commands::StatsRecv(args)) => stats::run_recv(args).await,
     }
 }

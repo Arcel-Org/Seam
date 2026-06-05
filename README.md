@@ -43,6 +43,8 @@ Seam fixes all three.
 
 seam transfers the same data in about 30% less wall time than scp on a clean local link. On a WAN path with 100 ms RTT and 0.5% loss the gap widens to 2–4×, because seam's forward error correction absorbs most lost packets without a round-trip retransmit.
 
+The FEC arbiter adapts in real time: on high-latency links (RTT > 100 ms) seam proactively adds light FEC repair symbols even before any loss is observed, trading ~10% overhead for zero ARQ round-trips on those paths.
+
 ---
 
 ## Install
@@ -139,6 +141,48 @@ psql -h localhost -p 5432 -U myuser mydb
 
 ---
 
+### `seam fwd` — reverse port forward
+
+Expose a port from a remote machine back to your local machine. Like `ssh -R` but over seam's UDP transport — works through double-NAT, adapts to lossy paths.
+
+```sh
+# Remote server listens on :3000, forwards connections to local :8080
+seam fwd alice@server:3000 8080
+
+# Expose a local dev service to a remote machine
+seam fwd alice@bastion:9090 8080 --local-host 0.0.0.0
+
+# Custom SSH port
+seam fwd -p 2222 alice@server:5432 5432
+```
+
+Useful for:
+- Exposing a local dev server to a remote machine for testing
+- Reverse tunneling without a full Seamless relay setup
+- Giving a temporary remote endpoint to your laptop
+
+---
+
+### `seam stats` — connection statistics
+
+Measure real-time connection quality to a remote host.
+
+```sh
+seam stats alice@server          # 5-second measurement window
+seam stats alice@server --duration 10
+```
+
+```
+  Seam connection stats  alice@server  (5s window)
+  ─────────────────────────────────────────────────
+  RTT           min 44ms  avg 51ms  max 79ms
+  Throughput    recv 234 MiB/s
+  Path MTU      1400 bytes
+  cwnd          512 KiB
+```
+
+---
+
 ### `seam bench` — throughput test
 
 Measure actual seam speed to a host and compare against known baselines.
@@ -217,7 +261,8 @@ Every seam command follows the same pattern:
 |---|---|
 | **CUBIC congestion control** | Fills the pipe without overwhelming routers (switch to BBR with `SEAM_CC=bbr`) |
 | **ARQ retransmission** | Resends dropped packets with exponential backoff |
-| **GF(2⁸) Reed-Solomon FEC** | Recovers up to *r* losses per *k*-packet group without a round-trip |
+| **GF(2⁸) Reed-Solomon FEC** | Recovers up to *r* losses per *k*-packet group without a round-trip; adapts overhead dynamically via EWMA loss tracking |
+| **Adaptive FEC arbiter** | Pure ARQ on clean links, hybrid FEC+ARQ at moderate loss, pure FEC above 15% loss; automatically adds light FEC on high-latency paths (RTT > 100 ms) to avoid ARQ round-trips |
 | **Multi-stream mux** | Tunnel, bench, and pipe share one session; streams are independent |
 | **DDoS-resistant handshake** | BLAKE3 cookie challenge before any per-client state is allocated |
 | **Header protection** | Session ID and packet number encrypted in addition to payload |
@@ -392,8 +437,19 @@ src/
 ├── crypto/         # ChaCha20-Poly1305, header protection, anti-replay
 ├── handshake/      # Noise_XX + ML-KEM-768, DDoS-resistant cookie
 ├── session/        # Streams, ARQ, flow control, priority scheduling
-├── fec/            # GF(2⁸) arithmetic, systematic RS codec, FEC/ARQ arbiter
+├── fec/            # GF(2⁸) arithmetic, systematic RS codec, adaptive FEC/ARQ arbiter
 └── transport/      # Connection, endpoint, CUBIC/BBR CC, pacer, path probing
+
+src/bin/seam/
+├── main.rs         # CLI entry point
+├── copy.rs         # seam cp
+├── pipe.rs         # seam pipe
+├── tunnel.rs       # seam tunnel (local port forward, ssh -L)
+├── fwd.rs          # seam fwd (reverse port forward, ssh -R)
+├── bench.rs        # seam bench
+├── stats.rs        # seam stats (live connection metrics)
+├── ls.rs           # seam ls
+└── config.rs       # seam config
 
 benches/            # Criterion benchmarks
 fuzz/               # cargo-fuzz targets

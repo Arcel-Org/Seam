@@ -30,7 +30,7 @@ pub enum CipherSuite {
 
 impl CipherSuite {
     /// Parse from a CLI/config string (`"chacha20poly1305"` or `"aes256gcm"`).
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn parse(s: &str) -> Option<Self> {
         match s {
             "chacha20poly1305" | "chacha20-poly1305" => Some(Self::ChaCha20Poly1305),
             "aes256gcm" | "aes-256-gcm" => Some(Self::Aes256Gcm),

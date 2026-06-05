@@ -42,10 +42,12 @@ pub struct BenchRecvArgs {
 
 pub async fn run(args: BenchArgs) -> Result<()> {
     let remote_label = args.remote.clone();
+    let cfg = super::config::Config::load().ok().unwrap_or_default();
+    let cipher = seam_protocol::crypto::CipherSuite::parse(&cfg.cipher).unwrap_or_default();
 
     let (conn, _child) = if let Some(direct) = args.direct {
         let (port, x25519, kem_pk) = connect::parse_seam_line(&direct)?;
-        let conn = connect::dial("127.0.0.1", port, x25519, kem_pk).await?;
+        let conn = connect::dial("127.0.0.1", port, x25519, kem_pk, cipher).await?;
         (conn, None)
     } else {
         let (user, host) = ssh::parse_userhost(&args.remote);
@@ -55,7 +57,7 @@ pub async fn run(args: BenchArgs) -> Result<()> {
             ssh_port: args.port,
         };
         let subcmd = format!("_bench-recv --mib {} --port 0", args.mib);
-        let (conn, child) = connect::bootstrap_and_connect(&remote, &host, &subcmd).await?;
+        let (conn, child) = connect::bootstrap_and_connect(&remote, &host, &subcmd, cipher).await?;
         (conn, Some(child))
     };
 

@@ -30,6 +30,7 @@ use tokio::sync::{Mutex, mpsc};
 use tokio::task::JoinHandle;
 
 use crate::{
+    crypto::CipherSuite,
     error::SeamError,
     handshake::{CookieFactory, IdentityKeypair},
     session::SessionEvent,
@@ -289,6 +290,7 @@ impl Client {
         remote: SocketAddr,
         server_x25519: &[u8; 32],
         server_kem_pk: &crate::handshake::hybrid_keys::KemPublicKey,
+        preferred_cipher: CipherSuite,
     ) -> Result<SeamConn, SeamError> {
         let mut last_err = None;
         for attempt in 0..3 {
@@ -297,7 +299,7 @@ impl Client {
                 tracing::info!("handshake retry {}/3 after {:?}", attempt + 1, delay);
                 tokio::time::sleep(delay).await;
             }
-            match self.try_connect(remote, server_x25519, server_kem_pk).await {
+            match self.try_connect(remote, server_x25519, server_kem_pk, preferred_cipher).await {
                 Ok(conn) => return Ok(conn),
                 Err(e) => last_err = Some(e),
             }
@@ -311,6 +313,7 @@ impl Client {
         remote: SocketAddr,
         server_x25519: &[u8; 32],
         server_kem_pk: &crate::handshake::hybrid_keys::KemPublicKey,
+        preferred_cipher: CipherSuite,
     ) -> Result<SeamConn, SeamError> {
         let (mut conn, events) = Connection::connect(
             self.socket.clone(),
@@ -318,6 +321,7 @@ impl Client {
             &self.identity,
             server_x25519,
             server_kem_pk,
+            preferred_cipher,
         )
         .await?;
 

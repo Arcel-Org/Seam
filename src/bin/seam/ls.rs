@@ -31,9 +31,11 @@ pub struct LsRecvArgs {
 }
 
 pub async fn run(args: LsArgs) -> Result<()> {
+    let cfg = super::config::Config::load().ok().unwrap_or_default();
+    let cipher = seam_protocol::crypto::CipherSuite::parse(&cfg.cipher).unwrap_or_default();
     let (conn, _child) = if let Some(direct) = args.direct {
         let (port, x25519, kem_pk) = connect::parse_seam_line(&direct)?;
-        let conn = connect::dial("127.0.0.1", port, x25519, kem_pk).await?;
+        let conn = connect::dial("127.0.0.1", port, x25519, kem_pk, cipher).await?;
         (conn, None)
     } else {
         let (user, host) = ssh::parse_userhost(args.remote.split(':').next().unwrap_or(&args.remote));
@@ -46,7 +48,7 @@ pub async fn run(args: LsArgs) -> Result<()> {
             .map(|(_, p)| p)
             .unwrap_or_default();
         let subcmd = format!("_ls-recv {} --port 0", connect::shell_quote(&remote_path));
-        let (conn, child) = connect::bootstrap_and_connect(&remote, &host, &subcmd).await?;
+        let (conn, child) = connect::bootstrap_and_connect(&remote, &host, &subcmd, cipher).await?;
         (conn, Some(child))
     };
 

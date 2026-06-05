@@ -112,6 +112,7 @@ impl Connection {
         local_identity: &IdentityKeypair,
         server_x25519: &[u8; 32],
         server_kem_pk: &KemPublicKey,
+        preferred_cipher: CipherSuite,
     ) -> Result<(Self, mpsc::UnboundedReceiver<SessionEvent>), SeamError> {
         // Send cookie request (single byte)
         socket
@@ -119,7 +120,7 @@ impl Connection {
             .await
             .map_err(|e| SeamError::HandshakeFailed(e.to_string()))?;
 
-        let client_hs = ClientHandshake::new(local_identity, server_x25519)?;
+        let client_hs = ClientHandshake::new_with_cipher(local_identity, server_x25519, preferred_cipher)?;
 
         let (tx, rx) = mpsc::unbounded_channel();
         let mut conn = Self::new_base(socket, remote, ConnPhase::ClientWaitChallenge, tx);

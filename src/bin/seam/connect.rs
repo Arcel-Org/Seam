@@ -65,7 +65,7 @@ pub fn parse_seam_line(
     ))
 }
 
-fn identity_path() -> std::path::PathBuf {
+pub fn identity_path() -> std::path::PathBuf {
     dirs::config_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("."))
         .join("seam")

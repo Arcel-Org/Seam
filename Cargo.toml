@@ -3,7 +3,7 @@ exclude = ["fuzz"]
 
 [package]
 name = "seam-protocol"
-version = "0.1.26"
+version = "0.1.27"
 edition = "2024"
 license = "AGPL-3.0-only"
 
@@ -43,6 +43,7 @@ sha2 = "0.10"
 toml = "1.1.2"
 ml-kem = { version = "0.3", features = ["getrandom", "zeroize"] }
 ctrlc = { version = "3", features = ["termination"] }
+libc = "0.2"
 
 [dev-dependencies]
 proptest = "1"

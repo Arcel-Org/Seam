@@ -16,6 +16,7 @@ mod proto;
 mod proxy;
 mod recv;
 mod send;
+mod serve;
 mod shell;
 mod ssh;
 mod stats;
@@ -156,9 +157,15 @@ enum Commands {
     #[command(name = "audit")]
     Audit(audit::AuditArgs),
 
+    /// Start a persistent Seam server daemon (no SSH required on remote)
+    #[command(name = "serve")]
+    Serve(serve::ServeArgs),
+
     // Hidden internal subcommands — started by SSH bootstrap, not for direct use
     #[command(name = "_forward-recv", hide = true)]
     ForwardRecv(forward::ForwardRecvArgs),
+    #[command(name = "_forward-hop-recv", hide = true)]
+    ForwardHopRecv(forward::ForwardHopRecvArgs),
     #[command(name = "_sync-recv", hide = true)]
     SyncRecv(sync::SyncRecvArgs),
     #[command(name = "_shell-recv", hide = true)]
@@ -200,7 +207,8 @@ fn print_splash() {
     eprintln!("    pipe     Bidirectional pipe        seam pipe user@host -- bash");
     eprintln!("    tunnel   TCP port forward (legacy) seam tunnel 8080:user@host:3000");
     eprintln!("    fwd      Reverse port forward      seam fwd user@host:3000 8080");
-    eprintln!("    shell    Run remote command         seam shell user@host -- ls -la");
+    eprintln!("    shell    Interactive/remote shell    seam shell user@host");
+    eprintln!("    serve    Standalone server daemon    seam serve --port 2222");
     eprintln!("    bench    Measure throughput        seam bench user@host");
     eprintln!("    proxy    SOCKS5 proxy                seam proxy user@host --port 1080");
     eprintln!("    ping     Latency measurement        seam ping user@host");
@@ -340,8 +348,13 @@ async fn main() -> Result<()> {
             audited!("proxy", &remote, vec![], proxy::run(args, fips_active).await)
         }
         Some(Commands::Audit(args)) => audit::run(args),
+        Some(Commands::Serve(args)) => {
+            let addr_str = format!("{}:{}", args.bind, args.port);
+            audited!("serve", &addr_str, vec![], serve::run(args, fips_active).await)
+        }
         // Hidden internal subcommands — not audited (remote side, not client-initiated)
         Some(Commands::ForwardRecv(args)) => forward::run_recv(args).await,
+        Some(Commands::ForwardHopRecv(args)) => forward::run_hop_recv(args).await,
         Some(Commands::SyncRecv(args)) => sync::run_recv(args, fips_active).await,
         Some(Commands::ShellRecv(args)) => shell::run_recv(args).await,
         Some(Commands::Recv(args)) => recv::run(args).await,

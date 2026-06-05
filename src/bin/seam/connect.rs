@@ -6,8 +6,23 @@ use seam_protocol::{
 };
 use std::net::SocketAddr;
 use std::process::Child;
+use std::cell::Cell;
 
-use crate::ssh::RemoteInfo;
+use crate::{known_hosts::PinPolicy, ssh::RemoteInfo};
+
+// Thread-local storage for the pin policy set by main() before any command runs.
+thread_local! {
+    static PIN_POLICY: Cell<PinPolicy> = const { Cell::new(PinPolicy::Enforce) };
+}
+
+/// Set the global TOFU pin policy for this process. Called once from main().
+pub fn set_pin_policy(policy: PinPolicy) {
+    PIN_POLICY.with(|p| p.set(policy));
+}
+
+fn current_pin_policy() -> PinPolicy {
+    PIN_POLICY.with(|p| p.get())
+}
 
 /// Shell-quote a single argument (for SSH command construction).
 pub fn shell_quote(s: &str) -> String {
@@ -64,6 +79,14 @@ pub async fn dial(
     kem_pk: seam_protocol::handshake::hybrid_keys::KemPublicKey,
     cipher: CipherSuite,
 ) -> Result<SeamConn> {
+    // ── TOFU server identity pinning ─────────────────────────────────────────
+    // Verify (or pin) the server's X25519 public key before completing the
+    // cryptographic handshake.  This prevents relay MITM: even if an attacker
+    // intercepts the SSH bootstrap and substitutes their own key, the pinned
+    // fingerprint check will abort the connection.
+    let policy = current_pin_policy();
+    crate::known_hosts::verify_or_pin(host, &x25519, policy)?;
+
     let server_addr: SocketAddr = format!("{}:{}", host, port)
         .parse()
         .context("bad address")?;

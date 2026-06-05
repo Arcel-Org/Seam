@@ -564,9 +564,16 @@ impl Connection {
     }
 
     // ── Keepalive ────────────────────────────────────────────────────────────
+    //
+    // Keepalive strategy:
+    //   • Every 25 s of send-side silence, queue a Ping frame.
+    //   • If no packet is received from the peer for 30 s (one missed pong + margin),
+    //     declare the connection idle and close it.
+    //   • This prevents zombie connections from holding max_connections slots, which
+    //     is critical on satellite / HF radio links where NAT mappings can silently die.
 
-    const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(15);
-    const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
+    const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(25);
+    const IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 
     /// If the connection has been idle on the send side, queue a Ping frame.
     #[allow(clippy::collapsible_if)]
@@ -577,11 +584,20 @@ impl Connection {
         if self.last_send.elapsed() >= Self::KEEPALIVE_INTERVAL {
             if let Some(s) = self.session.as_mut() {
                 s.ping();
+                tracing::debug!(
+                    remote = %self.remote,
+                    idle_secs = self.last_recv.elapsed().as_secs(),
+                    "keepalive: queued Ping frame"
+                );
             }
         }
     }
 
     /// True if no packet has been received from the peer for too long.
+    ///
+    /// Called by the application tick loop. When this returns `true` the caller
+    /// should close the connection and log a warning so the operator can see that
+    /// the remote went silent (likely a dead NAT mapping or crashed peer).
     pub fn is_idle(&self) -> bool {
         self.phase == ConnPhase::Established && self.last_recv.elapsed() >= Self::IDLE_TIMEOUT
     }

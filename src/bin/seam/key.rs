@@ -15,11 +15,40 @@ pub struct KeyArgs {
     /// After rotation, update all peer configurations with the new public key.
     #[arg(long)]
     pub rotate: bool,
+
+    /// List all TOFU-pinned server keys from ~/.config/seam/known_hosts.
+    #[arg(long)]
+    pub list_pins: bool,
+
+    /// Remove the TOFU pin for HOST from ~/.config/seam/known_hosts.
+    ///
+    /// Use this after a legitimate server key rotation so seam will accept
+    /// the new key on the next connection (and re-pin it via TOFU).
+    #[arg(long, value_name = "HOST")]
+    pub remove_pin: Option<String>,
 }
 
 pub fn run(args: KeyArgs) -> Result<()> {
     let cfg = super::config::Config::load().ok().unwrap_or_default();
     let id_path = cfg.identity_path();
+
+    if args.list_pins {
+        let pins = super::known_hosts::list_pins();
+        if pins.is_empty() {
+            println!("no pinned server keys (use --tofu when connecting to pin on first use)");
+        } else {
+            println!("pinned server keys (~/.config/seam/known_hosts):");
+            for (host, fp) in &pins {
+                println!("  {host}  SHA256:{fp}");
+            }
+        }
+        return Ok(());
+    }
+
+    if let Some(host) = args.remove_pin {
+        super::known_hosts::remove_pin(&host)?;
+        return Ok(());
+    }
 
     if args.rotate {
         return rotate_key(&id_path, &args.format);

@@ -7,10 +7,12 @@ mod doctor;
 mod forward;
 mod fwd;
 mod key;
+mod known_hosts;
 mod ls;
 mod ping;
 mod pipe;
 mod proto;
+mod proxy;
 mod recv;
 mod send;
 mod shell;
@@ -53,6 +55,23 @@ pub struct Cli {
     /// Required for: NIST FIPS 140-3, NSA CNSA 2.0, DoD IL2+ deployments.
     #[arg(long, global = true)]
     pub fips_mode: bool,
+
+    /// Trust-On-First-Use: pin the server's identity key on first connection.
+    ///
+    /// On first connect to a host the X25519 public key fingerprint is stored in
+    /// ~/.config/seam/known_hosts. Subsequent connections verify the key matches.
+    /// A mismatch aborts with a prominent warning (like SSH's REMOTE HOST IDENTIFICATION
+    /// HAS CHANGED). Critical for preventing relay man-in-the-middle attacks.
+    #[arg(long, global = true)]
+    pub tofu: bool,
+
+    /// Bypass server identity pinning verification (INSECURE).
+    ///
+    /// Skips comparison against ~/.config/seam/known_hosts entirely.
+    /// Prints a loud warning. Only use for testing or when you cannot obtain
+    /// the server's pinned key through another channel.
+    #[arg(long, global = true)]
+    pub insecure_ignore_pin: bool,
 
     #[command(subcommand)]
     command: Option<Commands>,
@@ -128,6 +147,10 @@ enum Commands {
     #[command(name = "completions")]
     Completions(completions::CompletionsArgs),
 
+    /// Run a local SOCKS5 proxy server, tunneling all connections over post-quantum Seam
+    #[command(name = "proxy")]
+    Proxy(proxy::ProxyArgs),
+
     // Hidden internal subcommands — started by SSH bootstrap, not for direct use
     #[command(name = "_forward-recv", hide = true)]
     ForwardRecv(forward::ForwardRecvArgs),
@@ -153,6 +176,8 @@ enum Commands {
     StatsRecv(stats::StatsRecvArgs),
     #[command(name = "_ping-recv", hide = true)]
     PingRecv(ping::PingRecvArgs),
+    #[command(name = "_proxy-recv", hide = true)]
+    ProxyRecv(proxy::ProxyRecvArgs),
 }
 
 fn print_splash() {
@@ -172,6 +197,7 @@ fn print_splash() {
     eprintln!("    fwd      Reverse port forward      seam fwd user@host:3000 8080");
     eprintln!("    shell    Run remote command         seam shell user@host -- ls -la");
     eprintln!("    bench    Measure throughput        seam bench user@host");
+    eprintln!("    proxy    SOCKS5 proxy                seam proxy user@host --port 1080");
     eprintln!("    ping     Latency measurement        seam ping user@host");
     eprintln!("    key      Show identity public key    seam key");
     eprintln!("    stats    Connection statistics     seam stats user@host");
@@ -213,6 +239,17 @@ async fn main() -> Result<()> {
         }
     }
 
+    // ── Resolve TOFU pin policy ───────────────────────────────────────────────
+    let pin_policy = if cli.insecure_ignore_pin {
+        known_hosts::PinPolicy::InsecureIgnore
+    } else if cli.tofu {
+        known_hosts::PinPolicy::TrustOnFirstUse
+    } else {
+        known_hosts::PinPolicy::Enforce
+    };
+    // Make pin policy available globally via thread-local (accessed by connect::dial).
+    connect::set_pin_policy(pin_policy);
+
     match cli.command {
         None => {
             print_splash();
@@ -235,6 +272,7 @@ async fn main() -> Result<()> {
         Some(Commands::Doctor(args)) => doctor::run(args),
         Some(Commands::Version(args)) => version::run(args),
         Some(Commands::Completions(args)) => completions::run(args),
+        Some(Commands::Proxy(args)) => proxy::run(args, fips_active).await,
         Some(Commands::ForwardRecv(args)) => forward::run_recv(args).await,
         Some(Commands::SyncRecv(args)) => sync::run_recv(args, fips_active).await,
         Some(Commands::ShellRecv(args)) => shell::run_recv(args).await,
@@ -247,5 +285,6 @@ async fn main() -> Result<()> {
         Some(Commands::FwdRecv(args)) => fwd::run_recv(args).await,
         Some(Commands::StatsRecv(args)) => stats::run_recv(args).await,
         Some(Commands::PingRecv(args)) => ping::run_recv(args).await,
+        Some(Commands::ProxyRecv(args)) => proxy::run_recv(args).await,
     }
 }

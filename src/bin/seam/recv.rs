@@ -140,6 +140,7 @@ async fn receive_file(
         file.seek(SeekFrom::Start(resume_from))?;
     }
 
+    let mut hasher = blake3::Hasher::new();
     let mut received: u64 = resume_from;
     while received < size {
         let data_frame = read_frame(conn, ctrl_sid, buf).await?;
@@ -151,13 +152,33 @@ async fn receive_file(
         let raw = &data_frame[1..];
         if compress {
             let decoded = zstd::decode_all(raw)?;
+            hasher.update(&decoded);
             file.write_all(&decoded)?;
             received += decoded.len() as u64;
         } else {
+            hasher.update(raw);
             file.write_all(raw)?;
             received += raw.len() as u64;
         }
     }
-    eprintln!("received: {name} ({size} bytes)");
+
+    // Verify BLAKE3 checksum sent by the sender.
+    let cksum_frame = read_frame(conn, ctrl_sid, buf).await?;
+    if cksum_frame.len() == 33 && cksum_frame[0] == proto::CHECKSUM {
+        let expected = &cksum_frame[1..33];
+        let actual = hasher.finalize();
+        if actual.as_bytes() == expected {
+            send_frame(conn, ctrl_sid, &[proto::ACK]).await?;
+            eprintln!("received: {name} ({size} bytes) [BLAKE3 OK: {}]",
+                hex::encode(&expected[..8]));
+        } else {
+            bail!("BLAKE3 integrity check FAILED for {name}: expected {} got {}",
+                hex::encode(expected),
+                hex::encode(actual.as_bytes()));
+        }
+    } else {
+        // Older peer without checksum support — still accept the file.
+        eprintln!("received: {name} ({size} bytes) [no integrity check]");
+    }
     Ok(())
 }

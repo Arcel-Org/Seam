@@ -10,6 +10,11 @@ pub const ACK: u8 = 0x05;
 pub const RESUME: u8 = 0x06;
 pub const LS: u8 = 0x07;
 pub const ENTRY: u8 = 0x08;
+/// BLAKE3 checksum frame: [type(1)][hash(32)]
+/// Sent by the sender after all DATA frames for a file to allow the receiver
+/// to verify end-to-end integrity. Receiver replies with ACK on match, or
+/// returns an error if the hash does not match.
+pub const CHECKSUM: u8 = 0x09;
 
 pub const COMPRESS_NONE: u8 = 0;
 pub const COMPRESS_ZSTD: u8 = 1;

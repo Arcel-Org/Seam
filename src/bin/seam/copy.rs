@@ -12,6 +12,7 @@ use crate::{
 const CHUNK: usize = 32 * 1024;
 const ZSTD_LEVEL: i32 = 3;
 
+
 #[derive(Args)]
 pub struct CopyArgs {
     /// Source path (local file or directory)
@@ -308,6 +309,7 @@ pub async fn send_file(
         }
     }
 
+    let mut hasher = blake3::Hasher::new();
     let mut chunk = vec![0u8; CHUNK];
     while sent < size {
         let n = file.read(&mut chunk)?;
@@ -315,6 +317,8 @@ pub async fn send_file(
             break;
         }
         let raw = &chunk[..n];
+        // Hash the pre-compression bytes so both sides hash the same content.
+        hasher.update(raw);
         let payload = if compress {
             zstd::encode_all(raw, ZSTD_LEVEL)?
         } else {
@@ -328,6 +332,20 @@ pub async fn send_file(
         sent += n as u64;
         let _ = conn.tick().await;
     }
+
+    // Send BLAKE3 checksum so the receiver can verify end-to-end integrity.
+    let digest = hasher.finalize();
+    let mut cksum_frame = Vec::with_capacity(1 + 32);
+    cksum_frame.push(proto::CHECKSUM);
+    cksum_frame.extend_from_slice(digest.as_bytes());
+    send_frame(conn, ctrl_sid, &cksum_frame).await?;
+
+    // Wait for receiver ACK / error.
+    let reply = read_frame(conn, ctrl_sid, buf).await?;
+    if reply.is_empty() || reply[0] != proto::ACK {
+        bail!("integrity check failed for {rel}: receiver reported hash mismatch");
+    }
+
     Ok(())
 }
 
@@ -386,6 +404,7 @@ pub async fn receive_file(
 
     pb.set_message(format!("receiving {name}"));
 
+    let mut hasher = blake3::Hasher::new();
     let mut received: u64 = resume_from;
     while received < size {
         let data_frame = read_frame(conn, ctrl_sid, buf).await?;
@@ -396,11 +415,13 @@ pub async fn receive_file(
         let chunk_len = if compress {
             let decoded = zstd::decode_all(raw)?;
             let n = decoded.len() as u64;
+            hasher.update(&decoded);
             file.write_all(&decoded)?;
             received += n;
             n
         } else {
             let n = raw.len() as u64;
+            hasher.update(raw);
             file.write_all(raw)?;
             received += n;
             n
@@ -408,6 +429,24 @@ pub async fn receive_file(
         pb.inc(chunk_len);
         let _ = conn.tick().await;
     }
-    eprintln!("received: {name} ({size} bytes)");
+
+    // Verify BLAKE3 checksum sent by the sender.
+    let cksum_frame = read_frame(conn, ctrl_sid, buf).await?;
+    if cksum_frame.len() == 33 && cksum_frame[0] == proto::CHECKSUM {
+        let expected = &cksum_frame[1..33];
+        let actual = hasher.finalize();
+        if actual.as_bytes() == expected {
+            send_frame(conn, ctrl_sid, &[proto::ACK]).await?;
+            eprintln!("received: {name} ({size} bytes) [BLAKE3 OK: {}]",
+                hex::encode(&expected[..8]));
+        } else {
+            bail!("BLAKE3 integrity check FAILED for {name}: expected {} got {}",
+                hex::encode(expected),
+                hex::encode(actual.as_bytes()));
+        }
+    } else {
+        // Older peer without checksum support — still accept the file.
+        eprintln!("received: {name} ({size} bytes) [no integrity check]");
+    }
     Ok(())
 }

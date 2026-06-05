@@ -5,9 +5,129 @@ use seam_protocol::{
     handshake::{IdentityKeypair, pk_to_bytes},
     tunnel::SeamMux,
 };
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::{connect, ssh};
+
+/// Congestion / network quality metrics collected during a bench run.
+struct CongestionMetrics {
+    /// Packet loss rate (estimated from ARQ retransmit gaps visible at the stream layer).
+    /// We use inter-read gap spikes as a proxy: a gap > 3× median implies a retransmit.
+    loss_rate_pct: f64,
+    /// Jitter — stddev of inter-read arrival intervals in milliseconds.
+    jitter_ms: f64,
+    /// Throughput stability — coefficient of variation (stddev/mean) of per-window MiB/s.
+    throughput_cv: f64,
+    /// Number of 500ms windows sampled.
+    windows: usize,
+}
+
+/// Drain a stream while collecting per-read timestamps for congestion analysis.
+/// Returns (total_bytes, CongestionMetrics).
+async fn bench_drain_with_metrics(
+    stream: &mut (impl AsyncReadExt + Unpin),
+    timeout_secs: Option<u64>,
+) -> Result<(u64, CongestionMetrics)> {
+    let mut buf = vec![0u8; 64 * 1024];
+    let mut total_bytes: u64 = 0;
+    let mut inter_arrivals_ms: Vec<f64> = Vec::new();
+    let mut window_bytes: u64 = 0;
+    let mut window_start = std::time::Instant::now();
+    let mut throughput_windows: Vec<f64> = Vec::new();
+    let window_dur = std::time::Duration::from_millis(500);
+    let mut last_read = std::time::Instant::now();
+    let deadline = timeout_secs.map(|s| std::time::Instant::now() + std::time::Duration::from_secs(s));
+
+    loop {
+        let read_fut = stream.read(&mut buf);
+        let n = if let Some(dl) = deadline {
+            let remaining = dl.saturating_duration_since(std::time::Instant::now());
+            if remaining.is_zero() { break; }
+            match tokio::time::timeout(remaining, read_fut).await {
+                Ok(Ok(0)) | Err(_) => break,
+                Ok(Ok(n)) => n,
+                Ok(Err(e)) => return Err(e.into()),
+            }
+        } else {
+            match read_fut.await {
+                Ok(0) => break,
+                Ok(n) => n,
+                Err(e) => return Err(e.into()),
+            }
+        };
+
+        let now = std::time::Instant::now();
+        let gap_ms = (now - last_read).as_secs_f64() * 1000.0;
+        if total_bytes > 0 {
+            // Only record gaps after the first read (warm-up excluded).
+            inter_arrivals_ms.push(gap_ms);
+        }
+        last_read = now;
+
+        total_bytes += n as u64;
+        window_bytes += n as u64;
+
+        // Flush completed 500ms windows.
+        if now.duration_since(window_start) >= window_dur {
+            let w_secs = now.duration_since(window_start).as_secs_f64();
+            let mib_s = (window_bytes as f64 / (1024.0 * 1024.0)) / w_secs;
+            throughput_windows.push(mib_s);
+            window_bytes = 0;
+            window_start = now;
+        }
+    }
+
+    // Flush the last partial window.
+    if window_bytes > 0 {
+        let w_secs = window_start.elapsed().as_secs_f64().max(0.001);
+        throughput_windows.push((window_bytes as f64 / (1024.0 * 1024.0)) / w_secs);
+    }
+
+    // Compute jitter (stddev of inter-arrival times).
+    let jitter_ms = if inter_arrivals_ms.len() > 1 {
+        let mean = inter_arrivals_ms.iter().sum::<f64>() / inter_arrivals_ms.len() as f64;
+        let var = inter_arrivals_ms.iter().map(|x| (x - mean).powi(2)).sum::<f64>()
+            / inter_arrivals_ms.len() as f64;
+        var.sqrt()
+    } else {
+        0.0
+    };
+
+    // Estimate packet loss rate from large inter-arrival spikes.
+    // A gap > 3× the mean inter-arrival time strongly suggests a retransmit event.
+    let loss_rate_pct = if inter_arrivals_ms.len() > 4 {
+        let mean = inter_arrivals_ms.iter().sum::<f64>() / inter_arrivals_ms.len() as f64;
+        let threshold = mean * 3.0;
+        let spikes = inter_arrivals_ms.iter().filter(|&&g| g > threshold).count();
+        (spikes as f64 / inter_arrivals_ms.len() as f64) * 100.0
+    } else {
+        0.0
+    };
+
+    // Compute throughput coefficient of variation.
+    let throughput_cv = if throughput_windows.len() > 1 {
+        let mean = throughput_windows.iter().sum::<f64>() / throughput_windows.len() as f64;
+        if mean > 0.0 {
+            let var = throughput_windows.iter().map(|x| (x - mean).powi(2)).sum::<f64>()
+                / throughput_windows.len() as f64;
+            var.sqrt() / mean
+        } else {
+            0.0
+        }
+    } else {
+        0.0
+    };
+
+    Ok((
+        total_bytes,
+        CongestionMetrics {
+            loss_rate_pct,
+            jitter_ms,
+            throughput_cv,
+            windows: throughput_windows.len(),
+        },
+    ))
+}
 
 // ── Client args ───────────────────────────────────────────────────────────────
 
@@ -70,32 +190,22 @@ pub async fn run(args: BenchArgs) -> Result<()> {
     eprint!("\nbenchmarking {remote_label} · {} MiB  ", args.mib);
 
     let start = std::time::Instant::now();
-    let (bytes, timed_out) = if let Some(timeout_secs) = args.timeout {
-        let timeout_dur = std::time::Duration::from_secs(timeout_secs);
-        match tokio::time::timeout(timeout_dur, tokio::io::copy(&mut stream, &mut tokio::io::sink())).await {
-            Ok(result) => (result?, false),
-            Err(_elapsed) => {
-                // tokio::io::copy was cancelled; we can't get partial byte count from it.
-                // Use elapsed time × a sentinel so partial result is meaningful.
-                eprintln!("\n  benchmark timed out after {}s — partial result:", timeout_secs);
-                // We don't have the partial byte count from tokio::io::copy since it was
-                // cancelled. Report 0 bytes so the caller sees elapsed time clearly.
-                (0u64, true)
-            }
-        }
-    } else {
-        (tokio::io::copy(&mut stream, &mut tokio::io::sink()).await?, false)
-    };
+    let (bytes, metrics) = bench_drain_with_metrics(&mut stream, args.timeout).await?;
     let elapsed = start.elapsed();
+    let timed_out = args.timeout.is_some()
+        && elapsed >= std::time::Duration::from_secs(args.timeout.unwrap());
 
-    let secs = elapsed.as_secs_f64();
+    let secs = elapsed.as_secs_f64().max(0.001);
     let mib_s = (bytes as f64 / (1024.0 * 1024.0)) / secs;
     let gbps = (bytes as f64 * 8.0) / (1e9 * secs);
 
-    if timed_out {
-        eprintln!("  (transfer incomplete — reported throughput is a lower bound)");
+    if timed_out && bytes == 0 {
+        eprintln!("\n  benchmark timed out — no data received");
+    } else if timed_out {
+        eprintln!("\n  benchmark timed out after {}s — partial result:", args.timeout.unwrap());
+        eprintln!("  (reported throughput is a lower bound)");
     }
-    print_results(mib_s, gbps, args.mib);
+    print_results(mib_s, gbps, args.mib, &metrics);
     Ok(())
 }
 
@@ -105,7 +215,7 @@ fn bar(mib_s: f64, max_mib_s: f64, width: usize) -> String {
     format!("{}{}", "█".repeat(filled), "░".repeat(width - filled))
 }
 
-fn print_results(seam_mib_s: f64, seam_gbps: f64, mib: u64) {
+fn print_results(seam_mib_s: f64, seam_gbps: f64, mib: u64, metrics: &CongestionMetrics) {
     // Estimated baselines (well-known benchmarks, clearly labelled est.)
     // OpenSSH aes128-gcm over GigE loopback: ~400 MiB/s
     // rsync over SSH, first transfer: ~380 MiB/s
@@ -171,8 +281,58 @@ fn print_results(seam_mib_s: f64, seam_gbps: f64, mib: u64) {
     eprintln!(
         "  {} MiB transferred in {:.2}s\n",
         mib,
-        mib as f64 / (seam_mib_s)
+        mib as f64 / seam_mib_s.max(0.001)
     );
+
+    // ── Network quality metrics (government / military network engineers) ────
+    eprintln!("  {}", "─".repeat(64));
+    eprintln!("  Network quality metrics ({} × 500ms windows):", metrics.windows);
+    eprintln!();
+
+    // Packet loss rate
+    let loss_bar = match metrics.loss_rate_pct as u32 {
+        0 => "excellent",
+        1..=2 => "good",
+        3..=5 => "fair",
+        _ => "poor",
+    };
+    eprintln!(
+        "  packet loss (est.)  {:>6.2}%   [{}]",
+        metrics.loss_rate_pct, loss_bar
+    );
+
+    // Jitter
+    let jitter_bar = if metrics.jitter_ms < 1.0 {
+        "excellent"
+    } else if metrics.jitter_ms < 5.0 {
+        "good"
+    } else if metrics.jitter_ms < 20.0 {
+        "fair"
+    } else {
+        "poor"
+    };
+    eprintln!(
+        "  jitter (stddev)     {:>6.2} ms  [{}]",
+        metrics.jitter_ms, jitter_bar
+    );
+
+    // Throughput stability (coefficient of variation)
+    let cv_pct = metrics.throughput_cv * 100.0;
+    let stability_bar = if cv_pct < 5.0 {
+        "stable"
+    } else if cv_pct < 15.0 {
+        "moderate"
+    } else if cv_pct < 30.0 {
+        "variable"
+    } else {
+        "unstable"
+    };
+    eprintln!(
+        "  throughput CV       {:>6.1}%   [{}]",
+        cv_pct, stability_bar
+    );
+    eprintln!("  {}", "─".repeat(64));
+    eprintln!();
 }
 
 // ── Server ────────────────────────────────────────────────────────────────────

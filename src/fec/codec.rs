@@ -107,6 +107,15 @@ impl FecEncoder {
         self.source_idx += 1;
 
         if self.sources.len() == self.k as usize {
+            let _span = tracing::trace_span!(
+                "seam.fec.encode",
+                group_id = self.group_id,
+                k = self.k,
+                r = self.r,
+                padded_len = self.padded_len,
+            )
+            .entered();
+            tracing::trace!(group_id = self.group_id, k = self.k, r = self.r, "FEC group complete — emitting repair symbols");
             Some(self.emit_repairs(self.k))
         } else {
             None
@@ -324,6 +333,15 @@ impl FecDecoder {
 
     /// Process an incoming repair packet.
     pub fn add_repair(&mut self, repair: &FecRepairData) -> Option<Vec<(u8, Vec<u8>)>> {
+        let _span = tracing::trace_span!(
+            "seam.fec.decode",
+            group_id = repair.group_id,
+            repair_idx = repair.repair_idx,
+            k = repair.k,
+            r = repair.r,
+        )
+        .entered();
+
         let group = self
             .groups
             .entry(repair.group_id)
@@ -333,7 +351,11 @@ impl FecDecoder {
         let mut padded = repair.data.clone();
         padded.resize(group.padded_len, 0);
         group.repairs.insert(repair.repair_idx, padded);
-        group.try_recover()
+        let result = group.try_recover();
+        if result.is_some() {
+            tracing::debug!(group_id = repair.group_id, "FEC recovery succeeded");
+        }
+        result
     }
 
     pub fn cleanup_group(&mut self, group_id: u32) {

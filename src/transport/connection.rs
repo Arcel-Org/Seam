@@ -116,6 +116,12 @@ impl Connection {
         server_kem_pk: &KemPublicKey,
         preferred_cipher: CipherSuite,
     ) -> Result<(Self, mpsc::UnboundedReceiver<SessionEvent>), SeamError> {
+        tracing::debug!(
+            remote = %remote,
+            cipher = ?preferred_cipher,
+            "seam.handshake.client: initiating — sending cookie request"
+        );
+
         // Send cookie request (single byte)
         socket
             .send_to(&[PKT_COOKIE_REQ], remote)
@@ -142,6 +148,12 @@ impl Connection {
         ticket_key: Option<crate::transport::resumption::TicketKey>,
         preferred_cipher: CipherSuite,
     ) -> Result<(Self, mpsc::UnboundedReceiver<SessionEvent>), SeamError> {
+        tracing::debug!(
+            remote = %remote,
+            cipher = ?preferred_cipher,
+            "seam.handshake.server: issuing stateless cookie challenge"
+        );
+
         // Send stateless cookie challenge
         let addr_bytes = remote.to_string();
         let cookie = cookie_factory.generate(addr_bytes.as_bytes());
@@ -197,6 +209,13 @@ impl Connection {
     }
 
     async fn finish_handshake(&mut self, result: HandshakeResult) {
+        tracing::info!(
+            session_id = result.session_id,
+            cipher = ?result.cipher_suite,
+            remote = %self.remote,
+            "seam.handshake.complete: post-quantum handshake established"
+        );
+
         let enc = PacketEncoder::new(result.keys.clone(), result.session_id);
         let dec = PacketDecoder::new(result.keys.clone());
         // Client-initiated connections take the Client role; server connections

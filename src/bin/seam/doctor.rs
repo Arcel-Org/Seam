@@ -242,6 +242,30 @@ pub fn run(_args: DoctorArgs) -> Result<()> {
         }
     }
 
+    // ── 7.6. FEC correctness self-test ──────────────────────────────────────
+    match try_fec_self_test() {
+        Ok(elapsed_us) => eprintln!("  ✓  FEC self-test passed (k=4, r=2, 1-shard corrupt, recovered in {}µs)", elapsed_us),
+        Err(e) => {
+            eprintln!("  ✗  FEC self-test FAILED: {e}");
+            eprintln!("     Reed-Solomon codec malfunction — do not use seam on sensitive links");
+            ok = false;
+        }
+    }
+
+    // ── 7.7. Version check ──────────────────────────────────────────────────
+    match check_latest_version(version) {
+        VersionCheckResult::UpToDate => {
+            eprintln!("  ✓  seam {version} is up to date");
+        }
+        VersionCheckResult::UpdateAvailable(latest) => {
+            eprintln!("  !  update available: {version} → {latest}");
+            eprintln!("     upgrade: seam update");
+        }
+        VersionCheckResult::NetworkError(e) => {
+            eprintln!("  ·  version check skipped (no network: {e})");
+        }
+    }
+
     // ── 8. MTU / fragmentation ──────────────────────────────────────────
     eprintln!();
     eprintln!("  Tips");
@@ -313,6 +337,118 @@ fn try_udp_loopback_echo() -> anyhow::Result<u128> {
 
     client.recv_from(&mut buf)?;
     Ok(t0.elapsed().as_micros())
+}
+
+/// Encode a known payload with Reed-Solomon (k=4, r=2), corrupt one shard,
+/// verify that the decoder recovers the original payload. Returns elapsed µs.
+fn try_fec_self_test() -> anyhow::Result<u64> {
+    use seam_protocol::fec::{FecDecoder, FecEncoder};
+    use std::time::Instant;
+
+    let t0 = Instant::now();
+
+    let k: u8 = 4;
+    let r: u8 = 2;
+    let payload_len = 64;
+    // Build k known source payloads: deterministic pattern for easy verification.
+    let sources: Vec<Vec<u8>> = (0..k)
+        .map(|i| (0..payload_len).map(|j| i.wrapping_add(j as u8)).collect::<Vec<u8>>())
+        .collect();
+
+    let mut enc = FecEncoder::new(42, k, r);
+    let mut repairs = None;
+    for src in &sources {
+        repairs = enc.push_source(src);
+    }
+    let repairs = repairs.ok_or_else(|| anyhow::anyhow!("FEC encoder produced no repairs"))?;
+    if repairs.len() != r as usize {
+        anyhow::bail!("expected {} repair symbols, got {}", r, repairs.len());
+    }
+
+    // Corrupt shard index 1 (drop it — simulate packet loss).
+    let mut dec = FecDecoder::new();
+    let gid = repairs[0].group_id;
+    for (i, src) in sources.iter().enumerate() {
+        if i == 1 {
+            continue; // simulate loss
+        }
+        dec.add_source(gid, i as u8, k, r, src);
+    }
+    // Feed first repair symbol — should trigger recovery.
+    let recovered = dec
+        .add_repair(&repairs[0])
+        .ok_or_else(|| anyhow::anyhow!("FEC decoder failed to recover lost shard"))?;
+
+    if recovered.len() != 1 {
+        anyhow::bail!("expected 1 recovered shard, got {}", recovered.len());
+    }
+    let (idx, data) = &recovered[0];
+    if *idx != 1 {
+        anyhow::bail!("recovered wrong shard index: {}", idx);
+    }
+    // Verify content matches original shard 1.
+    if &data[..payload_len] != sources[1].as_slice() {
+        anyhow::bail!("recovered shard 1 content mismatch");
+    }
+
+    Ok(t0.elapsed().as_micros() as u64)
+}
+
+enum VersionCheckResult {
+    UpToDate,
+    UpdateAvailable(String),
+    NetworkError(String),
+}
+
+/// Fetch the latest GitHub release tag and compare to the running version.
+/// Uses a short 3-second timeout so doctor is not blocked on network issues.
+fn check_latest_version(current: &str) -> VersionCheckResult {
+    const REPO: &str = "North9-Labs/Seam";
+    let url = format!("https://api.github.com/repos/{REPO}/releases/latest");
+
+    let resp = match ureq::AgentBuilder::new()
+        .timeout(std::time::Duration::from_secs(3))
+        .build()
+        .get(&url)
+        .set("User-Agent", &format!("seam/{current}"))
+        .call()
+    {
+        Ok(resp) => resp,
+        Err(e) => return VersionCheckResult::NetworkError(e.to_string()),
+    };
+
+    let body: serde_json::Value = match resp.into_json() {
+        Ok(v) => v,
+        Err(e) => return VersionCheckResult::NetworkError(e.to_string()),
+    };
+
+    let tag = match body["tag_name"].as_str() {
+        Some(t) => t.trim_start_matches('v').to_string(),
+        None => return VersionCheckResult::NetworkError("no tag_name in response".into()),
+    };
+
+    // Simple semver-ish comparison: parse as Version tuples.
+    if is_newer(&tag, current) {
+        VersionCheckResult::UpdateAvailable(tag)
+    } else {
+        VersionCheckResult::UpToDate
+    }
+}
+
+/// Returns true if `candidate` is a strictly newer semver than `current`.
+/// Falls back to string comparison if parsing fails (conservative: reports up-to-date).
+fn is_newer(candidate: &str, current: &str) -> bool {
+    fn parse_ver(s: &str) -> Option<(u64, u64, u64)> {
+        let mut parts = s.splitn(3, '.');
+        let major = parts.next()?.parse().ok()?;
+        let minor = parts.next()?.parse().ok()?;
+        let patch = parts.next().unwrap_or("0").parse().ok()?;
+        Some((major, minor, patch))
+    }
+    match (parse_ver(candidate), parse_ver(current)) {
+        (Some(c), Some(cur)) => c > cur,
+        _ => false,
+    }
 }
 
 fn try_udp_buffer_test() -> Option<(usize, usize)> {

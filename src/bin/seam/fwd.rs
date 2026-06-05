@@ -1,5 +1,5 @@
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
 use anyhow::{Result, anyhow};
@@ -95,7 +95,9 @@ pub async fn run(args: FwdArgs) -> Result<()> {
         local_host,
         local_port,
     );
-    eprintln!("  (connections on remote :{remote_port} forwarded to local {local_host}:{local_port})");
+    eprintln!(
+        "  (connections on remote :{remote_port} forwarded to local {local_host}:{local_port})"
+    );
 
     // The remote side pushes streams to us whenever a TCP connection is accepted.
     // We accept each stream and connect it to local_host:local_port.
@@ -152,21 +154,20 @@ pub async fn run_recv(args: FwdRecvArgs) -> Result<()> {
     let cfg = super::config::Config::load().ok().unwrap_or_default();
     let cipher = seam_protocol::crypto::CipherSuite::parse(&cfg.cipher).unwrap_or_default();
     let addr: std::net::SocketAddr = format!("0.0.0.0:{}", args.port).parse()?;
-    let mut server = Server::bind_with_cipher(addr, id, cipher).await.map_err(|e| anyhow!("{e}"))?;
+    let mut server = Server::bind_with_cipher(addr, id, cipher)
+        .await
+        .map_err(|e| anyhow!("{e}"))?;
     let udp_port = server.local_addr()?.port();
 
     // Bind the TCP listener before announcing — so the port is ready when the
     // client connects.
-    let tcp_listener =
-        TcpListener::bind(("0.0.0.0", args.listen_port)).await.map_err(|e| {
-            anyhow!("failed to bind TCP :{}: {e}", args.listen_port)
-        })?;
+    let tcp_listener = TcpListener::bind(("0.0.0.0", args.listen_port))
+        .await
+        .map_err(|e| anyhow!("failed to bind TCP :{}: {e}", args.listen_port))?;
     let actual_tcp_port = tcp_listener.local_addr()?.port();
 
     // Announce both UDP seam port and the TCP listen port.
-    println!(
-        "SEAM PORT={udp_port} X25519={x25519_hex} KEM={kem_hex} TCP={actual_tcp_port}"
-    );
+    println!("SEAM PORT={udp_port} X25519={x25519_hex} KEM={kem_hex} TCP={actual_tcp_port}");
 
     let conn = server
         .accept()

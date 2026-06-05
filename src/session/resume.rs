@@ -1,6 +1,6 @@
 use blake3::Hasher;
-use rand::rngs::OsRng;
 use rand::RngCore;
+use rand::rngs::OsRng;
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
@@ -61,20 +61,23 @@ impl SessionTicket {
                 b.len()
             )));
         }
-        let ticket_id: [u8; 16] = b[0..16].try_into().map_err(|_| {
-            SeamError::HandshakeFailed("resume ticket: bad ticket_id".into())
-        })?;
+        let ticket_id: [u8; 16] = b[0..16]
+            .try_into()
+            .map_err(|_| SeamError::HandshakeFailed("resume ticket: bad ticket_id".into()))?;
         let mut secret = Zeroizing::new([0u8; 32]);
         secret.copy_from_slice(&b[16..48]);
-        let created_at = u64::from_le_bytes(b[48..56].try_into().map_err(|_| {
-            SeamError::HandshakeFailed("resume ticket: bad created_at".into())
-        })?);
-        let ttl_seconds = u64::from_le_bytes(b[56..64].try_into().map_err(|_| {
-            SeamError::HandshakeFailed("resume ticket: bad ttl_seconds".into())
-        })?);
-        let peer_identity: [u8; 32] = b[64..96].try_into().map_err(|_| {
-            SeamError::HandshakeFailed("resume ticket: bad peer_identity".into())
-        })?;
+        let created_at = u64::from_le_bytes(
+            b[48..56]
+                .try_into()
+                .map_err(|_| SeamError::HandshakeFailed("resume ticket: bad created_at".into()))?,
+        );
+        let ttl_seconds =
+            u64::from_le_bytes(b[56..64].try_into().map_err(|_| {
+                SeamError::HandshakeFailed("resume ticket: bad ttl_seconds".into())
+            })?);
+        let peer_identity: [u8; 32] = b[64..96]
+            .try_into()
+            .map_err(|_| SeamError::HandshakeFailed("resume ticket: bad peer_identity".into()))?;
         Ok(Self {
             ticket_id,
             session_secret: secret,
@@ -95,11 +98,7 @@ impl SessionTicket {
     }
 
     /// Verify a proof-of-possession from the peer.
-    pub fn verify_proof(
-        &self,
-        nonce: &[u8; POP_NONCE_LEN],
-        proof: &[u8; PROOF_LEN],
-    ) -> bool {
+    pub fn verify_proof(&self, nonce: &[u8; POP_NONCE_LEN], proof: &[u8; PROOF_LEN]) -> bool {
         let expected = self.proof_of_possession(nonce);
         subtle::ConstantTimeEq::ct_eq(expected.as_ref(), proof.as_ref()).into()
     }

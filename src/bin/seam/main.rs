@@ -257,7 +257,10 @@ async fn main() -> Result<()> {
     let _ = tracing::subscriber::set_global_default(subscriber);
 
     // ── Resolve FIPS mode (CLI > env > config) ────────────────────────────────
-    let cfg_fips = config::Config::load().ok().map(|c| c.fips_mode).unwrap_or(false);
+    let cfg_fips = config::Config::load()
+        .ok()
+        .map(|c| c.fips_mode)
+        .unwrap_or(false);
     let fips_active = config::Config::effective_fips_mode(cfg_fips, cli.fips_mode);
 
     if fips_active {
@@ -311,16 +314,27 @@ async fn main() -> Result<()> {
         }
         Some(Commands::Forward(args)) => {
             let remote = args.remote.clone();
-            audited!("forward", &remote, vec![], forward::run(args, fips_active).await)
+            audited!(
+                "forward",
+                &remote,
+                vec![],
+                forward::run(args, fips_active).await
+            )
         }
         Some(Commands::Sync(args)) => {
-            let remote = if args.dest.contains('@') { args.dest.clone() }
-                         else { args.src.clone() };
+            let remote = if args.dest.contains('@') {
+                args.dest.clone()
+            } else {
+                args.src.clone()
+            };
             audited!("sync", &remote, vec![], sync::run(args, fips_active).await)
         }
         Some(Commands::Copy(args)) => {
-            let remote = if args.dest.contains('@') { args.dest.clone() }
-                         else { args.src.clone() };
+            let remote = if args.dest.contains('@') {
+                args.dest.clone()
+            } else {
+                args.src.clone()
+            };
             audited!("cp", &remote, vec![], copy::run(args, fips_active).await)
         }
         Some(Commands::Pipe(args)) => {
@@ -364,16 +378,31 @@ async fn main() -> Result<()> {
         Some(Commands::Completions(args)) => completions::run(args),
         Some(Commands::Proxy(args)) => {
             let remote = args.remote.clone();
-            audited!("proxy", &remote, vec![], proxy::run(args, fips_active).await)
+            audited!(
+                "proxy",
+                &remote,
+                vec![],
+                proxy::run(args, fips_active).await
+            )
         }
         Some(Commands::Audit(args)) => audit::run(args),
         Some(Commands::Serve(args)) => {
             let addr_str = format!("{}:{}", args.bind, args.port);
-            audited!("serve", &addr_str, vec![], serve::run(args, fips_active).await)
+            audited!(
+                "serve",
+                &addr_str,
+                vec![],
+                serve::run(args, fips_active).await
+            )
         }
         Some(Commands::Health(args)) => {
             let remote = args.remote.clone();
-            audited!("health", &remote, vec![], health::run(args, fips_active).await)
+            audited!(
+                "health",
+                &remote,
+                vec![],
+                health::run(args, fips_active).await
+            )
         }
         Some(Commands::Scan(args)) => {
             let target = args.target.clone();

@@ -272,8 +272,10 @@ impl Config {
         }
         let text = toml::to_string_pretty(self).context("serialize config")?;
         let tmp = path.with_extension("toml.tmp");
-        std::fs::write(&tmp, &text).with_context(|| format!("write config tmp {}", tmp.display()))?;
-        std::fs::rename(&tmp, &path).with_context(|| format!("atomic rename config {}", path.display()))?;
+        std::fs::write(&tmp, &text)
+            .with_context(|| format!("write config tmp {}", tmp.display()))?;
+        std::fs::rename(&tmp, &path)
+            .with_context(|| format!("atomic rename config {}", path.display()))?;
         Ok(())
     }
 
@@ -316,17 +318,28 @@ pub fn print() -> Result<()> {
     );
     println!(
         "fec_k           = {}",
-        cfg.fec_k.map(|v| v.to_string()).unwrap_or_else(|| "auto".into())
+        cfg.fec_k
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| "auto".into())
     );
     println!(
         "fec_r           = {}",
-        cfg.fec_r.map(|v| v.to_string()).unwrap_or_else(|| "auto".into())
+        cfg.fec_r
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| "auto".into())
     );
     println!("fips_mode       = {}", cfg.fips_mode);
     if cfg.relays.is_empty() {
         println!("relays          = []");
     } else {
-        println!("relays          = [{}]", cfg.relays.iter().map(|r| format!("{r:?}")).collect::<Vec<_>>().join(", "));
+        println!(
+            "relays          = [{}]",
+            cfg.relays
+                .iter()
+                .map(|r| format!("{r:?}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
     }
     println!();
     println!("# Traffic Analysis Resistance");
@@ -383,18 +396,31 @@ pub fn get(key: &str) -> Result<()> {
         "cipher" => println!("{}", cfg.cipher),
         "max_connections" => println!("{}", cfg.max_connections),
         "listen_port" => println!("{}", cfg.listen_port),
-        "fec_k" => println!("{}", cfg.fec_k.map(|v| v.to_string()).unwrap_or_else(|| "auto".into())),
-        "fec_r" => println!("{}", cfg.fec_r.map(|v| v.to_string()).unwrap_or_else(|| "auto".into())),
+        "fec_k" => println!(
+            "{}",
+            cfg.fec_k
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "auto".into())
+        ),
+        "fec_r" => println!(
+            "{}",
+            cfg.fec_r
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "auto".into())
+        ),
         "fips_mode" => println!("{}", cfg.fips_mode),
         "relays" => {
             for r in &cfg.relays {
                 println!("{r}");
             }
         }
-        "traffic_padding" => println!("{}", match cfg.traffic_padding {
-            Some(v) => v.to_string(),
-            None => "auto".to_string(),
-        }),
+        "traffic_padding" => println!(
+            "{}",
+            match cfg.traffic_padding {
+                Some(v) => v.to_string(),
+                None => "auto".to_string(),
+            }
+        ),
         "cover_traffic_kbps" => println!("{}", cfg.cover_traffic_kbps),
         "timing_jitter_ms" => println!("{}", cfg.timing_jitter_ms),
         "obfuscate" => println!("{}", cfg.obfuscate),
@@ -441,9 +467,7 @@ pub fn set(key: &str, value: &str) -> Result<()> {
             cfg.max_connections = n;
         }
         "listen_port" => {
-            let p: u16 = value
-                .parse()
-                .context("listen_port must be 0–65535")?;
+            let p: u16 = value.parse().context("listen_port must be 0–65535")?;
             cfg.listen_port = p;
         }
         "fec_k" => {
@@ -481,7 +505,11 @@ pub fn set(key: &str, value: &str) -> Result<()> {
             if value.trim().is_empty() {
                 cfg.relays = Vec::new();
             } else {
-                let entries: Vec<String> = value.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+                let entries: Vec<String> = value
+                    .split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect();
                 cfg.relays = entries;
             }
         }
@@ -489,14 +517,22 @@ pub fn set(key: &str, value: &str) -> Result<()> {
             if value == "auto" {
                 cfg.traffic_padding = None;
             } else {
-                cfg.traffic_padding = Some(value.parse().context("traffic_padding must be true, false, or auto")?);
+                cfg.traffic_padding = Some(
+                    value
+                        .parse()
+                        .context("traffic_padding must be true, false, or auto")?,
+                );
             }
         }
         "cover_traffic_kbps" => {
-            cfg.cover_traffic_kbps = value.parse().context("cover_traffic_kbps must be an integer ≥ 0")?;
+            cfg.cover_traffic_kbps = value
+                .parse()
+                .context("cover_traffic_kbps must be an integer ≥ 0")?;
         }
         "timing_jitter_ms" => {
-            let ms: u32 = value.parse().context("timing_jitter_ms must be an integer ≥ 0")?;
+            let ms: u32 = value
+                .parse()
+                .context("timing_jitter_ms must be an integer ≥ 0")?;
             if ms > 5000 {
                 bail!("timing_jitter_ms must be ≤ 5000 ms");
             }
@@ -511,7 +547,9 @@ pub fn set(key: &str, value: &str) -> Result<()> {
         "multipath_mode" => {
             use seam_protocol::transport::multipath::PathScheduler;
             if PathScheduler::parse(value).is_none() {
-                bail!("multipath_mode must be one of: round-robin, min-latency, redundant, weighted");
+                bail!(
+                    "multipath_mode must be one of: round-robin, min-latency, redundant, weighted"
+                );
             }
             cfg.multipath_mode = value.to_string();
         }

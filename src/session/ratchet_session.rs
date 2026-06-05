@@ -59,9 +59,9 @@ impl RatchetConfig {
     pub fn apply_config_key(&mut self, key: &str, value: &str) -> anyhow::Result<bool> {
         match key {
             "ratchet_epoch_packets" => {
-                let n: u64 = value
-                    .parse()
-                    .map_err(|_| anyhow::anyhow!("ratchet_epoch_packets must be a positive integer"))?;
+                let n: u64 = value.parse().map_err(|_| {
+                    anyhow::anyhow!("ratchet_epoch_packets must be a positive integer")
+                })?;
                 if n == 0 {
                     anyhow::bail!("ratchet_epoch_packets must be ≥ 1");
                 }
@@ -69,9 +69,9 @@ impl RatchetConfig {
                 Ok(true)
             }
             "ratchet_epoch_seconds" => {
-                let n: u64 = value
-                    .parse()
-                    .map_err(|_| anyhow::anyhow!("ratchet_epoch_seconds must be a positive integer"))?;
+                let n: u64 = value.parse().map_err(|_| {
+                    anyhow::anyhow!("ratchet_epoch_seconds must be a positive integer")
+                })?;
                 if n == 0 {
                     anyhow::bail!("ratchet_epoch_seconds must be ≥ 1");
                 }
@@ -118,11 +118,7 @@ impl SessionRatchet {
     /// Handles out-of-order delivery via the internal skip window.
     /// Returns `None` if the packet is unretrievable (too old, wrong epoch,
     /// or skip window overflow).
-    pub fn next_recv_key(
-        &mut self,
-        epoch: u64,
-        packet_index: u64,
-    ) -> Option<Zeroizing<[u8; 32]>> {
+    pub fn next_recv_key(&mut self, epoch: u64, packet_index: u64) -> Option<Zeroizing<[u8; 32]>> {
         self.inner.next_recv_key(epoch, packet_index)
     }
 
@@ -219,7 +215,9 @@ mod tests {
             alice.next_send_key();
         }
         assert!(alice.should_ratchet());
-        let frame = alice.maybe_advance_send().expect("should produce step frame");
+        let frame = alice
+            .maybe_advance_send()
+            .expect("should produce step frame");
         assert_eq!(frame.len(), 40);
         assert_eq!(alice.send_epoch(), 1);
         assert_eq!(alice.packets_in_epoch(), 0);
@@ -235,7 +233,10 @@ mod tests {
     #[test]
     fn test_apply_config_key() {
         let mut cfg = RatchetConfig::default();
-        assert!(cfg.apply_config_key("ratchet_epoch_packets", "500").unwrap());
+        assert!(
+            cfg.apply_config_key("ratchet_epoch_packets", "500")
+                .unwrap()
+        );
         assert_eq!(cfg.epoch_packet_limit, 500);
         assert!(cfg.apply_config_key("ratchet_epoch_seconds", "60").unwrap());
         assert_eq!(cfg.epoch_time_secs, 60);

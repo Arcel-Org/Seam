@@ -136,7 +136,8 @@ impl Connection {
             .await
             .map_err(|e| SeamError::HandshakeFailed(e.to_string()))?;
 
-        let client_hs = ClientHandshake::new_with_cipher(local_identity, server_x25519, preferred_cipher)?;
+        let client_hs =
+            ClientHandshake::new_with_cipher(local_identity, server_x25519, preferred_cipher)?;
 
         let (tx, rx) = mpsc::unbounded_channel();
         let mut conn = Self::new_base(socket, remote, ConnPhase::ClientWaitChallenge, tx);
@@ -370,7 +371,8 @@ impl Connection {
             .server_identity
             .as_ref()
             .ok_or_else(|| SeamError::HandshakeFailed("no server identity".into()))?;
-        let mut server_hs = ServerHandshake::new_with_cipher(identity, self.server_preferred_cipher)?;
+        let mut server_hs =
+            ServerHandshake::new_with_cipher(identity, self.server_preferred_cipher)?;
         let agreed_cipher = server_hs.read_msg1(msg1)?;
         self.agreed_cipher = agreed_cipher;
 
@@ -429,7 +431,8 @@ impl Connection {
                 self.rtt_est.srtt()
             };
             let prev_state = self.bbr.state();
-            self.bbr.on_ack(bytes as usize, effective_rtt, Instant::now());
+            self.bbr
+                .on_ack(bytes as usize, effective_rtt, Instant::now());
             if self.bbr.state() != prev_state {
                 tracing::debug!(
                     "BBR advisory: {:?} → {:?} (pacing={:.0} B/s, cwnd={})",
@@ -501,9 +504,7 @@ impl Connection {
 
             // Honour the congestion window: if there is no room, stop sending data.
             // Both the primary trait-based controller and the advisory BBR must permit.
-            if self.cc.available() < size
-                || !self.bbr.should_send(self.bbr.inflight())
-            {
+            if self.cc.available() < size || !self.bbr.should_send(self.bbr.inflight()) {
                 break;
             }
             self.socket
@@ -723,10 +724,17 @@ impl Connection {
             .await
             .map_err(|e| SeamError::HandshakeFailed(e.to_string()))?;
 
-        let client_hs = ClientHandshake::new_with_cipher(local_identity, server_x25519, preferred_cipher)?;
+        let client_hs =
+            ClientHandshake::new_with_cipher(local_identity, server_x25519, preferred_cipher)?;
 
         let (tx, rx) = mpsc::unbounded_channel();
-        let mut conn = Self::new_base_with_tar(socket, remote, ConnPhase::ClientWaitChallenge, tx, tar_config);
+        let mut conn = Self::new_base_with_tar(
+            socket,
+            remote,
+            ConnPhase::ClientWaitChallenge,
+            tx,
+            tar_config,
+        );
         conn.client_hs = Some(client_hs);
         conn._server_kem_pk = Some(server_kem_pk.clone());
         Ok((conn, rx))

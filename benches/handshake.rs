@@ -56,7 +56,9 @@ fn bench_full_handshake(c: &mut Criterion) {
             let agreed = server.read_msg1(&msg1).unwrap();
 
             let mut msg2 = Vec::new();
-            server.write_msg2(&server_id.kem_pk, agreed, &mut msg2).unwrap();
+            server
+                .write_msg2(&server_id.kem_pk, agreed, &mut msg2)
+                .unwrap();
             let (server_kem_pk, agreed2) = client.read_msg2(&msg2).unwrap();
 
             let mut msg3 = Vec::new();
@@ -85,12 +87,18 @@ fn bench_noise_xx_handshake(c: &mut Criterion) {
             let agreed = server.read_msg1(&msg1).unwrap();
 
             let mut msg2 = Vec::new();
-            server.write_msg2(&server_id.kem_pk, agreed, &mut msg2).unwrap();
+            server
+                .write_msg2(&server_id.kem_pk, agreed, &mut msg2)
+                .unwrap();
             let (server_kem_pk, agreed2) = client.read_msg2(&msg2).unwrap();
 
             let mut msg3 = Vec::new();
-            let _cr = client.write_msg3_and_finish(&server_kem_pk, agreed2, &mut msg3).unwrap();
-            let _sr = server.read_msg3_and_finish(&server_id.kem_sk, agreed, &msg3).unwrap();
+            let _cr = client
+                .write_msg3_and_finish(&server_kem_pk, agreed2, &mut msg3)
+                .unwrap();
+            let _sr = server
+                .read_msg3_and_finish(&server_id.kem_sk, agreed, &msg3)
+                .unwrap();
         });
     });
 }

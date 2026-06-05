@@ -105,8 +105,15 @@ fn manifest_cache_key(host: &str, remote_dir: &str) -> String {
 fn manifest_cache_path(host: &str, remote_dir: &str) -> PathBuf {
     let key = manifest_cache_key(host, remote_dir);
     // sanitize host for use as directory name
-    let host_safe: String = host.chars()
-        .map(|c| if c.is_alphanumeric() || c == '-' || c == '.' { c } else { '_' })
+    let host_safe: String = host
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' || c == '.' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
     dirs::cache_dir()
         .unwrap_or_else(|| PathBuf::from(".cache"))
@@ -175,19 +182,23 @@ fn format_duration(secs: u64) -> String {
 
 /// Convert a cached manifest to ManifestEntry vec.
 fn cached_to_manifest(cached: &CachedManifest) -> Vec<ManifestEntry> {
-    cached.entries.iter().filter_map(|e| {
-        let hash_bytes = hex::decode(&e.hash_hex).ok()?;
-        if hash_bytes.len() != SYNC_HASH_LEN {
-            return None;
-        }
-        let mut hash = [0u8; SYNC_HASH_LEN];
-        hash.copy_from_slice(&hash_bytes);
-        Some(ManifestEntry {
-            path: e.path.clone(),
-            size: e.size,
-            hash,
+    cached
+        .entries
+        .iter()
+        .filter_map(|e| {
+            let hash_bytes = hex::decode(&e.hash_hex).ok()?;
+            if hash_bytes.len() != SYNC_HASH_LEN {
+                return None;
+            }
+            let mut hash = [0u8; SYNC_HASH_LEN];
+            hash.copy_from_slice(&hash_bytes);
+            Some(ManifestEntry {
+                path: e.path.clone(),
+                size: e.size,
+                hash,
+            })
         })
-    }).collect()
+        .collect()
 }
 
 // ── Client args ───────────────────────────────────────────────────────────────
@@ -232,10 +243,10 @@ pub struct SyncRecvArgs {
 // ── Hash helpers ──────────────────────────────────────────────────────────────
 
 fn hash_file(path: &Path, fips_mode: bool) -> Result<[u8; SYNC_HASH_LEN]> {
-    use std::io::Read;
     use crate::copy::IncrementalHasher;
-    let mut file = std::fs::File::open(path)
-        .map_err(|e| anyhow!("cannot open {}: {e}", path.display()))?;
+    use std::io::Read;
+    let mut file =
+        std::fs::File::open(path).map_err(|e| anyhow!("cannot open {}: {e}", path.display()))?;
     let mut hasher = IncrementalHasher::new(fips_mode);
     let mut buf = vec![0u8; CHUNK];
     loop {
@@ -272,7 +283,11 @@ fn build_manifest(dir: &Path, fips_mode: bool, pb: &ProgressBar) -> Result<Vec<M
         let size = entry.metadata()?.len();
         pb.set_message(format!("hashing {rel}"));
         let hash = hash_file(path, fips_mode)?;
-        entries.push(ManifestEntry { path: rel, size, hash });
+        entries.push(ManifestEntry {
+            path: rel,
+            size,
+            hash,
+        });
     }
     Ok(entries)
 }
@@ -336,8 +351,8 @@ async fn send_sync_file(
     buf: &mut Vec<u8>,
     fips_mode: bool,
 ) -> Result<()> {
-    use std::io::Read;
     use crate::copy::IncrementalHasher;
+    use std::io::Read;
 
     let file_path = base.join(&entry.path);
 
@@ -402,8 +417,8 @@ async fn recv_sync_file(
     buf: &mut Vec<u8>,
     fips_mode: bool,
 ) -> Result<(String, u64)> {
-    use std::io::Write;
     use crate::copy::IncrementalHasher;
+    use std::io::Write;
 
     // Parse header: SYNC_FILE [u32 path_len][path][u64 size]
     if header_frame.len() < 13 {
@@ -484,7 +499,11 @@ async fn recv_sync_file(
 pub async fn run(args: SyncArgs, fips_mode: bool) -> Result<()> {
     let cfg = super::config::Config::load().ok().unwrap_or_default();
     let compress = !args.no_compress && cfg.compress;
-    let cipher_str = if fips_mode { "aes256gcm" } else { cfg.cipher.as_str() };
+    let cipher_str = if fips_mode {
+        "aes256gcm"
+    } else {
+        cfg.cipher.as_str()
+    };
     let cipher = seam_protocol::crypto::CipherSuite::parse(cipher_str).unwrap_or_default();
     let algo_name = if fips_mode { "SHA-256" } else { "BLAKE3" };
 
@@ -493,7 +512,9 @@ pub async fn run(args: SyncArgs, fips_mode: bool) -> Result<()> {
 
     let (is_push, local_dir, remote, remote_dir, ssh_port) = match (src_remote, dst_remote) {
         (Some(_), Some(_)) => bail!("both source and destination cannot be remote"),
-        (None, None) => bail!("at least one of source or destination must be remote (user@host:/path)"),
+        (None, None) => {
+            bail!("at least one of source or destination must be remote (user@host:/path)")
+        }
         (None, Some((r, rdir))) => {
             // push: local → remote
             let local = PathBuf::from(&args.src);
@@ -568,18 +589,13 @@ pub async fn run(args: SyncArgs, fips_mode: bool) -> Result<()> {
 
     let mp = MultiProgress::new();
     let hash_pb = mp.add(ProgressBar::new_spinner());
-    hash_pb.set_style(
-        ProgressStyle::with_template("{spinner:.cyan} {msg}").unwrap(),
-    );
+    hash_pb.set_style(ProgressStyle::with_template("{spinner:.cyan} {msg}").unwrap());
 
     if is_push {
         // Push mode: build local manifest, exchange with remote, send differing files.
         hash_pb.set_message(format!("building local manifest ({algo_name})…"));
         let local_manifest = build_manifest(&local_dir, fips_mode, &hash_pb)?;
-        hash_pb.finish_with_message(format!(
-            "local manifest: {} files",
-            local_manifest.len()
-        ));
+        hash_pb.finish_with_message(format!("local manifest: {} files", local_manifest.len()));
 
         // Send local manifest
         let encoded = encode_manifest(&local_manifest);
@@ -610,8 +626,8 @@ pub async fn run(args: SyncArgs, fips_mode: bool) -> Result<()> {
             .iter()
             .filter(|e| {
                 match remote_index.get(e.path.as_str()) {
-                    None => true,                    // missing on remote
-                    Some(re) => re.hash != e.hash,  // content differs
+                    None => true,                  // missing on remote
+                    Some(re) => re.hash != e.hash, // content differs
                 }
             })
             .collect();
@@ -639,7 +655,10 @@ pub async fn run(args: SyncArgs, fips_mode: bool) -> Result<()> {
         for entry in &to_send {
             xfer_pb.set_message(format!("sending {}", entry.path));
             let before = xfer_pb.position();
-            send_sync_file(&mut conn, ctrl_sid, &local_dir, entry, compress, &mut buf, fips_mode).await?;
+            send_sync_file(
+                &mut conn, ctrl_sid, &local_dir, entry, compress, &mut buf, fips_mode,
+            )
+            .await?;
             xfer_pb.inc(entry.size.saturating_sub(xfer_pb.position() - before) + entry.size);
         }
 
@@ -704,11 +723,9 @@ pub async fn run(args: SyncArgs, fips_mode: bool) -> Result<()> {
             .collect();
         let needed: std::collections::HashSet<&str> = remote_manifest
             .iter()
-            .filter(|e| {
-                match local_index.get(e.path.as_str()) {
-                    None => true,
-                    Some(le) => le.hash != e.hash,
-                }
+            .filter(|e| match local_index.get(e.path.as_str()) {
+                None => true,
+                Some(le) => le.hash != e.hash,
             })
             .map(|e| e.path.as_str())
             .collect();
@@ -747,7 +764,8 @@ pub async fn run(args: SyncArgs, fips_mode: bool) -> Result<()> {
                 SYNC_FILE => {
                     let (path, size) = recv_sync_file(
                         &mut conn, ctrl_sid, &frame, &local_dir, compress, &mut buf, fips_mode,
-                    ).await?;
+                    )
+                    .await?;
                     xfer_pb.set_message(format!("received {path}"));
                     xfer_pb.inc(size);
                     files_received += 1;
@@ -843,7 +861,8 @@ pub async fn run_recv(args: SyncRecvArgs, fips_mode: bool) -> Result<()> {
                 SYNC_FILE => {
                     recv_sync_file(
                         &mut conn, ctrl_sid, &frame, &args.dir, compress, &mut buf, fips,
-                    ).await?;
+                    )
+                    .await?;
                 }
                 SYNC_DONE => break,
                 t => bail!("sync-recv: unexpected frame 0x{t:02x}"),
@@ -900,17 +919,18 @@ pub async fn run_recv(args: SyncRecvArgs, fips_mode: bool) -> Result<()> {
 
         let to_send: Vec<&ManifestEntry> = our_manifest
             .iter()
-            .filter(|e| {
-                match client_index.get(e.path.as_str()) {
-                    None => true,
-                    Some(ce) => ce.hash != e.hash,
-                }
+            .filter(|e| match client_index.get(e.path.as_str()) {
+                None => true,
+                Some(ce) => ce.hash != e.hash,
             })
             .collect();
 
         // 4. Send files
         for entry in to_send {
-            send_sync_file(&mut conn, ctrl_sid, &args.dir, entry, compress, &mut buf, fips).await?;
+            send_sync_file(
+                &mut conn, ctrl_sid, &args.dir, entry, compress, &mut buf, fips,
+            )
+            .await?;
         }
 
         send_frame(&conn, ctrl_sid, &[SYNC_DONE]).await?;

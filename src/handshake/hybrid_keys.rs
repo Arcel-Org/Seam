@@ -40,8 +40,7 @@ impl IdentityKeypair {
         let x25519_secret = StaticSecret::random_from_rng(OsRng);
         let x25519_public = X25519Public::from(&x25519_secret);
         let (kem_sk, kem_pk) = MlKem768::generate_keypair();
-        let (mldsa_pk, mldsa_sk) =
-            ml_dsa_65::KG::try_keygen().expect("ML-DSA-65 keygen failed");
+        let (mldsa_pk, mldsa_sk) = ml_dsa_65::KG::try_keygen().expect("ML-DSA-65 keygen failed");
         Self {
             x25519_secret,
             x25519_public,
@@ -72,9 +71,7 @@ impl IdentityKeypair {
         let mldsa_pk_bytes: [u8; MLDSA_PK_LEN] = self.mldsa_pk.clone().into_bytes();
 
         let mut out = Vec::with_capacity(
-            1 + 32 + 8 + kem_sk_bytes.len() + kem_pk_bytes.len()
-                + MLDSA_SK_LEN
-                + MLDSA_PK_LEN,
+            1 + 32 + 8 + kem_sk_bytes.len() + kem_pk_bytes.len() + MLDSA_SK_LEN + MLDSA_PK_LEN,
         );
         out.push(3u8); // version 3: ml-kem seed format + ml-dsa-65
         out.extend_from_slice(&self.x25519_secret.to_bytes());
@@ -138,10 +135,12 @@ impl IdentityKeypair {
         if bytes.len() < mldsa_end {
             return None;
         }
-        let mldsa_sk_arr: [u8; MLDSA_SK_LEN] =
-            bytes[kem_pk_end..kem_pk_end + MLDSA_SK_LEN].try_into().ok()?;
-        let mldsa_pk_arr: [u8; MLDSA_PK_LEN] =
-            bytes[kem_pk_end + MLDSA_SK_LEN..mldsa_end].try_into().ok()?;
+        let mldsa_sk_arr: [u8; MLDSA_SK_LEN] = bytes[kem_pk_end..kem_pk_end + MLDSA_SK_LEN]
+            .try_into()
+            .ok()?;
+        let mldsa_pk_arr: [u8; MLDSA_PK_LEN] = bytes[kem_pk_end + MLDSA_SK_LEN..mldsa_end]
+            .try_into()
+            .ok()?;
         let mldsa_sk = MlDsaPrivateKey::try_from_bytes(mldsa_sk_arr).ok()?;
         let mldsa_pk = MlDsaPublicKey::try_from_bytes(mldsa_pk_arr).ok()?;
 
@@ -191,8 +190,7 @@ impl IdentityKeypair {
 
         // Derive ML-DSA-65 keypair deterministically from the x25519 secret.
         // This makes the ML-DSA key stable after v2→v3 upgrade.
-        let mldsa_seed: [u8; 32] =
-            blake3::derive_key("seam/mldsa-identity-seed/v1", &x25519_arr);
+        let mldsa_seed: [u8; 32] = blake3::derive_key("seam/mldsa-identity-seed/v1", &x25519_arr);
         let (mldsa_pk, mldsa_sk) = ml_dsa_65::KG::keygen_from_seed(&mldsa_seed);
 
         Some(Self {
@@ -216,8 +214,8 @@ impl IdentityKeypair {
             let bytes = std::fs::read(path).map_err(|e| anyhow::anyhow!("read identity: {e}"))?;
             // Check version byte for migration
             let version = bytes.first().copied().unwrap_or(0);
-            let id = Self::from_bytes(&bytes)
-                .ok_or_else(|| anyhow::anyhow!("invalid identity file"))?;
+            let id =
+                Self::from_bytes(&bytes).ok_or_else(|| anyhow::anyhow!("invalid identity file"))?;
             if version == 2 {
                 eprintln!(
                     "seam: identity key upgraded from v2 (X25519+ML-KEM-768) to v3 \
@@ -361,7 +359,10 @@ mod tests {
         );
         let mldsa_pk1: [u8; MLDSA_PK_LEN] = id.mldsa_pk.clone().into_bytes();
         let mldsa_pk2: [u8; MLDSA_PK_LEN] = id2.mldsa_pk.clone().into_bytes();
-        assert_eq!(mldsa_pk1, mldsa_pk2, "ML-DSA-65 public key must survive roundtrip");
+        assert_eq!(
+            mldsa_pk1, mldsa_pk2,
+            "ML-DSA-65 public key must survive roundtrip"
+        );
     }
 
     #[test]

@@ -12,7 +12,7 @@
 ///   `<host> <sha256-x25519-hex> mldsa65:<sha256-mldsa-pk-hex>`
 ///
 /// This is intentionally simple and human-readable, like SSH known_hosts.
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use sha2::Digest as _;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -118,11 +118,7 @@ pub fn verify_or_pin(host: &str, x25519_pub: &[u8; 32], policy: PinPolicy) -> Re
     match pins.get(host) {
         Some(pinned) => {
             if pinned == &fp {
-                eprintln!(
-                    "  server identity OK: {} [{}…]",
-                    host,
-                    short_fp(&fp)
-                );
+                eprintln!("  server identity OK: {} [{}…]", host, short_fp(&fp));
                 Ok(())
             } else {
                 // Key mismatch — potential MITM.
@@ -131,23 +127,21 @@ pub fn verify_or_pin(host: &str, x25519_pub: &[u8; 32], policy: PinPolicy) -> Re
                 eprintln!("@    WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!     @");
                 eprintln!("@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@");
                 eprintln!("IT IS POSSIBLE THAT SOMEONE IS DOING SOMETHING NASTY!");
-                eprintln!("Someone could be eavesdropping on you right now (man-in-the-middle attack)!");
+                eprintln!(
+                    "Someone could be eavesdropping on you right now (man-in-the-middle attack)!"
+                );
                 eprintln!("It is also possible that the server key has legitimately changed.");
                 eprintln!();
                 eprintln!("Host:          {host}");
                 eprintln!("Pinned key:    SHA256:{pinned}");
                 eprintln!("Offered key:   SHA256:{fp}");
                 eprintln!();
-                eprintln!(
-                    "To update the pin (ONLY if you trust this is a legitimate key change):"
-                );
+                eprintln!("To update the pin (ONLY if you trust this is a legitimate key change):");
                 eprintln!(
                     "  seam key --remove-pin {host}  # or edit {}",
                     known_hosts_path().display()
                 );
-                eprintln!(
-                    "To bypass verification (INSECURE): use --insecure-ignore-pin"
-                );
+                eprintln!("To bypass verification (INSECURE): use --insecure-ignore-pin");
                 eprintln!();
                 bail!(
                     "server identity mismatch for {host}: remote host identification has changed"
@@ -159,7 +153,10 @@ pub fn verify_or_pin(host: &str, x25519_pub: &[u8; 32], policy: PinPolicy) -> Re
             let msg = if policy == PinPolicy::TrustOnFirstUse {
                 format!("  pinning server key for {host}: SHA256:{fp}")
             } else {
-                format!("  first connection to {host} — pinning server key: SHA256:{}…", short_fp(&fp))
+                format!(
+                    "  first connection to {host} — pinning server key: SHA256:{}…",
+                    short_fp(&fp)
+                )
             };
             eprintln!("{msg}");
             eprintln!("  Stored in: {}", known_hosts_path().display());

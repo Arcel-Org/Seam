@@ -51,7 +51,11 @@ pub async fn run(args: RecvArgs) -> Result<()> {
     Ok(())
 }
 
-async fn receive_transfer(conn: &mut SeamConn, dest: &std::path::Path, fips_mode: bool) -> Result<()> {
+async fn receive_transfer(
+    conn: &mut SeamConn,
+    dest: &std::path::Path,
+    fips_mode: bool,
+) -> Result<()> {
     let mut buf: Vec<u8> = Vec::new();
 
     let ctrl_sid = wait_for_stream(conn).await?;
@@ -200,16 +204,20 @@ async fn receive_file(
             // ── Atomic promotion: partial → final path ────────────────────────
             std::fs::rename(&partial_path, &out_path)?;
             send_frame(conn, ctrl_sid, &[proto::ACK]).await?;
-            eprintln!("received: {name} ({size} bytes) [{algo_name} OK: {}]",
-                hex::encode(&expected[..8]));
+            eprintln!(
+                "received: {name} ({size} bytes) [{algo_name} OK: {}]",
+                hex::encode(&expected[..8])
+            );
         } else {
             // ── Checksum mismatch: remove corrupted partial ───────────────────
             // Do NOT keep the partial — it is corrupt. The caller will need to
             // restart the transfer from byte 0 on the next attempt.
             let _ = std::fs::remove_file(&partial_path);
-            bail!("{algo_name} integrity check FAILED for {name}: expected {} got {} — partial deleted, retry transfer",
+            bail!(
+                "{algo_name} integrity check FAILED for {name}: expected {} got {} — partial deleted, retry transfer",
                 hex::encode(expected),
-                hex::encode(actual));
+                hex::encode(actual)
+            );
         }
     } else {
         // Older peer without checksum support — promote the partial anyway.

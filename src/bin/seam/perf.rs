@@ -32,16 +32,8 @@ pub fn run_bench() -> Result<()> {
         "Handshake (Noise_XX + ML-KEM-768):",
         fmt_duration(handshake_ns)
     );
-    eprintln!(
-        "  {:<38} {}",
-        "ML-DSA-65 sign:",
-        fmt_duration(sign_ns)
-    );
-    eprintln!(
-        "  {:<38} {}",
-        "ML-DSA-65 verify:",
-        fmt_duration(verify_ns)
-    );
+    eprintln!("  {:<38} {}", "ML-DSA-65 sign:", fmt_duration(sign_ns));
+    eprintln!("  {:<38} {}", "ML-DSA-65 verify:", fmt_duration(verify_ns));
     eprintln!(
         "  {:<38} {}  →  {:.1} Gbps effective",
         "ChaCha20-Poly1305 (1400B):",
@@ -117,12 +109,18 @@ fn bench_handshake(iters: usize) -> u64 {
         let agreed = server.read_msg1(&msg1).unwrap();
 
         let mut msg2 = Vec::new();
-        server.write_msg2(&server_id.kem_pk, agreed, &mut msg2).unwrap();
+        server
+            .write_msg2(&server_id.kem_pk, agreed, &mut msg2)
+            .unwrap();
         let (server_kem_pk, agreed2) = client.read_msg2(&msg2).unwrap();
 
         let mut msg3 = Vec::new();
-        let _cr = client.write_msg3_and_finish(&server_kem_pk, agreed2, &mut msg3).unwrap();
-        let _sr = server.read_msg3_and_finish(&server_id.kem_sk, agreed, &msg3).unwrap();
+        let _cr = client
+            .write_msg3_and_finish(&server_kem_pk, agreed2, &mut msg3)
+            .unwrap();
+        let _sr = server
+            .read_msg3_and_finish(&server_id.kem_sk, agreed, &msg3)
+            .unwrap();
 
         samples.push(t.elapsed().as_nanos() as u64);
     }
@@ -158,8 +156,8 @@ fn bench_mldsa_verify(iters: usize) -> u64 {
 }
 
 fn bench_chacha_1400(iters: usize) -> u64 {
-    use seam_protocol::{PacketEncoder, PacketKeys, PktType};
     use seam_protocol::packet::{HEADER_LEN, TAG_LEN};
+    use seam_protocol::{PacketEncoder, PacketKeys, PktType};
     let secret = b"perf-bench-chacha-key-32-bytes-x";
     let enc = PacketEncoder::new(PacketKeys::derive_from_secret(secret), 1);
     let payload = vec![0x5Au8; 1400];
@@ -174,8 +172,8 @@ fn bench_chacha_1400(iters: usize) -> u64 {
 }
 
 fn bench_aes_1400(iters: usize) -> u64 {
-    use seam_protocol::{CipherSuite, PacketEncoder, PacketKeys, PktType};
     use seam_protocol::packet::{HEADER_LEN, TAG_LEN};
+    use seam_protocol::{CipherSuite, PacketEncoder, PacketKeys, PktType};
     let secret = b"perf-bench-aes256-key-32-bytes-y";
     let keys = PacketKeys::derive_from_secret_with_cipher(secret, CipherSuite::Aes256Gcm);
     let enc = PacketEncoder::new(keys, 1);

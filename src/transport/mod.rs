@@ -32,6 +32,7 @@ pub fn default_cc() -> Box<dyn CongestionControl> {
 pub use chaff::ChaffScheduler;
 pub use connection::{ConnPhase, Connection};
 pub use endpoint::{DEFAULT_MAX_CONNECTIONS, Endpoint, EndpointConfig};
+pub use multipath::{MultiPathEndpoint, PathScheduler, PathStat};
 pub use pacer::Pacer;
 pub use pool::BufferPool;
 pub use probe::PathProber;
@@ -41,4 +42,3 @@ pub use tar::{
     CoverTrafficConfig, JitterConfig, PacketSizeClass, TarConfig, TarState,
     derive_obfuscation_secret, obfuscate_header, pad_to_size_class,
 };
-pub use multipath::{MultiPathEndpoint, PathScheduler, PathStat};

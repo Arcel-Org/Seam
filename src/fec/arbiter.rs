@@ -40,7 +40,11 @@ impl EwmaLoss {
         } else {
             // Fast increase (spike): use alpha=0.5 when sample exceeds estimate
             // by more than 2×.  Slow decrease: alpha=0.125 otherwise.
-            let alpha = if sample > self.value * 2.0 { 0.5 } else { 0.125 };
+            let alpha = if sample > self.value * 2.0 {
+                0.5
+            } else {
+                0.125
+            };
             self.value = (1.0 - alpha) * self.value + alpha * sample;
         }
         self.value
@@ -235,7 +239,10 @@ mod tests {
         // Single spike at 20% — with alpha=0.5 the EWMA jumps immediately
         a.on_ack_epoch(20, 100, 10_000);
         assert!(
-            matches!(a.mode, ArbiterMode::HybridFecArq { .. } | ArbiterMode::PureFec { .. }),
+            matches!(
+                a.mode,
+                ArbiterMode::HybridFecArq { .. } | ArbiterMode::PureFec { .. }
+            ),
             "spike should trigger FEC immediately, got {:?}",
             a.mode
         );

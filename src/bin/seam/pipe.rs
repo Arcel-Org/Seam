@@ -135,7 +135,9 @@ pub async fn run_recv(args: PipeRecvArgs) -> Result<()> {
     let cfg = super::config::Config::load().ok().unwrap_or_default();
     let cipher = seam_protocol::crypto::CipherSuite::parse(&cfg.cipher).unwrap_or_default();
     let addr: std::net::SocketAddr = format!("0.0.0.0:{}", args.port).parse()?;
-    let mut server = Server::bind_with_cipher(addr, id, cipher).await.map_err(|e| anyhow!("{e}"))?;
+    let mut server = Server::bind_with_cipher(addr, id, cipher)
+        .await
+        .map_err(|e| anyhow!("{e}"))?;
     let port = server.local_addr()?.port();
 
     println!("SEAM PORT={port} X25519={x25519_hex} KEM={kem_hex}");

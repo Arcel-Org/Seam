@@ -13,7 +13,6 @@ use crate::{
 const CHUNK: usize = 32 * 1024;
 const ZSTD_LEVEL: i32 = 3;
 
-
 #[derive(Args)]
 pub struct CopyArgs {
     /// Source path (local file or directory)
@@ -364,8 +363,12 @@ impl IncrementalHasher {
 
     pub fn update(&mut self, data: &[u8]) {
         match self {
-            Self::Blake3(h) => { h.update(data); }
-            Self::Sha256(h) => { sha2::Digest::update(h, data); }
+            Self::Blake3(h) => {
+                h.update(data);
+            }
+            Self::Sha256(h) => {
+                sha2::Digest::update(h, data);
+            }
         }
     }
 
@@ -594,17 +597,25 @@ pub async fn receive_file(
                 std::fs::rename(&partial_path, &out_path)?;
             }
             send_frame(conn, ctrl_sid, &[proto::ACK]).await?;
-            eprintln!("received: {name} ({size} bytes) [{algo_name} OK: {}]",
-                hex::encode(&expected[..8]));
+            eprintln!(
+                "received: {name} ({size} bytes) [{algo_name} OK: {}]",
+                hex::encode(&expected[..8])
+            );
         } else {
             if resume {
                 // Delete corrupt partial — next attempt will restart from byte 0.
                 let _ = std::fs::remove_file(&partial_path);
             }
-            bail!("{algo_name} integrity check FAILED for {name}: expected {} got {} — {}",
+            bail!(
+                "{algo_name} integrity check FAILED for {name}: expected {} got {} — {}",
                 hex::encode(expected),
                 hex::encode(actual),
-                if resume { "partial deleted, retry transfer" } else { "receiver reported mismatch" });
+                if resume {
+                    "partial deleted, retry transfer"
+                } else {
+                    "receiver reported mismatch"
+                }
+            );
         }
     } else {
         // Older peer without checksum support — promote partial if present.

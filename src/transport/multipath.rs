@@ -231,7 +231,8 @@ impl MultiPathEndpoint {
             total_paths = self.paths.len() + 1,
             "multipath: path added"
         );
-        self.paths.push(PathState::new(socket, actual_local, remote_addr));
+        self.paths
+            .push(PathState::new(socket, actual_local, remote_addr));
         Ok(())
     }
 
@@ -509,18 +510,23 @@ impl MultiPathEndpoint {
             );
         }
         if self.paths.len() > 1 {
-            let min_rtt = self.paths.iter()
+            let min_rtt = self
+                .paths
+                .iter()
                 .filter(|p| p.active)
                 .map(|p| p.rtt_estimate)
                 .min()
                 .unwrap_or(Duration::ZERO);
-            let max_loss = self.paths.iter()
+            let max_loss = self
+                .paths
+                .iter()
                 .filter(|p| p.active)
                 .map(|p| p.loss_rate)
                 .fold(0.0f64, f64::max);
             let agg_loss = if scheduler == &PathScheduler::Redundant {
                 // With full redundancy, effective loss = product of individual losses
-                self.paths.iter()
+                self.paths
+                    .iter()
                     .filter(|p| p.active)
                     .map(|p| p.loss_rate)
                     .product::<f64>()
@@ -568,7 +574,12 @@ mod tests {
 
     /// Bind two receiver sockets and return their addresses.
     /// Returns std::net::UdpSocket so tests can use set_nonblocking + sync recv_from.
-    async fn make_receiver_pair() -> (std::net::UdpSocket, std::net::UdpSocket, SocketAddr, SocketAddr) {
+    async fn make_receiver_pair() -> (
+        std::net::UdpSocket,
+        std::net::UdpSocket,
+        SocketAddr,
+        SocketAddr,
+    ) {
         let r0 = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
         let r1 = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
         let a0 = r0.local_addr().unwrap();
@@ -582,8 +593,12 @@ mod tests {
         let (r0, r1, addr0, addr1) = make_receiver_pair().await;
 
         let mut ep = MultiPathEndpoint::new(PathScheduler::RoundRobin);
-        ep.add_path("127.0.0.1:0".parse().unwrap(), addr0).await.unwrap();
-        ep.add_path("127.0.0.1:0".parse().unwrap(), addr1).await.unwrap();
+        ep.add_path("127.0.0.1:0".parse().unwrap(), addr0)
+            .await
+            .unwrap();
+        ep.add_path("127.0.0.1:0".parse().unwrap(), addr1)
+            .await
+            .unwrap();
 
         let payload = b"hello";
         let mut buf = vec![0u8; 256];
@@ -601,14 +616,21 @@ mod tests {
         let mut count0 = 0u32;
         let mut count1 = 0u32;
         while let Ok((n, _)) = r0.recv_from(&mut buf) {
-            if n > 0 { count0 += 1; }
+            if n > 0 {
+                count0 += 1;
+            }
         }
         while let Ok((n, _)) = r1.recv_from(&mut buf) {
-            if n > 0 { count1 += 1; }
+            if n > 0 {
+                count1 += 1;
+            }
         }
 
         // Together they must total at least 4 packets; each should get ≥ 1.
-        assert!(count0 + count1 >= 4, "expected ≥4 total, got {count0}+{count1}");
+        assert!(
+            count0 + count1 >= 4,
+            "expected ≥4 total, got {count0}+{count1}"
+        );
         assert!(count0 >= 1, "path 0 should have received at least 1 packet");
         assert!(count1 >= 1, "path 1 should have received at least 1 packet");
     }
@@ -653,8 +675,12 @@ mod tests {
         let (r0, r1, addr0, addr1) = make_receiver_pair().await;
 
         let mut ep = MultiPathEndpoint::new(PathScheduler::RoundRobin);
-        ep.add_path("127.0.0.1:0".parse().unwrap(), addr0).await.unwrap();
-        ep.add_path("127.0.0.1:0".parse().unwrap(), addr1).await.unwrap();
+        ep.add_path("127.0.0.1:0".parse().unwrap(), addr0)
+            .await
+            .unwrap();
+        ep.add_path("127.0.0.1:0".parse().unwrap(), addr1)
+            .await
+            .unwrap();
 
         // Mark path 0 as inactive.
         ep.paths[0].active = false;
@@ -672,14 +698,21 @@ mod tests {
         let mut count0 = 0u32;
         let mut count1 = 0u32;
         while let Ok((n, _)) = r0.recv_from(&mut buf) {
-            if n > 0 { count0 += 1; }
+            if n > 0 {
+                count0 += 1;
+            }
         }
         while let Ok((n, _)) = r1.recv_from(&mut buf) {
-            if n > 0 { count1 += 1; }
+            if n > 0 {
+                count1 += 1;
+            }
         }
 
         assert_eq!(count0, 0, "inactive path 0 must not receive any traffic");
-        assert!(count1 >= 4, "all 4 packets should go to active path 1, got {count1}");
+        assert!(
+            count1 >= 4,
+            "all 4 packets should go to active path 1, got {count1}"
+        );
     }
 
     /// test_path_recovery — path comes back after being inactive, verify traffic
@@ -689,8 +722,12 @@ mod tests {
         let (_, _, addr0, addr1) = make_receiver_pair().await;
 
         let mut ep = MultiPathEndpoint::new(PathScheduler::RoundRobin);
-        ep.add_path("127.0.0.1:0".parse().unwrap(), addr0).await.unwrap();
-        ep.add_path("127.0.0.1:0".parse().unwrap(), addr1).await.unwrap();
+        ep.add_path("127.0.0.1:0".parse().unwrap(), addr0)
+            .await
+            .unwrap();
+        ep.add_path("127.0.0.1:0".parse().unwrap(), addr1)
+            .await
+            .unwrap();
 
         // Mark path 0 as inactive.
         ep.paths[0].active = false;
@@ -706,10 +743,22 @@ mod tests {
     /// Verify PathScheduler parsing round-trips correctly.
     #[test]
     fn test_scheduler_parse() {
-        assert_eq!(PathScheduler::parse("round-robin"), Some(PathScheduler::RoundRobin));
-        assert_eq!(PathScheduler::parse("redundant"), Some(PathScheduler::Redundant));
-        assert_eq!(PathScheduler::parse("min-latency"), Some(PathScheduler::MinLatency));
-        assert_eq!(PathScheduler::parse("weighted"), Some(PathScheduler::Weighted));
+        assert_eq!(
+            PathScheduler::parse("round-robin"),
+            Some(PathScheduler::RoundRobin)
+        );
+        assert_eq!(
+            PathScheduler::parse("redundant"),
+            Some(PathScheduler::Redundant)
+        );
+        assert_eq!(
+            PathScheduler::parse("min-latency"),
+            Some(PathScheduler::MinLatency)
+        );
+        assert_eq!(
+            PathScheduler::parse("weighted"),
+            Some(PathScheduler::Weighted)
+        );
         assert_eq!(PathScheduler::parse("invalid"), None);
     }
 
@@ -730,7 +779,10 @@ mod tests {
         }
         assert_eq!(ep.global_dedup.len(), DEDUP_WINDOW);
         // The oldest entries should have been evicted.
-        assert!(!ep.global_dedup.contains(&0), "oldest seq should have been evicted");
+        assert!(
+            !ep.global_dedup.contains(&0),
+            "oldest seq should have been evicted"
+        );
         // The newest should still be present.
         assert!(ep.global_dedup.contains(&(DEDUP_WINDOW as u64 + 9)));
         let _ = (local, remote); // suppress unused warnings

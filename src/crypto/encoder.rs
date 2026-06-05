@@ -108,7 +108,8 @@ mod tests {
     #[test]
     fn nonce_uniqueness_over_1m_packets() {
         let secret = b"nonce-collision-test-32bytes-pad";
-        let keys = PacketKeys::derive_from_secret_with_cipher(secret, CipherSuite::ChaCha20Poly1305);
+        let keys =
+            PacketKeys::derive_from_secret_with_cipher(secret, CipherSuite::ChaCha20Poly1305);
         let nonce_base = keys.nonce_base;
 
         const N: u64 = 1 << 20; // 1,048,576 packets

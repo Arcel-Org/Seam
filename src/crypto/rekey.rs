@@ -33,8 +33,7 @@ impl KeySchedule {
     }
 
     pub fn new_with_cipher(initial_secret: [u8; 32], cipher_suite: CipherSuite) -> Self {
-        let keys =
-            PacketKeys::derive_from_secret_with_cipher(&initial_secret, cipher_suite);
+        let keys = PacketKeys::derive_from_secret_with_cipher(&initial_secret, cipher_suite);
         Self {
             current_secret: initial_secret,
             cipher_suite,
@@ -67,10 +66,7 @@ impl KeySchedule {
         self.current_secret.zeroize();
         self.current_secret = next_secret;
         self.current = self.next.take().unwrap_or_else(|| {
-            PacketKeys::derive_from_secret_with_cipher(
-                &self.current_secret,
-                self.cipher_suite,
-            )
+            PacketKeys::derive_from_secret_with_cipher(&self.current_secret, self.cipher_suite)
         });
         self.epoch = self.epoch.wrapping_add(1);
     }

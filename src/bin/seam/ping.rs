@@ -58,14 +58,18 @@ fn print_summary(remote: &str, stats: &PingStats) {
     eprintln!("--- {remote} ping statistics ---");
     eprintln!(
         "{sent} sent, {received} received, {lost} lost ({:.0}% loss)",
-        if sent > 0 { (lost as f64 / sent as f64) * 100.0 } else { 0.0 }
+        if sent > 0 {
+            (lost as f64 / sent as f64) * 100.0
+        } else {
+            0.0
+        }
     );
     if !stats.rtts.is_empty() {
         let min = stats.rtts.iter().cloned().fold(f64::INFINITY, f64::min);
         let max = stats.rtts.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
         let avg = stats.rtts.iter().sum::<f64>() / stats.rtts.len() as f64;
-        let variance = stats.rtts.iter().map(|r| (r - avg).powi(2)).sum::<f64>()
-            / stats.rtts.len() as f64;
+        let variance =
+            stats.rtts.iter().map(|r| (r - avg).powi(2)).sum::<f64>() / stats.rtts.len() as f64;
         let stddev = variance.sqrt();
         eprintln!("rtt min/avg/max/stddev = {min:.2}/{avg:.2}/{max:.2}/{stddev:.2} ms");
     }
@@ -76,8 +80,13 @@ pub async fn run(args: PingArgs) -> Result<()> {
     let cipher = seam_protocol::crypto::CipherSuite::parse(&cfg.cipher).unwrap_or_default();
 
     let (user, host) = ssh::parse_userhost(&args.remote);
-    let remote = ssh::RemoteInfo { host: host.clone(), user, ssh_port: args.port };
-    let (conn, _child) = connect::bootstrap_and_connect(&remote, &host, "_ping-recv --port 0", cipher).await?;
+    let remote = ssh::RemoteInfo {
+        host: host.clone(),
+        user,
+        ssh_port: args.port,
+    };
+    let (conn, _child) =
+        connect::bootstrap_and_connect(&remote, &host, "_ping-recv --port 0", cipher).await?;
     let mux = SeamMux::new(conn);
 
     let count = args.count;
@@ -98,8 +107,15 @@ pub async fn run(args: PingArgs) -> Result<()> {
         })?;
     }
 
-    eprintln!("PING {} over Seam (post-quantum UDP){}", args.remote,
-        if continuous { " — continuous, Ctrl-C for statistics" } else { "" });
+    eprintln!(
+        "PING {} over Seam (post-quantum UDP){}",
+        args.remote,
+        if continuous {
+            " — continuous, Ctrl-C for statistics"
+        } else {
+            ""
+        }
+    );
 
     let mut seq: u32 = 0;
     loop {
@@ -118,7 +134,8 @@ pub async fn run(args: PingArgs) -> Result<()> {
             let read_result = tokio::time::timeout(
                 std::time::Duration::from_secs(3),
                 stream.read_exact(&mut reply),
-            ).await;
+            )
+            .await;
             let rtt = t0.elapsed().as_secs_f64() * 1000.0;
             let mut s = stats.lock().unwrap();
             s.sent += 1;
@@ -140,7 +157,9 @@ pub async fn run(args: PingArgs) -> Result<()> {
         drop(stream);
 
         seq += 1;
-        if count > 0 && seq >= count { break; }
+        if count > 0 && seq >= count {
+            break;
+        }
         if interval_ms > 0 {
             tokio::time::sleep(std::time::Duration::from_millis(interval_ms)).await;
         }
@@ -160,17 +179,24 @@ pub async fn run_recv(args: PingRecvArgs) -> Result<()> {
     let cfg = super::config::Config::load().ok().unwrap_or_default();
     let cipher = seam_protocol::crypto::CipherSuite::parse(&cfg.cipher).unwrap_or_default();
     let addr: std::net::SocketAddr = format!("0.0.0.0:{}", args.port).parse()?;
-    let mut server = Server::bind_with_cipher(addr, id, cipher).await.map_err(|e| anyhow!("{e}"))?;
+    let mut server = Server::bind_with_cipher(addr, id, cipher)
+        .await
+        .map_err(|e| anyhow!("{e}"))?;
     let udp_port = server.local_addr()?.port();
 
     println!("SEAM PORT={udp_port} X25519={x25519_hex} KEM={kem_hex}");
 
-    let conn = server.accept().await.ok_or_else(|| anyhow!("no connection"))?;
+    let conn = server
+        .accept()
+        .await
+        .ok_or_else(|| anyhow!("no connection"))?;
     let mux = SeamMux::new(conn);
 
     // Accept ping streams and echo back
     loop {
-        let Some(mut stream) = mux.accept_stream().await else { break };
+        let Some(mut stream) = mux.accept_stream().await else {
+            break;
+        };
         tokio::spawn(async move {
             let mut buf = [0u8; 4];
             if stream.read_exact(&mut buf).await.is_ok() {

@@ -189,11 +189,7 @@ impl DoubleRatchet {
     /// intermediate packets in the skip window (up to `MAX_SKIP`).
     ///
     /// Returns `None` if the packet_index is too far ahead or the epoch is wrong.
-    pub fn next_recv_key(
-        &mut self,
-        epoch: u64,
-        packet_index: u64,
-    ) -> Option<Zeroizing<[u8; 32]>> {
+    pub fn next_recv_key(&mut self, epoch: u64, packet_index: u64) -> Option<Zeroizing<[u8; 32]>> {
         // Purge expired skip entries first
         self.purge_expired_skip_keys();
 
@@ -544,9 +540,7 @@ mod tests {
         );
 
         // Collect keys before epoch boundary
-        let mut pre_epoch_keys: Vec<[u8; 32]> = (0..5)
-            .map(|_| *ratchet.next_send_key())
-            .collect();
+        let mut pre_epoch_keys: Vec<[u8; 32]> = (0..5).map(|_| *ratchet.next_send_key()).collect();
 
         assert_eq!(ratchet.packets_in_epoch(), 5);
         assert!(ratchet.should_ratchet(), "should need ratchet after limit");
@@ -561,12 +555,13 @@ mod tests {
         assert_eq!(ratchet.packets_in_epoch(), 0);
 
         // Root key must have changed
-        assert_ne!(*ratchet.root_key, root_before, "root key must change after ratchet step");
+        assert_ne!(
+            *ratchet.root_key, root_before,
+            "root key must change after ratchet step"
+        );
 
         // Keys after rotation must differ from all pre-epoch keys
-        let post_epoch_keys: Vec<[u8; 32]> = (0..5)
-            .map(|_| *ratchet.next_send_key())
-            .collect();
+        let post_epoch_keys: Vec<[u8; 32]> = (0..5).map(|_| *ratchet.next_send_key()).collect();
 
         for pk in &pre_epoch_keys {
             for ak in &post_epoch_keys {
@@ -631,7 +626,10 @@ mod tests {
         let ck = [0xABu8; 32];
         let (new_ck1, mk1) = ratchet_step(&ck);
         let (new_ck2, mk2) = ratchet_step(&ck);
-        assert_eq!(new_ck1, new_ck2, "chain key derivation must be deterministic");
+        assert_eq!(
+            new_ck1, new_ck2,
+            "chain key derivation must be deterministic"
+        );
         assert_eq!(mk1, mk2, "message key derivation must be deterministic");
         assert_ne!(new_ck1, mk1, "chain key and message key must differ");
     }
@@ -670,6 +668,9 @@ mod tests {
                 );
             }
         }
-        assert!(r.skipped.len() <= MAX_SKIP, "skip window must not exceed MAX_SKIP");
+        assert!(
+            r.skipped.len() <= MAX_SKIP,
+            "skip window must not exceed MAX_SKIP"
+        );
     }
 }

@@ -34,7 +34,10 @@ use seam_protocol::{
     tunnel::SeamMux,
 };
 use std::collections::HashSet;
-use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::connect;
@@ -151,7 +154,9 @@ fn parse_auth_keys_content(content: &str, source: &str) -> Result<HashSet<[u8; 3
         if bytes.len() != 32 {
             return Err(anyhow!(
                 "{}:{}: X25519 key must be 32 bytes (64 hex chars), got {}",
-                source, lineno + 1, bytes.len()
+                source,
+                lineno + 1,
+                bytes.len()
             ));
         }
         let mut key = [0u8; 32];
@@ -179,7 +184,11 @@ pub fn load_auth_keys_dir(dir: &std::path::Path) -> Result<HashSet<[u8; 32]>> {
 
 pub async fn run(args: ServeArgs, fips_mode: bool) -> Result<()> {
     let cfg = super::config::Config::load().ok().unwrap_or_default();
-    let cipher_str = if fips_mode { "aes256gcm" } else { cfg.cipher.as_str() };
+    let cipher_str = if fips_mode {
+        "aes256gcm"
+    } else {
+        cfg.cipher.as_str()
+    };
     let cipher = seam_protocol::crypto::CipherSuite::parse(cipher_str).unwrap_or_default();
 
     // ── Load authorized keys (if any) ────────────────────────────────────────
@@ -188,19 +197,32 @@ pub async fn run(args: ServeArgs, fips_mode: bool) -> Result<()> {
 
     if let Some(ref path) = args.auth_keys {
         let file_keys = load_auth_keys_file(path)?;
-        eprintln!("serve: loaded {} authorized key(s) from {}", file_keys.len(), path.display());
+        eprintln!(
+            "serve: loaded {} authorized key(s) from {}",
+            file_keys.len(),
+            path.display()
+        );
         allowed_keys.extend(file_keys);
     }
     if let Some(ref dir) = args.auth_keys_dir {
         let dir_keys = load_auth_keys_dir(dir)?;
-        eprintln!("serve: loaded {} authorized key(s) from {}/", dir_keys.len(), dir.display());
+        eprintln!(
+            "serve: loaded {} authorized key(s) from {}/",
+            dir_keys.len(),
+            dir.display()
+        );
         allowed_keys.extend(dir_keys);
     }
 
     if auth_enabled {
-        eprintln!("serve: authentication ENABLED — {} authorized key(s) total", allowed_keys.len());
+        eprintln!(
+            "serve: authentication ENABLED — {} authorized key(s) total",
+            allowed_keys.len()
+        );
         if allowed_keys.is_empty() {
-            eprintln!("WARNING: auth enabled but no keys loaded — ALL connections will be rejected");
+            eprintln!(
+                "WARNING: auth enabled but no keys loaded — ALL connections will be rejected"
+            );
         }
     }
 
@@ -208,11 +230,10 @@ pub async fn run(args: ServeArgs, fips_mode: bool) -> Result<()> {
 
     // Load (or generate) a persistent server identity key so clients can pin it.
     let id_path = connect::identity_path();
-    let id = IdentityKeypair::load_or_generate(id_path)
-        .unwrap_or_else(|e| {
-            eprintln!("warning: could not load identity ({e}) — using ephemeral key");
-            IdentityKeypair::generate()
-        });
+    let id = IdentityKeypair::load_or_generate(id_path).unwrap_or_else(|e| {
+        eprintln!("warning: could not load identity ({e}) — using ephemeral key");
+        IdentityKeypair::generate()
+    });
 
     let x25519_hex = hex::encode(id.x25519_public.as_bytes());
     let kem_hex = hex::encode(pk_to_bytes(&id.kem_pk));
@@ -235,7 +256,10 @@ pub async fn run(args: ServeArgs, fips_mode: bool) -> Result<()> {
         println!("SEAM PORT={actual_port} X25519={x25519_hex} KEM={kem_hex}");
     } else {
         eprintln!();
-        eprintln!("  seam serve — post-quantum Seam daemon  v{}", env!("CARGO_PKG_VERSION"));
+        eprintln!(
+            "  seam serve — post-quantum Seam daemon  v{}",
+            env!("CARGO_PKG_VERSION")
+        );
         eprintln!("  Listening:   udp://{actual_addr}");
         eprintln!("  X25519 key:  {x25519_hex}");
         eprintln!("  KEM key:     {}…", &kem_hex[..32]);
@@ -252,7 +276,9 @@ pub async fn run(args: ServeArgs, fips_mode: bool) -> Result<()> {
         }
         eprintln!();
         eprintln!("  Connect (SSH bootstrap):  seam shell user@<host> -p {actual_port}");
-        eprintln!("  Port forward:             seam forward 8080:localhost:80 user@<host> -p {actual_port}");
+        eprintln!(
+            "  Port forward:             seam forward 8080:localhost:80 user@<host> -p {actual_port}"
+        );
         eprintln!();
         eprintln!("  Pin this server identity with --tofu on first connect.");
         eprintln!();
@@ -287,9 +313,7 @@ pub async fn run(args: ServeArgs, fips_mode: bool) -> Result<()> {
                 Some(pk) => {
                     if !allowed_keys.contains(&pk) {
                         let pk_hex = hex::encode(pk);
-                        eprintln!(
-                            "serve: REJECTED {peer} — unauthorized key {pk_hex}"
-                        );
+                        eprintln!("serve: REJECTED {peer} — unauthorized key {pk_hex}");
                         tracing::warn!(
                             peer = %peer,
                             key = %pk_hex,
@@ -330,11 +354,7 @@ pub async fn run(args: ServeArgs, fips_mode: bool) -> Result<()> {
 
 // ── Per-connection dispatch ────────────────────────────────────────────────────
 
-async fn serve_connection(
-    mux: Arc<SeamMux>,
-    peer: std::net::SocketAddr,
-    no_shell: bool,
-) {
+async fn serve_connection(mux: Arc<SeamMux>, peer: std::net::SocketAddr, no_shell: bool) {
     // Accept streams from this client indefinitely.
     loop {
         let stream = match mux.accept_stream().await {
@@ -357,7 +377,9 @@ async fn dispatch_stream(
     peer: std::net::SocketAddr,
     no_shell: bool,
 ) -> Result<()> {
-    let svc = stream.read_u8().await
+    let svc = stream
+        .read_u8()
+        .await
         .map_err(|e| anyhow!("reading service tag from {peer}: {e}"))?;
 
     match svc {
@@ -474,10 +496,19 @@ async fn serve_shell_pty(
         ws_ypixel: 0,
     };
     let ret = unsafe {
-        libc::openpty(&mut master, &mut slave, std::ptr::null_mut(), std::ptr::null(), &ws)
+        libc::openpty(
+            &mut master,
+            &mut slave,
+            std::ptr::null_mut(),
+            std::ptr::null(),
+            &ws,
+        )
     };
     if ret != 0 {
-        return Err(anyhow!("openpty failed: {}", std::io::Error::last_os_error()));
+        return Err(anyhow!(
+            "openpty failed: {}",
+            std::io::Error::last_os_error()
+        ));
     }
 
     // Resolve $SHELL.
@@ -504,11 +535,14 @@ async fn serve_shell_pty(
     tokio::task::spawn_blocking(move || {
         let mut buf = [0u8; 4096];
         loop {
-            let n = unsafe {
-                libc::read(master_rd, buf.as_mut_ptr() as *mut libc::c_void, buf.len())
-            };
-            if n <= 0 { break; }
-            if out_tx.blocking_send(buf[..n as usize].to_vec()).is_err() { break; }
+            let n =
+                unsafe { libc::read(master_rd, buf.as_mut_ptr() as *mut libc::c_void, buf.len()) };
+            if n <= 0 {
+                break;
+            }
+            if out_tx.blocking_send(buf[..n as usize].to_vec()).is_err() {
+                break;
+            }
         }
     });
 
@@ -518,9 +552,15 @@ async fn serve_shell_pty(
             let mut off = 0;
             while off < data.len() {
                 let n = unsafe {
-                    libc::write(master_wr, data[off..].as_ptr() as *const libc::c_void, data.len() - off)
+                    libc::write(
+                        master_wr,
+                        data[off..].as_ptr() as *const libc::c_void,
+                        data.len() - off,
+                    )
                 };
-                if n <= 0 { return; }
+                if n <= 0 {
+                    return;
+                }
                 off += n as usize;
             }
         }
@@ -617,20 +657,28 @@ fn fork_exec_pty(command: &[String], slave_fd: i32, term: &str) -> Result<libc::
             libc::dup2(slave_fd, 0);
             libc::dup2(slave_fd, 1);
             libc::dup2(slave_fd, 2);
-            for fd in 3..256i32 { libc::close(fd); }
+            for fd in 3..256i32 {
+                libc::close(fd);
+            }
         }
         let k = std::ffi::CString::new("TERM").unwrap();
         let v = CString::new(term).unwrap_or_else(|_| CString::new("xterm").unwrap());
         unsafe { libc::setenv(k.as_ptr(), v.as_ptr(), 1) };
 
         let prog = CString::new(command[0].as_str()).unwrap();
-        let args: Vec<CString> = command.iter()
+        let args: Vec<CString> = command
+            .iter()
             .map(|s| CString::new(s.as_str()).unwrap_or_else(|_| CString::new("").unwrap()))
             .collect();
-        let ptrs: Vec<*const libc::c_char> = args.iter().map(|s| s.as_ptr())
+        let ptrs: Vec<*const libc::c_char> = args
+            .iter()
+            .map(|s| s.as_ptr())
             .chain(std::iter::once(std::ptr::null()))
             .collect();
-        unsafe { libc::execvp(prog.as_ptr(), ptrs.as_ptr()); libc::_exit(127) };
+        unsafe {
+            libc::execvp(prog.as_ptr(), ptrs.as_ptr());
+            libc::_exit(127)
+        };
     }
     Ok(pid)
 }
@@ -678,7 +726,9 @@ async fn serve_shell_plain(
     let mut stderr_done = false;
 
     loop {
-        if stdout_done && stderr_done { break; }
+        if stdout_done && stderr_done {
+            break;
+        }
         tokio::select! {
             n = child_stdout.read(&mut out_buf), if !stdout_done => {
                 match n {
@@ -728,15 +778,21 @@ async fn serve_forward(
 ) -> Result<()> {
     // Same header format as _forward-recv: [u32 header_len][u16 host_len][host][u16 port]
     let mut len_buf = [0u8; 4];
-    stream.read_exact(&mut len_buf).await
+    stream
+        .read_exact(&mut len_buf)
+        .await
         .map_err(|e| anyhow!("forward header from {peer}: {e}"))?;
     let header_len = u32::from_be_bytes(len_buf) as usize;
     if header_len < 4 || header_len > 4096 {
-        return Err(anyhow!("invalid forward header length {header_len} from {peer}"));
+        return Err(anyhow!(
+            "invalid forward header length {header_len} from {peer}"
+        ));
     }
 
     let mut header = vec![0u8; header_len];
-    stream.read_exact(&mut header).await
+    stream
+        .read_exact(&mut header)
+        .await
         .map_err(|e| anyhow!("reading forward header from {peer}: {e}"))?;
 
     if header.len() < 4 {

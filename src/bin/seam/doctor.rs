@@ -1,5 +1,6 @@
 use anyhow::Result;
 use clap::Args;
+use seam_protocol::handshake::IdentityKeypair;
 
 #[derive(Args)]
 pub struct DoctorArgs {}
@@ -57,35 +58,49 @@ pub fn run(_args: DoctorArgs) -> Result<()> {
         .join("seam")
         .join("identity");
     if id_path.exists() {
-        match std::fs::metadata(&id_path) {
-            Ok(m) => {
-                let perms = m.permissions();
+        match std::fs::read(&id_path) {
+            Ok(bytes) => {
                 #[cfg(unix)]
                 {
                     use std::os::unix::fs::PermissionsExt;
-                    let mode = perms.mode() & 0o777;
-                    if mode == 0o600 {
-                        eprintln!("  ✓  identity key at {} (mode 0o600)", id_path.display());
-                    } else {
-                        eprintln!(
-                            "  !  identity key at {} (mode 0o{:o} — should be 0o600)",
-                            id_path.display(),
-                            mode
-                        );
+                    if let Ok(m) = std::fs::metadata(&id_path) {
+                        let mode = m.permissions().mode() & 0o777;
+                        if mode != 0o600 {
+                            eprintln!(
+                                "  !  identity key permissions 0o{:o} — should be 0o600",
+                                mode
+                            );
+                            eprintln!("     fix with: chmod 600 {}", id_path.display());
+                        }
                     }
                 }
-                #[cfg(not(unix))]
-                {
-                    let _ = perms;
-                    eprintln!("  ✓  identity key at {}", id_path.display());
+                match IdentityKeypair::from_bytes(&bytes) {
+                    Some(id) => {
+                        let x25519_hex =
+                            hex::encode(id.x25519_public.as_bytes());
+                        eprintln!(
+                            "  ✓  identity key at {} (X25519: {}…)",
+                            id_path.display(),
+                            &x25519_hex[..12]
+                        );
+                    }
+                    None => {
+                        eprintln!(
+                            "  ✗  identity key at {} is corrupt or wrong version",
+                            id_path.display()
+                        );
+                        eprintln!("     delete it to generate a fresh key on next use");
+                        ok = false;
+                    }
                 }
             }
             Err(e) => {
-                eprintln!("  !  cannot read identity key: {e}");
+                eprintln!("  ✗  cannot read identity key: {e}");
+                ok = false;
             }
         }
     } else {
-        eprintln!("  !  no persistent identity key — one will be generated on first use");
+        eprintln!("  ·  no persistent identity key — one will be generated on first use");
     }
 
     // ── 6. Config file ──────────────────────────────────────────────────
@@ -122,7 +137,7 @@ pub fn run(_args: DoctorArgs) -> Result<()> {
         }
     }
 
-    // ── 7. MTU / fragmentation ──────────────────────────────────────────
+    // ── 8. MTU / fragmentation ──────────────────────────────────────────
     eprintln!();
     eprintln!("  Tips");
     eprintln!("    • UDP fragmentation can hurt performance on WAN links.");

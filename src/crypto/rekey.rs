@@ -11,12 +11,14 @@
 ///
 /// This module exposes the KDF; integration into the packet encode/decode
 /// pipeline can flip between epochs via `KeySchedule::rotate()`.
-use crate::crypto::keys::PacketKeys;
+use crate::crypto::{CipherSuite, keys::PacketKeys};
 use zeroize::Zeroize;
 
 pub struct KeySchedule {
     /// Current traffic secret (one-way KDF chain). Zeroized when replaced.
     current_secret: [u8; 32],
+    /// Which AEAD cipher to use for all epochs in this session.
+    cipher_suite: CipherSuite,
     /// Current derived keys (what encoder/decoder use today).
     pub current: PacketKeys,
     /// Next epoch's derived keys, prepared lazily for fast switch.
@@ -27,9 +29,15 @@ pub struct KeySchedule {
 
 impl KeySchedule {
     pub fn new(initial_secret: [u8; 32]) -> Self {
-        let keys = PacketKeys::derive_from_secret(&initial_secret);
+        Self::new_with_cipher(initial_secret, CipherSuite::default())
+    }
+
+    pub fn new_with_cipher(initial_secret: [u8; 32], cipher_suite: CipherSuite) -> Self {
+        let keys =
+            PacketKeys::derive_from_secret_with_cipher(&initial_secret, cipher_suite);
         Self {
             current_secret: initial_secret,
+            cipher_suite,
             current: keys,
             next: None,
             epoch: 0,
@@ -46,7 +54,10 @@ impl KeySchedule {
             return;
         }
         let next_secret = blake3::derive_key("apex/key-update/v1", &self.current_secret);
-        self.next = Some(PacketKeys::derive_from_secret(&next_secret));
+        self.next = Some(PacketKeys::derive_from_secret_with_cipher(
+            &next_secret,
+            self.cipher_suite,
+        ));
     }
 
     /// Activate the next epoch. Zeroizes the old secret.
@@ -55,10 +66,12 @@ impl KeySchedule {
         let next_secret = blake3::derive_key("apex/key-update/v1", &self.current_secret);
         self.current_secret.zeroize();
         self.current_secret = next_secret;
-        self.current = self
-            .next
-            .take()
-            .unwrap_or_else(|| PacketKeys::derive_from_secret(&self.current_secret));
+        self.current = self.next.take().unwrap_or_else(|| {
+            PacketKeys::derive_from_secret_with_cipher(
+                &self.current_secret,
+                self.cipher_suite,
+            )
+        });
         self.epoch = self.epoch.wrapping_add(1);
     }
 }

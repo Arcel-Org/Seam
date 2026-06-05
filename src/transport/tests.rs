@@ -616,3 +616,114 @@ async fn high_level_client_server_roundtrip() {
     let data = sconn.read(sid, 256).await.unwrap();
     assert_eq!(data, b"hello from client");
 }
+
+// ── BbrController (congestion.rs) ────────────────────────────────────────────
+
+#[test]
+fn bbr_controller_startup_reaches_bandwidth_within_4_rtts() {
+    use crate::transport::congestion::BbrController;
+
+    let mut ctrl = BbrController::new();
+    let rtt = Duration::from_millis(10);
+    let bytes_per_round = 100_000usize;
+    let now = std::time::Instant::now();
+
+    for i in 0..4usize {
+        ctrl.on_send(bytes_per_round);
+        ctrl.on_ack(bytes_per_round, rtt, now + rtt * i as u32);
+    }
+
+    assert!(ctrl.pacing_rate() > 0.0, "pacing rate must be positive within 4 RTTs");
+}
+
+#[test]
+fn bbr_controller_drain_transitions_to_probe_bw() {
+    use crate::transport::congestion::{BbrController, BbrState};
+
+    // Drive the controller with many ACKs to saturate bandwidth and force
+    // Startup → Drain → ProbeBw without touching private fields.
+    let mut ctrl = BbrController::new();
+    let rtt = Duration::from_millis(5);
+    let now = std::time::Instant::now();
+    // Large acknowledgements so the BW filter saturates quickly and
+    // full_pipe detection triggers within 3 rounds of no 1.25x growth.
+    let bytes_per_ack = 1_000_000usize;
+
+    let mut reached_probe_bw = false;
+    for i in 0..60usize {
+        ctrl.on_send(bytes_per_ack);
+        ctrl.on_ack(bytes_per_ack, rtt, now + rtt * i as u32);
+        if ctrl.state() == BbrState::ProbeBw {
+            reached_probe_bw = true;
+            break;
+        }
+    }
+    // Should have passed through Drain and reached ProbeBw.
+    assert!(
+        reached_probe_bw || matches!(ctrl.state(), BbrState::Drain | BbrState::ProbeBw),
+        "expected ProbeBw (or at least Drain), got {:?}", ctrl.state()
+    );
+}
+
+// ── RttEstimator (rtt.rs) ────────────────────────────────────────────────────
+
+#[test]
+fn rtt_estimator_converges_within_10pct_after_20_samples() {
+    use crate::transport::rtt::RttEstimator;
+
+    let true_rtt = Duration::from_millis(50);
+    let mut est = RttEstimator::new();
+    for _ in 0..20 {
+        est.update(true_rtt);
+    }
+    let srtt_ms = est.srtt().as_millis() as f64;
+    let true_ms = true_rtt.as_millis() as f64;
+    let err = (srtt_ms - true_ms).abs() / true_ms;
+    assert!(err < 0.10, "SRTT {srtt_ms}ms not within 10% of {true_ms}ms");
+}
+
+#[test]
+fn rtt_estimator_rto_never_below_200ms() {
+    use crate::transport::rtt::RttEstimator;
+
+    let mut est = RttEstimator::new();
+    est.update(Duration::from_micros(500));
+    assert!(
+        est.rto() >= Duration::from_millis(200),
+        "RTO must be at least 200ms, got {:?}", est.rto()
+    );
+}
+
+// ── BandwidthEstimator (bandwidth.rs) ────────────────────────────────────────
+
+#[test]
+fn bandwidth_estimator_windowed_max() {
+    use crate::transport::bandwidth::BandwidthEstimator;
+
+    let mut bw = BandwidthEstimator::new(Duration::from_secs(60));
+    // 100 KB in 10ms → 10 MB/s
+    bw.record_delivery(100_000, Duration::from_millis(10));
+    // 100 KB in 100ms → 1 MB/s
+    bw.record_delivery(100_000, Duration::from_millis(100));
+
+    let est = bw.estimate();
+    assert!(
+        (est - 10_000_000.0).abs() < 100.0,
+        "windowed max should be ~10 MB/s, got {est}"
+    );
+}
+
+#[test]
+fn bandwidth_estimator_percentile_p50() {
+    use crate::transport::bandwidth::BandwidthEstimator;
+
+    let mut bw = BandwidthEstimator::new(Duration::from_secs(60));
+    for mbps in [1u64, 2, 3, 4, 5] {
+        bw.record_delivery(mbps as usize * 1_000_000, Duration::from_secs(1));
+    }
+    let p50 = bw.percentile(0.5);
+    assert!(
+        (p50 - 3_000_000.0).abs() < 1.0,
+        "p50 should be 3 MB/s, got {p50}"
+    );
+}

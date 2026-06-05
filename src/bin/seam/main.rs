@@ -27,6 +27,17 @@ pub struct Cli {
     #[arg(short, long, global = true, action = clap::ArgAction::Count)]
     verbose: u8,
 
+    /// AEAD cipher suite for packet encryption.
+    ///
+    /// "chacha20poly1305" (default) — excellent cross-platform performance.
+    /// "aes256gcm" — NSA CNSA 2.0 compliant, required for NSS/DoD deployments;
+    ///               hardware-accelerated on AES-NI CPUs.
+    ///
+    /// Overrides the "cipher" value in ~/.config/seam/config.toml.
+    #[arg(long, global = true, value_name = "SUITE",
+          value_parser = ["chacha20poly1305", "aes256gcm"])]
+    pub cipher: Option<String>,
+
     #[command(subcommand)]
     command: Option<Commands>,
 }

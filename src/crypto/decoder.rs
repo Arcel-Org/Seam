@@ -1,9 +1,8 @@
 use crate::{
-    crypto::{header::apply_header_protection, keys::PacketKeys, replay::ReplayWindow},
+    crypto::{header::apply_header_protection, keys::PacketKeys, make_cipher, replay::ReplayWindow},
     error::SeamError,
     packet::{HEADER_LEN, MIN_PACKET_LEN, PktType, TAG_LEN},
 };
-use chacha20poly1305::{AeadInPlace, ChaCha20Poly1305, KeyInit, Tag};
 
 pub struct PacketDecoder {
     keys: PacketKeys,
@@ -33,7 +32,6 @@ impl PacketDecoder {
         let sample: &[u8] = &buf[ciphertext_start..ciphertext_start + 16];
         let sample_arr: [u8; 16] = sample.try_into().unwrap();
         let mut header_arr: [u8; HEADER_LEN] = buf[..HEADER_LEN].try_into().unwrap();
-        // Pass a slice reference for the header protection function
         apply_header_protection(&self.keys.hp_key, &mut header_arr, &sample_arr);
         buf[..HEADER_LEN].copy_from_slice(&header_arr);
 
@@ -52,30 +50,35 @@ impl PacketDecoder {
 
         // Split buffer: header (AAD) | payload | tag
         let payload_end = buf.len() - TAG_LEN;
-        let tag_bytes: [u8; TAG_LEN] = buf[payload_end..].try_into().unwrap();
-        let tag = Tag::from(tag_bytes);
+        let header_bytes = buf[..HEADER_LEN].to_vec(); // AAD
 
-        let (header_region, rest) = buf.split_at_mut(HEADER_LEN);
-        let payload_region = &mut rest[..payload_end - HEADER_LEN];
+        // Build ciphertext+tag buffer for in-place decryption
+        let mut ct_buf = buf[HEADER_LEN..].to_vec(); // ciphertext || tag
 
-        let cipher = ChaCha20Poly1305::new((&self.keys.enc_key).into());
-        cipher
-            .decrypt_in_place_detached(&nonce.into(), header_region, payload_region, &tag)
-            .map_err(|_| SeamError::AuthFailed)?;
+        let cipher = make_cipher(self.keys.cipher_suite, self.keys.enc_key);
+        cipher.decrypt_in_place(&nonce, &header_bytes, &mut ct_buf)?;
 
-        Ok((pkt_type, pkt_num, payload_region))
+        // ct_buf now contains plaintext (tag has been stripped)
+        let plaintext_len = payload_end - HEADER_LEN;
+        buf[HEADER_LEN..payload_end].copy_from_slice(&ct_buf[..plaintext_len]);
+
+        Ok((pkt_type, pkt_num, &buf[HEADER_LEN..payload_end]))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::crypto::{encoder::PacketEncoder, keys::PacketKeys};
+    use crate::crypto::{CipherSuite, encoder::PacketEncoder, keys::PacketKeys};
 
     fn make_pair() -> (PacketEncoder, PacketDecoder) {
+        make_pair_with_suite(CipherSuite::ChaCha20Poly1305)
+    }
+
+    fn make_pair_with_suite(suite: CipherSuite) -> (PacketEncoder, PacketDecoder) {
         let secret = b"test-secret-32-bytes-padding-xyz";
-        let enc_keys = PacketKeys::derive_from_secret(secret);
-        let dec_keys = PacketKeys::derive_from_secret(secret);
+        let enc_keys = PacketKeys::derive_from_secret_with_cipher(secret, suite);
+        let dec_keys = PacketKeys::derive_from_secret_with_cipher(secret, suite);
         let encoder = PacketEncoder::new(enc_keys, 0xdeadbeef);
         let decoder = PacketDecoder::new(dec_keys);
         (encoder, decoder)
@@ -85,6 +88,18 @@ mod tests {
     fn test_roundtrip() {
         let (enc, mut dec) = make_pair();
         let plaintext = b"hello apex protocol";
+        let mut buf = vec![0u8; HEADER_LEN + plaintext.len() + TAG_LEN];
+        let written = enc.encode(PktType::Data, plaintext, &mut buf).unwrap();
+        assert_eq!(written, buf.len());
+        let (pkt_type, _pkt_num, decoded) = dec.decode(&mut buf).unwrap();
+        assert_eq!(pkt_type, PktType::Data);
+        assert_eq!(decoded, plaintext);
+    }
+
+    #[test]
+    fn test_roundtrip_aes256gcm() {
+        let (enc, mut dec) = make_pair_with_suite(CipherSuite::Aes256Gcm);
+        let plaintext = b"hello cnsa 2.0 compliant packet";
         let mut buf = vec![0u8; HEADER_LEN + plaintext.len() + TAG_LEN];
         let written = enc.encode(PktType::Data, plaintext, &mut buf).unwrap();
         assert_eq!(written, buf.len());

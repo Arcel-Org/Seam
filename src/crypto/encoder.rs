@@ -1,9 +1,8 @@
 use crate::{
-    crypto::{header::apply_header_protection, keys::PacketKeys},
+    crypto::{header::apply_header_protection, keys::PacketKeys, make_cipher},
     error::SeamError,
     packet::{HEADER_LEN, PktType, encode_buf_len},
 };
-use chacha20poly1305::{AeadInPlace, ChaCha20Poly1305, KeyInit};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 pub struct PacketEncoder {
@@ -65,20 +64,20 @@ impl PacketEncoder {
             *n ^= b;
         }
 
-        // AEAD encrypt in-place (payload region); AAD = plaintext header
-        let cipher = ChaCha20Poly1305::new((&self.keys.enc_key).into());
-        let (header_region, rest) = out.split_at_mut(HEADER_LEN);
-        let (payload_region, tag_region) = rest.split_at_mut(plaintext.len());
+        // AEAD encrypt in-place (payload region); AAD = plaintext header.
+        // We use a Vec for the in-place API, then copy the tag back.
+        let cipher = make_cipher(self.keys.cipher_suite, self.keys.enc_key);
 
-        let tag = cipher
-            .encrypt_in_place_detached(
-                &nonce.into(),
-                header_region, // AAD
-                payload_region,
-            )
-            .map_err(|_| SeamError::AuthFailed)?;
+        let header_bytes = out[..HEADER_LEN].to_vec(); // AAD
+        let mut payload_buf = out[HEADER_LEN..HEADER_LEN + plaintext.len()].to_vec();
 
-        tag_region[..16].copy_from_slice(&tag);
+        cipher.encrypt_in_place(&nonce, &header_bytes, &mut payload_buf)?;
+
+        // payload_buf now contains ciphertext || tag (16 bytes appended)
+        let cipher_len = plaintext.len();
+        out[HEADER_LEN..HEADER_LEN + cipher_len].copy_from_slice(&payload_buf[..cipher_len]);
+        out[HEADER_LEN + cipher_len..HEADER_LEN + cipher_len + 16]
+            .copy_from_slice(&payload_buf[cipher_len..]);
 
         // Apply header protection using first 16 bytes of ciphertext as sample
         let sample: [u8; 16] = out[HEADER_LEN..HEADER_LEN + 16].try_into().unwrap();

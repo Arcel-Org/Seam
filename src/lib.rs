@@ -17,5 +17,6 @@ pub use session::stream::{PRIORITY_DEFAULT, PRIORITY_HIGH, PRIORITY_LOW, Priorit
 pub use crypto::decoder::PacketDecoder;
 pub use crypto::encoder::PacketEncoder;
 pub use crypto::keys::PacketKeys;
+pub use crypto::CipherSuite;
 pub use error::SeamError;
 pub use packet::PktType;

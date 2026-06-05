@@ -1,4 +1,4 @@
-use crate::crypto::keys::PacketKeys;
+use crate::crypto::{CipherSuite, keys::PacketKeys};
 use ml_kem::{
     Ciphertext, Decapsulate, DecapsulationKey768, Encapsulate, EncapsulationKey768, Kem, KeyExport,
     MlKem768, Seed, array::Array,
@@ -135,10 +135,18 @@ impl HybridSharedSecret {
     }
 
     pub fn derive_packet_keys(&self, noise_hash: &[u8]) -> PacketKeys {
+        self.derive_packet_keys_with_cipher(noise_hash, CipherSuite::default())
+    }
+
+    pub fn derive_packet_keys_with_cipher(
+        &self,
+        noise_hash: &[u8],
+        cipher_suite: CipherSuite,
+    ) -> PacketKeys {
         let mut ikm = Vec::with_capacity(64 + noise_hash.len());
         ikm.extend_from_slice(&self.data);
         ikm.extend_from_slice(noise_hash);
-        PacketKeys::derive_from_secret(&ikm)
+        PacketKeys::derive_from_secret_with_cipher(&ikm, cipher_suite)
     }
 }
 

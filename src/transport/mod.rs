@@ -1,3 +1,4 @@
+pub mod bandwidth;
 pub mod bbr;
 pub mod cc;
 pub mod chaff;
@@ -8,11 +9,15 @@ pub mod pacer;
 pub mod pool;
 pub mod probe;
 pub mod resumption;
+pub mod rtt;
 pub mod stats;
 mod tests;
 
+pub use bandwidth::BandwidthEstimator;
 pub use bbr::Bbr;
 pub use cc::{Aimd, CongestionControl, Cubic};
+pub use congestion::{BbrController, BbrState, WindowedMaxFilter};
+pub use rtt::RttEstimator;
 
 /// Create the default congestion controller, respecting the `SEAM_CC`
 /// environment variable (`bbr` or `cubic`).

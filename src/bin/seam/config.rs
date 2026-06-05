@@ -50,6 +50,10 @@ pub struct Config {
     /// Path to persistent identity key (relative to home or absolute).
     #[serde(default)]
     pub identity: Option<String>,
+    /// AEAD cipher suite: "chacha20poly1305" (default) or "aes256gcm" (CNSA 2.0).
+    /// Set to "aes256gcm" for NSS/DoD deployments that require CNSA 2.0 compliance.
+    #[serde(default = "default_cipher")]
+    pub cipher: String,
 }
 
 fn default_cc() -> String {
@@ -58,6 +62,9 @@ fn default_cc() -> String {
 fn default_true() -> bool {
     true
 }
+fn default_cipher() -> String {
+    "chacha20poly1305".into()
+}
 
 impl Default for Config {
     fn default() -> Self {
@@ -65,6 +72,7 @@ impl Default for Config {
             cc: default_cc(),
             compress: default_true(),
             identity: None,
+            cipher: default_cipher(),
         }
     }
 }
@@ -129,6 +137,7 @@ pub fn print() -> Result<()> {
             .as_ref()
             .unwrap_or(&cfg.identity_path().display().to_string())
     );
+    println!("cipher    = {}", cfg.cipher);
     Ok(())
 }
 
@@ -139,7 +148,8 @@ pub fn get(key: &str) -> Result<()> {
         "cc" => println!("{}", cfg.cc),
         "compress" => println!("{}", cfg.compress),
         "identity" => println!("{}", cfg.identity_path().display()),
-        _ => bail!("unknown config key: {key}\n  valid keys: cc, compress, identity"),
+        "cipher" => println!("{}", cfg.cipher),
+        _ => bail!("unknown config key: {key}\n  valid keys: cc, compress, identity, cipher"),
     }
     Ok(())
 }
@@ -160,7 +170,13 @@ pub fn set(key: &str, value: &str) -> Result<()> {
         "identity" => {
             cfg.identity = Some(value.into());
         }
-        _ => bail!("unknown config key: {key}\n  valid keys: cc, compress, identity"),
+        "cipher" => {
+            if value != "chacha20poly1305" && value != "aes256gcm" {
+                bail!("cipher must be 'chacha20poly1305' or 'aes256gcm'");
+            }
+            cfg.cipher = value.into();
+        }
+        _ => bail!("unknown config key: {key}\n  valid keys: cc, compress, identity, cipher"),
     }
     cfg.save()?;
     println!("{key} = {value}");

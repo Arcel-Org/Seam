@@ -14,7 +14,7 @@ use tokio::sync::mpsc;
 use crate::handshake::hybrid_keys::KemPublicKey;
 
 use crate::{
-    crypto::{decoder::PacketDecoder, encoder::PacketEncoder},
+    crypto::{CipherSuite, decoder::PacketDecoder, encoder::PacketEncoder},
     error::SeamError,
     fec::{ArbiterMode, FecArbiter, FecDecoder, FecEncoder},
     handshake::{
@@ -23,7 +23,13 @@ use crate::{
     },
     packet::PktType,
     session::{Session, SessionEvent},
-    transport::{cc::CongestionControl, chaff::ChaffScheduler, default_cc, probe::PathProber},
+    transport::{
+        BbrController, RttEstimator,
+        cc::CongestionControl,
+        chaff::ChaffScheduler,
+        default_cc,
+        probe::PathProber,
+    },
 };
 
 // ── Wire framing for pre-session packets ─────────────────────────────────────
@@ -62,6 +68,8 @@ pub struct Connection {
     server_hs: Option<ServerHandshake>,
     server_identity: Option<Arc<IdentityKeypair>>,
     cookie_factory: Option<Arc<CookieFactory>>,
+    /// Cipher suite agreed during the handshake; valid from ServerWaitMsg3 onward.
+    agreed_cipher: CipherSuite,
 
     // Post-established
     pub session: Option<Session>,
@@ -71,6 +79,11 @@ pub struct Connection {
     fec_dec: FecDecoder,
     fec_group_id: u32,
     pub cc: Box<dyn CongestionControl>,
+    /// Advisory BBR controller — provides pacing guidance and richer introspection
+    /// alongside the primary `cc` (trait-based) controller.
+    pub bbr: BbrController,
+    /// RFC 6298 RTT estimator used by the BBR advisory layer.
+    pub rtt_est: RttEstimator,
     pub chaff: ChaffScheduler,
     pub prober: PathProber,
 
@@ -157,6 +170,7 @@ impl Connection {
             server_hs: None,
             server_identity: None,
             cookie_factory: None,
+            agreed_cipher: CipherSuite::default(),
             _server_kem_pk: None,
             session: None,
             fec_arbiter: FecArbiter::new(),
@@ -164,6 +178,8 @@ impl Connection {
             fec_dec: FecDecoder::new(),
             fec_group_id: 0,
             cc: default_cc(),
+            bbr: BbrController::new(),
+            rtt_est: RttEstimator::new(),
             chaff: ChaffScheduler::new(),
             prober: PathProber::new(),
             event_tx,
@@ -261,11 +277,11 @@ impl Connection {
             .client_hs
             .as_mut()
             .ok_or_else(|| SeamError::HandshakeFailed("no client hs".into()))?;
-        let server_kem_pk = hs.read_msg2(payload)?;
+        let (server_kem_pk, agreed_cipher) = hs.read_msg2(payload)?;
 
         let hs = self.client_hs.take().unwrap();
         let mut msg3 = Vec::new();
-        let result = hs.write_msg3_and_finish(&server_kem_pk, &mut msg3)?;
+        let result = hs.write_msg3_and_finish(&server_kem_pk, agreed_cipher, &mut msg3)?;
 
         let mut pkt = vec![PKT_HANDSHAKE_MSG];
         pkt.extend_from_slice(&msg3);
@@ -305,10 +321,11 @@ impl Connection {
             .as_ref()
             .ok_or_else(|| SeamError::HandshakeFailed("no server identity".into()))?;
         let mut server_hs = ServerHandshake::new(identity)?;
-        server_hs.read_msg1(msg1)?;
+        let agreed_cipher = server_hs.read_msg1(msg1)?;
+        self.agreed_cipher = agreed_cipher;
 
         let mut msg2 = Vec::new();
-        server_hs.write_msg2(&identity.kem_pk, &mut msg2)?;
+        server_hs.write_msg2(&identity.kem_pk, agreed_cipher, &mut msg2)?;
 
         let mut pkt = vec![PKT_HANDSHAKE_MSG];
         pkt.extend_from_slice(&msg2);
@@ -333,7 +350,7 @@ impl Connection {
             .server_identity
             .as_ref()
             .ok_or_else(|| SeamError::HandshakeFailed("no server identity".into()))?;
-        let result = hs.read_msg3_and_finish(&identity.kem_sk, payload)?;
+        let result = hs.read_msg3_and_finish(&identity.kem_sk, self.agreed_cipher, payload)?;
         self.finish_handshake(result).await;
         Ok(())
     }
@@ -348,9 +365,30 @@ impl Connection {
         for ev in events {
             let _ = self.event_tx.send(ev);
         }
-        // Feed ACK feedback into the congestion controller.
+        // Feed ACK feedback into both controllers.
         if let Some((bytes, rtt)) = self.session.as_mut().and_then(|s| s.drain_cc_ack()) {
+            // Trait-based primary controller (CUBIC / AIMD / Bbr via trait).
             self.cc.on_ack(bytes, rtt);
+            // Advisory BBR controller with RFC 6298 RTT tracking.
+            if rtt > Duration::ZERO {
+                self.rtt_est.update(rtt);
+            }
+            let effective_rtt = if rtt > Duration::ZERO {
+                rtt
+            } else {
+                self.rtt_est.srtt()
+            };
+            let prev_state = self.bbr.state();
+            self.bbr.on_ack(bytes as usize, effective_rtt, Instant::now());
+            if self.bbr.state() != prev_state {
+                tracing::debug!(
+                    "BBR advisory: {:?} → {:?} (pacing={:.0} B/s, cwnd={})",
+                    prev_state,
+                    self.bbr.state(),
+                    self.bbr.pacing_rate(),
+                    self.bbr.cwnd(),
+                );
+            }
         }
         // Immediately flush a MaxData window-update if one was queued during
         // packet processing, so the sender's flow-control window is replenished
@@ -400,7 +438,10 @@ impl Connection {
             }
 
             // Honour the congestion window: if there is no room, stop sending data.
-            if self.cc.available() < size {
+            // Both the primary trait-based controller and the advisory BBR must permit.
+            if self.cc.available() < size
+                || !self.bbr.should_send(self.bbr.inflight())
+            {
                 break;
             }
             self.socket
@@ -408,6 +449,7 @@ impl Connection {
                 .await
                 .map_err(|e| SeamError::HandshakeFailed(e.to_string()))?;
             self.cc.on_send(size);
+            self.bbr.on_send(size as usize);
             self.send_counter += 1;
 
             if let (Some(k), Some(r)) = (fec_k, fec_r) {

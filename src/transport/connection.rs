@@ -70,6 +70,8 @@ pub struct Connection {
     cookie_factory: Option<Arc<CookieFactory>>,
     /// Cipher suite agreed during the handshake; valid from ServerWaitMsg3 onward.
     agreed_cipher: CipherSuite,
+    /// Server's preferred cipher suite — used when creating ServerHandshake during msg1 processing.
+    server_preferred_cipher: CipherSuite,
 
     // Post-established
     pub session: Option<Session>,
@@ -138,6 +140,7 @@ impl Connection {
         server_identity: Arc<IdentityKeypair>,
         cookie_factory: Arc<CookieFactory>,
         ticket_key: Option<crate::transport::resumption::TicketKey>,
+        preferred_cipher: CipherSuite,
     ) -> Result<(Self, mpsc::UnboundedReceiver<SessionEvent>), SeamError> {
         // Send stateless cookie challenge
         let addr_bytes = remote.to_string();
@@ -154,6 +157,7 @@ impl Connection {
         conn.server_identity = Some(server_identity);
         conn.cookie_factory = Some(cookie_factory);
         conn.ticket_key = ticket_key;
+        conn.server_preferred_cipher = preferred_cipher;
         Ok((conn, rx))
     }
 
@@ -172,6 +176,7 @@ impl Connection {
             server_identity: None,
             cookie_factory: None,
             agreed_cipher: CipherSuite::default(),
+            server_preferred_cipher: CipherSuite::default(),
             _server_kem_pk: None,
             session: None,
             fec_arbiter: FecArbiter::new(),
@@ -321,7 +326,7 @@ impl Connection {
             .server_identity
             .as_ref()
             .ok_or_else(|| SeamError::HandshakeFailed("no server identity".into()))?;
-        let mut server_hs = ServerHandshake::new(identity)?;
+        let mut server_hs = ServerHandshake::new_with_cipher(identity, self.server_preferred_cipher)?;
         let agreed_cipher = server_hs.read_msg1(msg1)?;
         self.agreed_cipher = agreed_cipher;
 

@@ -95,8 +95,10 @@ pub async fn run_recv(args: LsRecvArgs) -> Result<()> {
     let x25519_hex = hex::encode(id.x25519_public.as_bytes());
     let kem_hex = hex::encode(pk_to_bytes(&id.kem_pk));
 
+    let cfg = super::config::Config::load().ok().unwrap_or_default();
+    let cipher = seam_protocol::crypto::CipherSuite::parse(&cfg.cipher).unwrap_or_default();
     let addr: std::net::SocketAddr = format!("0.0.0.0:{}", args.port).parse()?;
-    let mut server = Server::bind(addr, id)
+    let mut server = Server::bind_with_cipher(addr, id, cipher)
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     let port = server.local_addr()?.port();

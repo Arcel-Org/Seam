@@ -78,6 +78,7 @@ async fn do_handshake() -> (Connection, Connection) {
         server_id.clone(),
         cookie_factory,
         None,
+        Default::default(),
     )
     .await
     .unwrap();
@@ -310,6 +311,7 @@ async fn test_stream_data_transfer() {
         server_id.clone(),
         cookie_factory,
         None,
+        Default::default(),
     )
     .await
     .unwrap();
@@ -407,6 +409,7 @@ async fn test_datagram_roundtrip() {
         server_id.clone(),
         cookie_factory,
         None,
+        Default::default(),
     )
     .await
     .unwrap();

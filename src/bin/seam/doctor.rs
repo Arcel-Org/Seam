@@ -104,20 +104,116 @@ pub fn run(_args: DoctorArgs) -> Result<()> {
     }
 
     // ── 6. Config file ──────────────────────────────────────────────────
-    let cfg = super::config::Config::load().ok().unwrap_or_default();
     let cfg_path = super::config::Config::config_path();
     if cfg_path.exists() {
-        eprintln!("  ✓  config at {}", cfg_path.display());
-        let cipher = &cfg.cipher;
-        if cipher == "aes256gcm" {
-            if is_aes_ni_available() {
-                eprintln!("  ✓  cipher: aes256gcm (AES-NI detected — hardware accelerated)");
-            } else {
-                eprintln!("  !  cipher: aes256gcm but no AES-NI detected — software fallback may be slow");
-                eprintln!("     consider: seam config set cipher chacha20poly1305");
+        // First pass: raw TOML parse to detect unknown keys.
+        match std::fs::read_to_string(&cfg_path) {
+            Err(e) => {
+                eprintln!("  ✗  cannot read config {}: {e}", cfg_path.display());
+                ok = false;
             }
-        } else {
-            eprintln!("  ✓  cipher: {} (default)", cipher);
+            Ok(text) => {
+                // Check for unknown keys by comparing raw TOML table keys against the known set.
+                let known_keys = [
+                    "cc", "compress", "identity", "cipher",
+                    "max_connections", "listen_port",
+                ];
+                match text.parse::<toml::Value>() {
+                    Err(e) => {
+                        eprintln!("  ✗  config parse error: {e}");
+                        eprintln!("     fix: seam config init  (or edit {})", cfg_path.display());
+                        ok = false;
+                    }
+                    Ok(toml::Value::Table(table)) => {
+                        let mut unknown_keys: Vec<String> = table
+                            .keys()
+                            .filter(|k| !known_keys.contains(&k.as_str()))
+                            .cloned()
+                            .collect();
+                        unknown_keys.sort();
+                        if !unknown_keys.is_empty() {
+                            eprintln!("  !  config at {} has unknown key(s): {}",
+                                cfg_path.display(), unknown_keys.join(", "));
+                            eprintln!("     valid keys: {}", known_keys.join(", "));
+                            // Not fatal — forward-compat; but warn loudly.
+                        }
+                    }
+                    Ok(_) => {
+                        eprintln!("  ✗  config is not a TOML table: {}", cfg_path.display());
+                        ok = false;
+                    }
+                }
+            }
+        }
+
+        // Second pass: structured validation.
+        match super::config::Config::load() {
+            Err(e) => {
+                eprintln!("  ✗  config load failed: {e}");
+                ok = false;
+            }
+            Ok(cfg) => {
+                eprintln!("  ✓  config at {}", cfg_path.display());
+
+                // Validate cc
+                if cfg.cc != "cubic" && cfg.cc != "bbr" {
+                    eprintln!("  ✗  config.cc = {:?} — must be 'cubic' or 'bbr'", cfg.cc);
+                    eprintln!("     fix: seam config set cc cubic");
+                    ok = false;
+                }
+
+                // Validate cipher + AES-NI
+                if cfg.cipher == "aes256gcm" {
+                    if is_aes_ni_available() {
+                        eprintln!("  ✓  cipher: aes256gcm (AES-NI detected — hardware accelerated)");
+                    } else {
+                        eprintln!("  !  cipher: aes256gcm but no AES-NI detected — software fallback may be slow");
+                        eprintln!("     consider: seam config set cipher chacha20poly1305");
+                    }
+                } else if cfg.cipher == "chacha20poly1305" {
+                    eprintln!("  ✓  cipher: chacha20poly1305 (default)");
+                } else {
+                    eprintln!("  ✗  config.cipher = {:?} — must be 'chacha20poly1305' or 'aes256gcm'", cfg.cipher);
+                    ok = false;
+                }
+
+                // Validate max_connections
+                if cfg.max_connections == 0 {
+                    eprintln!("  ✗  config.max_connections = 0 — must be at least 1");
+                    eprintln!("     fix: seam config set max_connections 1024");
+                    ok = false;
+                } else if cfg.max_connections >= 65536 {
+                    eprintln!("  !  config.max_connections = {} — unusually large (>= 65536); check intent",
+                        cfg.max_connections);
+                } else {
+                    eprintln!("  ✓  max_connections: {}", cfg.max_connections);
+                }
+
+                // Validate listen_port
+                if cfg.listen_port == 0 {
+                    eprintln!("  ✓  listen_port: 0 (OS-assigned, ephemeral)");
+                } else if cfg.listen_port < 1024 {
+                    // Determine if we have privilege to bind low ports.
+                    let is_privileged = is_privileged_user();
+                    if is_privileged {
+                        eprintln!("  ✓  listen_port: {} (privileged port, running as root)", cfg.listen_port);
+                    } else {
+                        eprintln!("  !  listen_port: {} — port < 1024 requires root/CAP_NET_BIND_SERVICE",
+                            cfg.listen_port);
+                        eprintln!("     fix: seam config set listen_port 7474  (or run as root)");
+                    }
+                } else {
+                    eprintln!("  ✓  listen_port: {}", cfg.listen_port);
+                }
+
+                // Validate identity path if explicitly set
+                if let Some(ref id) = cfg.identity {
+                    let id_path = std::path::Path::new(id);
+                    if !id_path.exists() {
+                        eprintln!("  !  config.identity = {:?} — file not found (will be generated on first use)", id);
+                    }
+                }
+            }
         }
     } else {
         eprintln!("  ·  no config file — using defaults ({})", cfg_path.display());
@@ -161,6 +257,26 @@ pub fn run(_args: DoctorArgs) -> Result<()> {
         std::process::exit(1);
     }
     Ok(())
+}
+
+/// Returns true if the current process appears to run with root/admin privileges.
+/// On Unix this checks whether effective UID is 0 via `id -u`.
+/// On non-Unix platforms, always returns false (conservative).
+fn is_privileged_user() -> bool {
+    #[cfg(unix)]
+    {
+        std::process::Command::new("id")
+            .arg("-u")
+            .output()
+            .ok()
+            .and_then(|o| String::from_utf8(o.stdout).ok())
+            .map(|s| s.trim() == "0")
+            .unwrap_or(false)
+    }
+    #[cfg(not(unix))]
+    {
+        false
+    }
 }
 
 /// Returns true if AES-NI hardware acceleration is available on this CPU.

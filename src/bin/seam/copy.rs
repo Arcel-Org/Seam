@@ -136,6 +136,9 @@ pub async fn run(args: CopyArgs) -> Result<()> {
         std::fs::create_dir_all(&dest_path)?;
         let pb = ProgressBar::new_spinner();
         pb.set_style(ProgressStyle::with_template("{spinner:.cyan} {msg}  {bytes}").unwrap());
+        let pull_start = std::time::Instant::now();
+        let mut files_received: u64 = 0;
+        let mut bytes_received: u64 = 0;
 
         loop {
             let frame = read_frame(&mut conn, ctrl_sid, &mut buf).await?;
@@ -144,6 +147,7 @@ pub async fn run(args: CopyArgs) -> Result<()> {
             }
             match frame[0] {
                 proto::FILE_INFO => {
+                    let before = pb.position();
                     receive_file(
                         &mut conn,
                         ctrl_sid,
@@ -155,12 +159,23 @@ pub async fn run(args: CopyArgs) -> Result<()> {
                         args.resume,
                     )
                     .await?;
+                    bytes_received += pb.position() - before;
+                    files_received += 1;
                 }
                 proto::DONE => break,
                 t => bail!("unexpected frame type 0x{:02x}", t),
             }
         }
-        pb.finish_with_message(format!("done — received to {}", dest_path.display()));
+        let pull_secs = pull_start.elapsed().as_secs_f64().max(0.001);
+        let pull_mib_s = (bytes_received as f64) / (1024.0 * 1024.0) / pull_secs;
+        pb.finish_with_message(format!(
+            "done — {} file(s), {} MiB in {:.1}s ({:.1} MiB/s) → {}",
+            files_received,
+            bytes_received / (1024 * 1024),
+            pull_secs,
+            pull_mib_s,
+            dest_path.display(),
+        ));
     } else {
         // ── Push protocol: we send HELLO, wait for ACK, then send files ────────
         let src_path = PathBuf::from(&args.src);
@@ -191,6 +206,7 @@ pub async fn run(args: CopyArgs) -> Result<()> {
             .progress_chars("█▉▊▋▌▍▎▏ "),
         );
 
+        let push_start = std::time::Instant::now();
         for (rel_name, _meta) in &files {
             pb.set_message(format!("sending {rel_name}"));
             send_file(
@@ -207,10 +223,14 @@ pub async fn run(args: CopyArgs) -> Result<()> {
         }
 
         send_frame(&conn, ctrl_sid, &[proto::DONE]).await?;
+        let push_secs = push_start.elapsed().as_secs_f64().max(0.001);
+        let push_mib_s = (total_bytes as f64) / (1024.0 * 1024.0) / push_secs;
         pb.finish_with_message(format!(
-            "done — {} file(s), {} bytes",
+            "done — {} file(s), {} MiB in {:.1}s ({:.1} MiB/s)",
             files.len(),
-            total_bytes
+            total_bytes / (1024 * 1024),
+            push_secs,
+            push_mib_s,
         ));
     }
 

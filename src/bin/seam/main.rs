@@ -12,6 +12,7 @@ mod pipe;
 mod proto;
 mod recv;
 mod send;
+mod shell;
 mod ssh;
 mod stats;
 mod tunnel;
@@ -87,6 +88,10 @@ enum Commands {
     #[command(name = "config")]
     Config(config::ConfigArgs),
 
+    /// Execute a single command on a remote host over a post-quantum Seam channel
+    #[command(name = "shell")]
+    Shell(shell::ShellArgs),
+
     /// List files on a remote host
     #[command(name = "ls")]
     Ls(ls::LsArgs),
@@ -104,6 +109,8 @@ enum Commands {
     Completions(completions::CompletionsArgs),
 
     // Hidden internal subcommands — started by SSH bootstrap, not for direct use
+    #[command(name = "_shell-recv", hide = true)]
+    ShellRecv(shell::ShellRecvArgs),
     #[command(name = "recv", hide = true)]
     Recv(recv::RecvArgs),
     #[command(name = "_send", hide = true)]
@@ -137,6 +144,7 @@ fn print_splash() {
     eprintln!("    pipe     Bidirectional pipe        seam pipe user@host -- bash");
     eprintln!("    tunnel   TCP port forward          seam tunnel 8080:user@host:3000");
     eprintln!("    fwd      Reverse port forward      seam fwd user@host:3000 8080");
+    eprintln!("    shell    Run remote command         seam shell user@host -- ls -la");
     eprintln!("    bench    Measure throughput        seam bench user@host");
     eprintln!("    ping     Latency measurement        seam ping user@host");
     eprintln!("    key      Show identity public key    seam key");
@@ -179,10 +187,12 @@ async fn main() -> Result<()> {
         Some(Commands::Stats(args)) => stats::run(args).await,
         Some(Commands::Update(args)) => update::run(args),
         Some(Commands::Config(args)) => config::run(args),
+        Some(Commands::Shell(args)) => shell::run(args).await,
         Some(Commands::Ls(args)) => ls::run(args).await,
         Some(Commands::Doctor(args)) => doctor::run(args),
         Some(Commands::Version(args)) => version::run(args),
         Some(Commands::Completions(args)) => completions::run(args),
+        Some(Commands::ShellRecv(args)) => shell::run_recv(args).await,
         Some(Commands::Recv(args)) => recv::run(args).await,
         Some(Commands::Send(args)) => send::run(args).await,
         Some(Commands::LsRecv(args)) => ls::run_recv(args).await,

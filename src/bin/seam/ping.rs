@@ -5,6 +5,7 @@ use seam_protocol::{
     handshake::{IdentityKeypair, pk_to_bytes},
     tunnel::SeamMux,
 };
+use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::{connect, ssh};
@@ -30,6 +31,35 @@ pub struct PingRecvArgs {
     pub port: u16,
 }
 
+/// Shared ping statistics used by the Ctrl-C handler for continuous mode.
+#[derive(Default)]
+struct PingStats {
+    rtts: Vec<f64>,
+    lost: u32,
+    sent: u32,
+}
+
+fn print_summary(remote: &str, stats: &PingStats) {
+    let sent = stats.sent;
+    let received = stats.rtts.len() as u32;
+    let lost = stats.lost;
+    eprintln!();
+    eprintln!("--- {remote} ping statistics ---");
+    eprintln!(
+        "{sent} sent, {received} received, {lost} lost ({:.0}% loss)",
+        if sent > 0 { (lost as f64 / sent as f64) * 100.0 } else { 0.0 }
+    );
+    if !stats.rtts.is_empty() {
+        let min = stats.rtts.iter().cloned().fold(f64::INFINITY, f64::min);
+        let max = stats.rtts.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        let avg = stats.rtts.iter().sum::<f64>() / stats.rtts.len() as f64;
+        let variance = stats.rtts.iter().map(|r| (r - avg).powi(2)).sum::<f64>()
+            / stats.rtts.len() as f64;
+        let stddev = variance.sqrt();
+        eprintln!("rtt min/avg/max/stddev = {min:.2}/{avg:.2}/{max:.2}/{stddev:.2} ms");
+    }
+}
+
 pub async fn run(args: PingArgs) -> Result<()> {
     let cfg = super::config::Config::load().ok().unwrap_or_default();
     let cipher = seam_protocol::crypto::CipherSuite::parse(&cfg.cipher).unwrap_or_default();
@@ -41,12 +71,26 @@ pub async fn run(args: PingArgs) -> Result<()> {
 
     let count = args.count;
     let interval_ms = args.interval;
+    let continuous = count == 0;
+
+    // Shared stats — written by the ping loop, read by the Ctrl-C handler.
+    let stats = Arc::new(Mutex::new(PingStats::default()));
+
+    // Install Ctrl-C handler in continuous mode: print statistics and exit.
+    if continuous {
+        let stats_ctrlc = Arc::clone(&stats);
+        let remote_name = args.remote.clone();
+        ctrlc::set_handler(move || {
+            let s = stats_ctrlc.lock().unwrap();
+            print_summary(&remote_name, &s);
+            std::process::exit(0);
+        })?;
+    }
+
+    eprintln!("PING {} over Seam (post-quantum UDP){}", args.remote,
+        if continuous { " — continuous, Ctrl-C for statistics" } else { "" });
+
     let mut seq: u32 = 0;
-    let mut rtts: Vec<f64> = Vec::new();
-    let mut lost: u32 = 0;
-
-    eprintln!("PING {} over Seam (post-quantum UDP)", args.remote);
-
     loop {
         let t0 = std::time::Instant::now();
         let mut stream = mux.open_stream().await;
@@ -55,7 +99,9 @@ pub async fn run(args: PingArgs) -> Result<()> {
         let payload = seq.to_be_bytes();
         if stream.write_all(&payload).await.is_err() {
             eprintln!("seq={seq} send failed");
-            lost += 1;
+            let mut s = stats.lock().unwrap();
+            s.lost += 1;
+            s.sent += 1;
         } else {
             let mut reply = [0u8; 4];
             let read_result = tokio::time::timeout(
@@ -63,18 +109,20 @@ pub async fn run(args: PingArgs) -> Result<()> {
                 stream.read_exact(&mut reply),
             ).await;
             let rtt = t0.elapsed().as_secs_f64() * 1000.0;
+            let mut s = stats.lock().unwrap();
+            s.sent += 1;
             match read_result {
                 Ok(Ok(_)) if reply == payload => {
                     eprintln!("seq={seq} rtt={rtt:.2}ms");
-                    rtts.push(rtt);
+                    s.rtts.push(rtt);
                 }
                 Ok(Ok(_)) => {
                     eprintln!("seq={seq} reply mismatch");
-                    lost += 1;
+                    s.lost += 1;
                 }
                 _ => {
                     eprintln!("seq={seq} timeout");
-                    lost += 1;
+                    s.lost += 1;
                 }
             }
         }
@@ -87,21 +135,9 @@ pub async fn run(args: PingArgs) -> Result<()> {
         }
     }
 
-    // Summary
-    let sent = seq;
-    let received = rtts.len() as u32;
-    eprintln!();
-    eprintln!("--- {} ping statistics ---", args.remote);
-    eprintln!("{sent} sent, {received} received, {lost} lost ({:.0}% loss)",
-        if sent > 0 { (lost as f64 / sent as f64) * 100.0 } else { 0.0 });
-    if !rtts.is_empty() {
-        let min = rtts.iter().cloned().fold(f64::INFINITY, f64::min);
-        let max = rtts.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-        let avg = rtts.iter().sum::<f64>() / rtts.len() as f64;
-        let variance = rtts.iter().map(|r| (r - avg).powi(2)).sum::<f64>() / rtts.len() as f64;
-        let stddev = variance.sqrt();
-        eprintln!("rtt min/avg/max/stddev = {min:.2}/{avg:.2}/{max:.2}/{stddev:.2} ms");
-    }
+    // Print summary for finite-count mode (continuous mode exits via Ctrl-C handler).
+    let s = stats.lock().unwrap();
+    print_summary(&args.remote, &s);
     Ok(())
 }
 

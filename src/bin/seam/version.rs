@@ -64,10 +64,18 @@ pub fn run(args: VersionArgs) -> Result<()> {
     // Build a summary of active TAR features for display.
     let tar_features: Vec<&str> = {
         let mut v = Vec::new();
-        if padding_active { v.push("size-class padding"); }
-        if cover_active { v.push("cover traffic"); }
-        if jitter_active { v.push("timing jitter"); }
-        if obfuscate_active { v.push("header obfuscation"); }
+        if padding_active {
+            v.push("size-class padding");
+        }
+        if cover_active {
+            v.push("cover traffic");
+        }
+        if jitter_active {
+            v.push("timing jitter");
+        }
+        if obfuscate_active {
+            v.push("header obfuscation");
+        }
         v
     };
     let tar_summary = if tar_features.is_empty() {
@@ -128,10 +136,16 @@ pub fn run(args: VersionArgs) -> Result<()> {
             println!("  size-class padding : enabled (256/512/1024/1400 byte classes)");
         }
         if cover_active {
-            println!("  cover traffic      : {} kbps constant rate", cfg.cover_traffic_kbps);
+            println!(
+                "  cover traffic      : {} kbps constant rate",
+                cfg.cover_traffic_kbps
+            );
         }
         if jitter_active {
-            println!("  timing jitter      : 0–{} ms per-packet delay", cfg.timing_jitter_ms);
+            println!(
+                "  timing jitter      : 0–{} ms per-packet delay",
+                cfg.timing_jitter_ms
+            );
         }
         if obfuscate_active {
             println!("  header obfuscation : enabled (XOR with per-session secret)");

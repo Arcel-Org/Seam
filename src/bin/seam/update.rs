@@ -67,9 +67,8 @@ pub fn run(args: UpdateArgs) -> Result<()> {
     drop(archive_file);
 
     // Verify SHA-256 checksum against checksums.sha256 from the release.
-    let checksum_url = format!(
-        "https://github.com/{REPO}/releases/download/{tag_name}/checksums.sha256"
-    );
+    let checksum_url =
+        format!("https://github.com/{REPO}/releases/download/{tag_name}/checksums.sha256");
     match verify_checksum(&archive_path, &asset.name, &checksum_url) {
         Ok(()) => println!("checksum verified"),
         Err(e) => bail!("checksum verification failed: {e}"),
@@ -133,7 +132,11 @@ fn verify_checksum(
             let mut parts = line.splitn(2, ' ');
             let hex = parts.next()?.trim();
             let name = parts.next()?.trim().trim_start_matches('*');
-            if name == asset_name { Some(hex.to_string()) } else { None }
+            if name == asset_name {
+                Some(hex.to_string())
+            } else {
+                None
+            }
         })
         .ok_or_else(|| anyhow::anyhow!("no checksum entry for {asset_name} in checksums.sha256"))?;
 
@@ -141,9 +144,7 @@ fn verify_checksum(
     let actual_hex = hex::encode(Sha256::digest(&data));
 
     if actual_hex != expected_hex {
-        bail!(
-            "checksum mismatch\n  expected: {expected_hex}\n  actual:   {actual_hex}"
-        );
+        bail!("checksum mismatch\n  expected: {expected_hex}\n  actual:   {actual_hex}");
     }
     Ok(())
 }

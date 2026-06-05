@@ -78,12 +78,22 @@ struct AuditRecord {
 
 pub fn run(args: AuditArgs) -> Result<()> {
     match args.cmd {
-        AuditCmd::Show { lines, since, host, json } => show(lines, since.as_deref(), host.as_deref(), json),
+        AuditCmd::Show {
+            lines,
+            since,
+            host,
+            json,
+        } => show(lines, since.as_deref(), host.as_deref(), json),
         AuditCmd::Clear { yes } => clear(yes),
     }
 }
 
-fn show(limit: usize, since: Option<&str>, host_filter: Option<&str>, raw_json: bool) -> Result<()> {
+fn show(
+    limit: usize,
+    since: Option<&str>,
+    host_filter: Option<&str>,
+    raw_json: bool,
+) -> Result<()> {
     let path = audit_log_path();
     if !path.exists() {
         println!("Audit log not found: {}", path.display());
@@ -225,7 +235,10 @@ fn clear(yes: bool) -> Result<()> {
         eprint!("Type 'yes' to confirm: ");
         use std::io::BufRead;
         let stdin = std::io::stdin();
-        let line = stdin.lock().lines().next()
+        let line = stdin
+            .lock()
+            .lines()
+            .next()
             .and_then(|l| l.ok())
             .unwrap_or_default();
         if line.trim() != "yes" {

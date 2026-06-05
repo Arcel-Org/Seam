@@ -4,9 +4,9 @@ use seam_protocol::{
     crypto::CipherSuite,
     handshake::{IdentityKeypair, pk_from_bytes},
 };
+use std::cell::Cell;
 use std::net::SocketAddr;
 use std::process::Child;
-use std::cell::Cell;
 
 use crate::{known_hosts::PinPolicy, ssh::RemoteInfo};
 
@@ -90,12 +90,11 @@ pub async fn dial(
     let server_addr: SocketAddr = format!("{}:{}", host, port)
         .parse()
         .context("bad address")?;
-    let id = IdentityKeypair::load_or_generate(identity_path())
-        .unwrap_or_else(|e| {
-            eprintln!("warning: could not load identity key ({e}) — using ephemeral key");
-            eprintln!("         run: seam doctor  to diagnose");
-            IdentityKeypair::generate()
-        });
+    let id = IdentityKeypair::load_or_generate(identity_path()).unwrap_or_else(|e| {
+        eprintln!("warning: could not load identity key ({e}) — using ephemeral key");
+        eprintln!("         run: seam doctor  to diagnose");
+        IdentityKeypair::generate()
+    });
     let mut client = Client::bind("0.0.0.0:0".parse()?, id)
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;

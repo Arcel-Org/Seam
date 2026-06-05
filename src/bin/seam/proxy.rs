@@ -75,7 +75,11 @@ pub async fn run(args: ProxyArgs, fips_mode: bool) -> Result<()> {
     };
 
     let cfg = super::config::Config::load().ok().unwrap_or_default();
-    let cipher_str = if fips_mode { "aes256gcm" } else { cfg.cipher.as_str() };
+    let cipher_str = if fips_mode {
+        "aes256gcm"
+    } else {
+        cfg.cipher.as_str()
+    };
     let cipher = seam_protocol::crypto::CipherSuite::parse(cipher_str).unwrap_or_default();
 
     let remote = ssh::RemoteInfo {
@@ -100,7 +104,11 @@ pub async fn run(args: ProxyArgs, fips_mode: bool) -> Result<()> {
 
     eprintln!(
         "SOCKS5 proxy ready on {}:{actual_port} → {}{}",
-        if args.bind_all { "0.0.0.0" } else { "127.0.0.1" },
+        if args.bind_all {
+            "0.0.0.0"
+        } else {
+            "127.0.0.1"
+        },
         user.as_deref().map(|u| format!("{u}@")).unwrap_or_default(),
         host,
     );
@@ -146,7 +154,8 @@ async fn handle_socks5_client(mut tcp: TcpStream, mux: Arc<SeamMux>) -> Result<(
 
     // We only support NO_AUTH (0x00).
     if !methods.contains(&NO_AUTH) {
-        tcp.write_all(&[SOCKS5_VERSION, AUTH_NONE_ACCEPTABLE]).await?;
+        tcp.write_all(&[SOCKS5_VERSION, AUTH_NONE_ACCEPTABLE])
+            .await?;
         bail!("client requires authentication, which we don't support");
     }
     tcp.write_all(&[SOCKS5_VERSION, NO_AUTH]).await?;

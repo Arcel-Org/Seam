@@ -61,7 +61,10 @@ impl IdentityProof {
         }
         let mldsa_pk: [u8; MLDSA_PK_LEN] = bytes[..MLDSA_PK_LEN].try_into().ok()?;
         let signature: [u8; MLDSA_SIG_LEN] = bytes[MLDSA_PK_LEN..].try_into().ok()?;
-        Some(Self { mldsa_pk, signature })
+        Some(Self {
+            mldsa_pk,
+            signature,
+        })
     }
 
     /// Build an identity proof by signing the handshake transcript hash.
@@ -71,7 +74,10 @@ impl IdentityProof {
         let signature = id
             .mldsa_sign(handshake_hash)
             .map_err(|e| SeamError::HandshakeFailed(e.to_string()))?;
-        Ok(Self { mldsa_pk, signature })
+        Ok(Self {
+            mldsa_pk,
+            signature,
+        })
     }
 
     /// Verify this identity proof against the handshake transcript hash.

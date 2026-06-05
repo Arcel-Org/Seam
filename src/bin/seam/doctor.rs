@@ -84,14 +84,8 @@ pub fn run(_args: DoctorArgs) -> Result<()> {
                             "  ✓  identity key at {} (X25519+ML-KEM-768+ML-DSA-65, hybrid PQ)",
                             id_path.display()
                         );
-                        eprintln!(
-                            "     X25519:          {}…",
-                            &x25519_hex[..12]
-                        );
-                        eprintln!(
-                            "     ML-DSA-65 fp:    SHA256:{}…",
-                            &mldsa_fp[..16]
-                        );
+                        eprintln!("     X25519:          {}…", &x25519_hex[..12]);
+                        eprintln!("     ML-DSA-65 fp:    SHA256:{}…", &mldsa_fp[..16]);
                         if !is_v3 {
                             eprintln!(
                                 "  !  identity is v2 format — will be upgraded to v3 (ML-DSA-65) on next use"
@@ -143,13 +137,24 @@ pub fn run(_args: DoctorArgs) -> Result<()> {
             Ok(text) => {
                 // Check for unknown keys by comparing raw TOML table keys against the known set.
                 let known_keys = [
-                    "cc", "compress", "identity", "cipher",
-                    "max_connections", "listen_port", "fec_k", "fec_r", "fips_mode", "relays",
+                    "cc",
+                    "compress",
+                    "identity",
+                    "cipher",
+                    "max_connections",
+                    "listen_port",
+                    "fec_k",
+                    "fec_r",
+                    "fips_mode",
+                    "relays",
                 ];
                 match text.parse::<toml::Value>() {
                     Err(e) => {
                         eprintln!("  ✗  config parse error: {e}");
-                        eprintln!("     fix: seam config init  (or edit {})", cfg_path.display());
+                        eprintln!(
+                            "     fix: seam config init  (or edit {})",
+                            cfg_path.display()
+                        );
                         ok = false;
                     }
                     Ok(toml::Value::Table(table)) => {
@@ -160,8 +165,11 @@ pub fn run(_args: DoctorArgs) -> Result<()> {
                             .collect();
                         unknown_keys.sort();
                         if !unknown_keys.is_empty() {
-                            eprintln!("  !  config at {} has unknown key(s): {}",
-                                cfg_path.display(), unknown_keys.join(", "));
+                            eprintln!(
+                                "  !  config at {} has unknown key(s): {}",
+                                cfg_path.display(),
+                                unknown_keys.join(", ")
+                            );
                             eprintln!("     valid keys: {}", known_keys.join(", "));
                             // Not fatal — forward-compat; but warn loudly.
                         }
@@ -193,15 +201,22 @@ pub fn run(_args: DoctorArgs) -> Result<()> {
                 // Validate cipher + AES-NI
                 if cfg.cipher == "aes256gcm" {
                     if is_aes_ni_available() {
-                        eprintln!("  ✓  cipher: aes256gcm (AES-NI detected — hardware accelerated)");
+                        eprintln!(
+                            "  ✓  cipher: aes256gcm (AES-NI detected — hardware accelerated)"
+                        );
                     } else {
-                        eprintln!("  !  cipher: aes256gcm but no AES-NI detected — software fallback may be slow");
+                        eprintln!(
+                            "  !  cipher: aes256gcm but no AES-NI detected — software fallback may be slow"
+                        );
                         eprintln!("     consider: seam config set cipher chacha20poly1305");
                     }
                 } else if cfg.cipher == "chacha20poly1305" {
                     eprintln!("  ✓  cipher: chacha20poly1305 (default)");
                 } else {
-                    eprintln!("  ✗  config.cipher = {:?} — must be 'chacha20poly1305' or 'aes256gcm'", cfg.cipher);
+                    eprintln!(
+                        "  ✗  config.cipher = {:?} — must be 'chacha20poly1305' or 'aes256gcm'",
+                        cfg.cipher
+                    );
                     ok = false;
                 }
 
@@ -211,8 +226,10 @@ pub fn run(_args: DoctorArgs) -> Result<()> {
                     eprintln!("     fix: seam config set max_connections 1024");
                     ok = false;
                 } else if cfg.max_connections >= 65536 {
-                    eprintln!("  !  config.max_connections = {} — unusually large (>= 65536); check intent",
-                        cfg.max_connections);
+                    eprintln!(
+                        "  !  config.max_connections = {} — unusually large (>= 65536); check intent",
+                        cfg.max_connections
+                    );
                 } else {
                     eprintln!("  ✓  max_connections: {}", cfg.max_connections);
                 }
@@ -224,10 +241,15 @@ pub fn run(_args: DoctorArgs) -> Result<()> {
                     // Determine if we have privilege to bind low ports.
                     let is_privileged = is_privileged_user();
                     if is_privileged {
-                        eprintln!("  ✓  listen_port: {} (privileged port, running as root)", cfg.listen_port);
+                        eprintln!(
+                            "  ✓  listen_port: {} (privileged port, running as root)",
+                            cfg.listen_port
+                        );
                     } else {
-                        eprintln!("  !  listen_port: {} — port < 1024 requires root/CAP_NET_BIND_SERVICE",
-                            cfg.listen_port);
+                        eprintln!(
+                            "  !  listen_port: {} — port < 1024 requires root/CAP_NET_BIND_SERVICE",
+                            cfg.listen_port
+                        );
                         eprintln!("     fix: seam config set listen_port 7474  (or run as root)");
                     }
                 } else {
@@ -238,7 +260,10 @@ pub fn run(_args: DoctorArgs) -> Result<()> {
                 if let Some(ref id) = cfg.identity {
                     let id_path = std::path::Path::new(id);
                     if !id_path.exists() {
-                        eprintln!("  !  config.identity = {:?} — file not found (will be generated on first use)", id);
+                        eprintln!(
+                            "  !  config.identity = {:?} — file not found (will be generated on first use)",
+                            id
+                        );
                     }
                 }
 
@@ -257,11 +282,15 @@ pub fn run(_args: DoctorArgs) -> Result<()> {
                             ok = false;
                         } else {
                             let overhead_pct = r as f32 / k as f32 * 100.0;
-                            eprintln!("  ✓  FEC: k={k} r={r} ({overhead_pct:.0}% overhead) — manual override");
+                            eprintln!(
+                                "  ✓  FEC: k={k} r={r} ({overhead_pct:.0}% overhead) — manual override"
+                            );
                         }
                     }
                     (Some(k), None) if k > 0 => {
-                        eprintln!("  !  config.fec_k = {k} set but fec_r not set — defaulting fec_r = 2");
+                        eprintln!(
+                            "  !  config.fec_k = {k} set but fec_r not set — defaulting fec_r = 2"
+                        );
                         eprintln!("     fix: seam config set fec_r 2");
                     }
                     (None, Some(_)) => {
@@ -275,7 +304,10 @@ pub fn run(_args: DoctorArgs) -> Result<()> {
             }
         }
     } else {
-        eprintln!("  ·  no config file — using defaults ({})", cfg_path.display());
+        eprintln!(
+            "  ·  no config file — using defaults ({})",
+            cfg_path.display()
+        );
     }
 
     // ── 7. UDP socket buffer sizes ──────────────────────────────────────
@@ -303,7 +335,10 @@ pub fn run(_args: DoctorArgs) -> Result<()> {
 
     // ── 7.6. FEC correctness self-test ──────────────────────────────────────
     match try_fec_self_test() {
-        Ok(elapsed_us) => eprintln!("  ✓  FEC self-test passed (k=4, r=2, 1-shard corrupt, recovered in {}µs)", elapsed_us),
+        Ok(elapsed_us) => eprintln!(
+            "  ✓  FEC self-test passed (k=4, r=2, 1-shard corrupt, recovered in {}µs)",
+            elapsed_us
+        ),
         Err(e) => {
             eprintln!("  ✗  FEC self-test FAILED: {e}");
             eprintln!("     Reed-Solomon codec malfunction — do not use seam on sensitive links");
@@ -330,7 +365,10 @@ pub fn run(_args: DoctorArgs) -> Result<()> {
                 );
                 eprintln!("     consider: seam config set fec_k 4  &&  seam config set fec_r 4");
             } else if effective_mtu < 1472 {
-                eprintln!("  !  effective MTU {} B — standard Ethernet minus PPPoE/VPN headers", effective_mtu);
+                eprintln!(
+                    "  !  effective MTU {} B — standard Ethernet minus PPPoE/VPN headers",
+                    effective_mtu
+                );
             }
         }
         Err(e) => {
@@ -362,7 +400,9 @@ pub fn run(_args: DoctorArgs) -> Result<()> {
                 super::config::Config::fips_banner()
             );
         } else {
-            eprintln!("  ·  FIPS mode: disabled (set fips_mode = true in config or SEAM_FIPS_MODE=1 to enable)");
+            eprintln!(
+                "  ·  FIPS mode: disabled (set fips_mode = true in config or SEAM_FIPS_MODE=1 to enable)"
+            );
         }
     }
 
@@ -389,7 +429,9 @@ pub fn run(_args: DoctorArgs) -> Result<()> {
         }
         KnownHostsStatus::SuspiciousEntries { hosts } => {
             eprintln!("  !  known_hosts: {} pinned host(s) found", hosts.len());
-            eprintln!("  !  WARNING: the following hosts have malformed fingerprints (possible TOFU bypass):");
+            eprintln!(
+                "  !  WARNING: the following hosts have malformed fingerprints (possible TOFU bypass):"
+            );
             for h in &hosts {
                 eprintln!("       {h}");
             }
@@ -444,9 +486,14 @@ pub fn run(_args: DoctorArgs) -> Result<()> {
     {
         let cfg = super::config::Config::load().ok().unwrap_or_default();
         if cfg.relays.is_empty() {
-            eprintln!("  ·  relay hosts: none configured (add relays = [\"user@host\", ...] in config)");
+            eprintln!(
+                "  ·  relay hosts: none configured (add relays = [\"user@host\", ...] in config)"
+            );
         } else {
-            eprintln!("  ── relay connectivity ({} host(s)) ─────────────────────", cfg.relays.len());
+            eprintln!(
+                "  ── relay connectivity ({} host(s)) ─────────────────────",
+                cfg.relays.len()
+            );
             for relay in &cfg.relays {
                 let host = if let Some(at) = relay.rfind('@') {
                     &relay[at + 1..]
@@ -554,7 +601,11 @@ fn try_fec_self_test() -> anyhow::Result<u64> {
     let payload_len = 64;
     // Build k known source payloads: deterministic pattern for easy verification.
     let sources: Vec<Vec<u8>> = (0..k)
-        .map(|i| (0..payload_len).map(|j| i.wrapping_add(j as u8)).collect::<Vec<u8>>())
+        .map(|i| {
+            (0..payload_len)
+                .map(|j| i.wrapping_add(j as u8))
+                .collect::<Vec<u8>>()
+        })
         .collect();
 
     let mut enc = FecEncoder::new(42, k, r);

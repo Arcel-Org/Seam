@@ -406,12 +406,9 @@ impl Session {
 
     /// Process an incoming wire packet. Returns events.
     pub fn receive_packet(&mut self, buf: &mut [u8]) -> Result<Vec<SessionEvent>, SeamError> {
-        let _span = tracing::trace_span!(
-            "seam.stream.recv",
-            bytes = buf.len(),
-            session_id = self.id,
-        )
-        .entered();
+        let _span =
+            tracing::trace_span!("seam.stream.recv", bytes = buf.len(), session_id = self.id,)
+                .entered();
         let (pkt_type, pkt_num, payload) = self.decoder.decode(buf)?;
         let mut events = Vec::new();
 

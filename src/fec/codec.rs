@@ -115,7 +115,12 @@ impl FecEncoder {
                 padded_len = self.padded_len,
             )
             .entered();
-            tracing::trace!(group_id = self.group_id, k = self.k, r = self.r, "FEC group complete — emitting repair symbols");
+            tracing::trace!(
+                group_id = self.group_id,
+                k = self.k,
+                r = self.r,
+                "FEC group complete — emitting repair symbols"
+            );
             Some(self.emit_repairs(self.k))
         } else {
             None
@@ -232,7 +237,11 @@ impl GroupState {
         // If source i is available, use identity row. Otherwise use a repair row.
         // Invariant: avail_rep.len() == n_missing (truncated above), so rep_iter
         // always has an element when we enter the else branch.
-        debug_assert_eq!(avail_rep.len(), n_missing, "repair count must equal missing count");
+        debug_assert_eq!(
+            avail_rep.len(),
+            n_missing,
+            "repair count must equal missing count"
+        );
         let mut rep_iter = avail_rep.iter();
         for col in 0..self.k {
             if let Some(src_data) = self.sources.get(&col) {

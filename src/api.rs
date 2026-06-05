@@ -305,7 +305,10 @@ impl Client {
                 tracing::info!("handshake retry {}/3 after {:?}", attempt + 1, delay);
                 tokio::time::sleep(delay).await;
             }
-            match self.try_connect(remote, server_x25519, server_kem_pk, preferred_cipher).await {
+            match self
+                .try_connect(remote, server_x25519, server_kem_pk, preferred_cipher)
+                .await
+            {
                 Ok(conn) => return Ok(conn),
                 Err(e) => last_err = Some(e),
             }

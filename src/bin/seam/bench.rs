@@ -37,14 +37,17 @@ async fn bench_drain_with_metrics(
     let mut throughput_windows: Vec<f64> = Vec::new();
     let window_dur = std::time::Duration::from_millis(500);
     let mut last_read = std::time::Instant::now();
-    let deadline = timeout_secs.map(|s| std::time::Instant::now() + std::time::Duration::from_secs(s));
+    let deadline =
+        timeout_secs.map(|s| std::time::Instant::now() + std::time::Duration::from_secs(s));
     let mut bucket = bw_cap_mbps.map(TokenBucket::new);
 
     loop {
         let read_fut = stream.read(&mut buf);
         let n = if let Some(dl) = deadline {
             let remaining = dl.saturating_duration_since(std::time::Instant::now());
-            if remaining.is_zero() { break; }
+            if remaining.is_zero() {
+                break;
+            }
             match tokio::time::timeout(remaining, read_fut).await {
                 Ok(Ok(0)) | Err(_) => break,
                 Ok(Ok(n)) => n,
@@ -93,7 +96,10 @@ async fn bench_drain_with_metrics(
     // Compute jitter (stddev of inter-arrival times).
     let jitter_ms = if inter_arrivals_ms.len() > 1 {
         let mean = inter_arrivals_ms.iter().sum::<f64>() / inter_arrivals_ms.len() as f64;
-        let var = inter_arrivals_ms.iter().map(|x| (x - mean).powi(2)).sum::<f64>()
+        let var = inter_arrivals_ms
+            .iter()
+            .map(|x| (x - mean).powi(2))
+            .sum::<f64>()
             / inter_arrivals_ms.len() as f64;
         var.sqrt()
     } else {
@@ -115,7 +121,10 @@ async fn bench_drain_with_metrics(
     let throughput_cv = if throughput_windows.len() > 1 {
         let mean = throughput_windows.iter().sum::<f64>() / throughput_windows.len() as f64;
         if mean > 0.0 {
-            let var = throughput_windows.iter().map(|x| (x - mean).powi(2)).sum::<f64>()
+            let var = throughput_windows
+                .iter()
+                .map(|x| (x - mean).powi(2))
+                .sum::<f64>()
                 / throughput_windows.len() as f64;
             var.sqrt() / mean
         } else {
@@ -257,7 +266,10 @@ pub async fn run(args: BenchArgs) -> Result<()> {
     let mut stream = mux.open_stream().await;
 
     if let Some(cap) = args.bw_cap {
-        eprint!("\nbenchmarking {remote_label} · {} MiB  [bw-cap: {:.1} Mbps]  ", args.mib, cap);
+        eprint!(
+            "\nbenchmarking {remote_label} · {} MiB  [bw-cap: {:.1} Mbps]  ",
+            args.mib, cap
+        );
     } else {
         eprint!("\nbenchmarking {remote_label} · {} MiB  ", args.mib);
     }
@@ -265,8 +277,8 @@ pub async fn run(args: BenchArgs) -> Result<()> {
     let start = std::time::Instant::now();
     let (bytes, metrics) = bench_drain_with_metrics(&mut stream, args.timeout, args.bw_cap).await?;
     let elapsed = start.elapsed();
-    let timed_out = args.timeout.is_some()
-        && elapsed >= std::time::Duration::from_secs(args.timeout.unwrap());
+    let timed_out =
+        args.timeout.is_some() && elapsed >= std::time::Duration::from_secs(args.timeout.unwrap());
 
     let secs = elapsed.as_secs_f64().max(0.001);
     let mib_s = (bytes as f64 / (1024.0 * 1024.0)) / secs;
@@ -275,7 +287,10 @@ pub async fn run(args: BenchArgs) -> Result<()> {
     if timed_out && bytes == 0 {
         eprintln!("\n  benchmark timed out — no data received");
     } else if timed_out {
-        eprintln!("\n  benchmark timed out after {}s — partial result:", args.timeout.unwrap());
+        eprintln!(
+            "\n  benchmark timed out after {}s — partial result:",
+            args.timeout.unwrap()
+        );
         eprintln!("  (reported throughput is a lower bound)");
     }
     print_results(mib_s, gbps, args.mib, &metrics, args.bw_cap);
@@ -288,7 +303,13 @@ fn bar(mib_s: f64, max_mib_s: f64, width: usize) -> String {
     format!("{}{}", "█".repeat(filled), "░".repeat(width - filled))
 }
 
-fn print_results(seam_mib_s: f64, seam_gbps: f64, mib: u64, metrics: &CongestionMetrics, bw_cap_mbps: Option<f64>) {
+fn print_results(
+    seam_mib_s: f64,
+    seam_gbps: f64,
+    mib: u64,
+    metrics: &CongestionMetrics,
+    bw_cap_mbps: Option<f64>,
+) {
     // Estimated baselines (well-known benchmarks, clearly labelled est.)
     // OpenSSH aes128-gcm over GigE loopback: ~400 MiB/s
     // rsync over SSH, first transfer: ~380 MiB/s
@@ -351,7 +372,10 @@ fn print_results(seam_mib_s: f64, seam_gbps: f64, mib: u64, metrics: &Congestion
     }
 
     if let Some(cap) = bw_cap_mbps {
-        eprintln!("  post-quantum safe · UDP · FEC recovery · 247 µs handshake  [bw-cap: {:.1} Mbps]", cap);
+        eprintln!(
+            "  post-quantum safe · UDP · FEC recovery · 247 µs handshake  [bw-cap: {:.1} Mbps]",
+            cap
+        );
     } else {
         eprintln!("  post-quantum safe · UDP · FEC recovery · 247 µs handshake");
     }
@@ -363,7 +387,10 @@ fn print_results(seam_mib_s: f64, seam_gbps: f64, mib: u64, metrics: &Congestion
 
     // ── Network quality metrics (government / military network engineers) ────
     eprintln!("  {}", "─".repeat(64));
-    eprintln!("  Network quality metrics ({} × 500ms windows):", metrics.windows);
+    eprintln!(
+        "  Network quality metrics ({} × 500ms windows):",
+        metrics.windows
+    );
     eprintln!();
 
     // Packet loss rate
@@ -422,7 +449,9 @@ pub async fn run_recv(args: BenchRecvArgs) -> Result<()> {
     let cfg = super::config::Config::load().ok().unwrap_or_default();
     let cipher = seam_protocol::crypto::CipherSuite::parse(&cfg.cipher).unwrap_or_default();
     let addr: std::net::SocketAddr = format!("0.0.0.0:{}", args.port).parse()?;
-    let mut server = Server::bind_with_cipher(addr, id, cipher).await.map_err(|e| anyhow!("{e}"))?;
+    let mut server = Server::bind_with_cipher(addr, id, cipher)
+        .await
+        .map_err(|e| anyhow!("{e}"))?;
     let port = server.local_addr()?.port();
 
     println!("SEAM PORT={port} X25519={x25519_hex} KEM={kem_hex}");

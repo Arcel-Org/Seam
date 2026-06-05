@@ -38,7 +38,8 @@ pub async fn run(args: LsArgs) -> Result<()> {
         let conn = connect::dial("127.0.0.1", port, x25519, kem_pk, cipher).await?;
         (conn, None)
     } else {
-        let (user, host) = ssh::parse_userhost(args.remote.split(':').next().unwrap_or(&args.remote));
+        let (user, host) =
+            ssh::parse_userhost(args.remote.split(':').next().unwrap_or(&args.remote));
         let remote = ssh::RemoteInfo {
             host: host.clone(),
             user,

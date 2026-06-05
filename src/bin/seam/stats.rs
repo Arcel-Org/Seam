@@ -45,7 +45,7 @@ struct PreSnapshot {
 
 // Simple protocol byte written by the client to signal which direction a stream carries.
 const DIR_DOWNLOAD: u8 = 0x01; // server → client
-const DIR_UPLOAD: u8 = 0x02;   // client → server
+const DIR_UPLOAD: u8 = 0x02; // client → server
 
 // ── Client ────────────────────────────────────────────────────────────────────
 
@@ -178,7 +178,9 @@ pub async fn run_recv(args: StatsRecvArgs) -> Result<()> {
     let cfg = super::config::Config::load().ok().unwrap_or_default();
     let cipher = seam_protocol::crypto::CipherSuite::parse(&cfg.cipher).unwrap_or_default();
     let addr: std::net::SocketAddr = format!("0.0.0.0:{}", args.port).parse()?;
-    let mut server = Server::bind_with_cipher(addr, id, cipher).await.map_err(|e| anyhow!("{e}"))?;
+    let mut server = Server::bind_with_cipher(addr, id, cipher)
+        .await
+        .map_err(|e| anyhow!("{e}"))?;
     let port = server.local_addr()?.port();
 
     println!("SEAM PORT={port} X25519={x25519_hex} KEM={kem_hex}");
@@ -194,15 +196,21 @@ pub async fn run_recv(args: StatsRecvArgs) -> Result<()> {
     for _ in 0..2 {
         let mux = mux.clone();
         tokio::spawn(async move {
-            let Some(mut stream) = mux.accept_stream().await else { return };
+            let Some(mut stream) = mux.accept_stream().await else {
+                return;
+            };
             let mut dir = [0u8; 1];
-            if stream.read_exact(&mut dir).await.is_err() { return; }
+            if stream.read_exact(&mut dir).await.is_err() {
+                return;
+            }
             match dir[0] {
                 DIR_DOWNLOAD => {
                     // Server→client: saturate the stream with zeros.
                     let buf = vec![0u8; 64 * 1024];
                     loop {
-                        if stream.write_all(&buf).await.is_err() { break; }
+                        if stream.write_all(&buf).await.is_err() {
+                            break;
+                        }
                     }
                 }
                 DIR_UPLOAD => {

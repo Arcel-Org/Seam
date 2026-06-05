@@ -165,15 +165,14 @@ impl RemoteInfo {
             255 => "SSH connection refused or unreachable — check host, port, and firewall.",
             127 => "seam not found on remote — run: seam cp $(which seam) user@host:~/.local/bin/",
             126 => "seam not executable on remote — run: ssh user@host chmod +x ~/.local/bin/seam",
-            1   => "SSH auth failed — check your SSH key or run ssh user@host manually.",
-            _   => "is seam installed and in PATH on the remote? (seam update or seam cp)",
+            1 => "SSH auth failed — check your SSH key or run ssh user@host manually.",
+            _ => "is seam installed and in PATH on the remote? (seam update or seam cp)",
         };
         bail!(
             "remote seam on {} exited (code {exit_code}) without printing SEAM handshake line\n  hint: {hint}",
             self.target()
         );
     }
-
 }
 
 /// Parse `"user@host"` into `(Option<user>, host)`.

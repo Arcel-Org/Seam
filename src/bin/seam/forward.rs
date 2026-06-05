@@ -133,7 +133,11 @@ pub async fn run(args: ForwardArgs, fips_mode: bool) -> Result<()> {
     };
 
     let cfg = super::config::Config::load().ok().unwrap_or_default();
-    let cipher_str = if fips_mode { "aes256gcm" } else { cfg.cipher.as_str() };
+    let cipher_str = if fips_mode {
+        "aes256gcm"
+    } else {
+        cfg.cipher.as_str()
+    };
     let cipher = seam_protocol::crypto::CipherSuite::parse(cipher_str).unwrap_or_default();
 
     if let Some(via) = args.via.as_ref() {
@@ -159,11 +163,11 @@ pub async fn run(args: ForwardArgs, fips_mode: bool) -> Result<()> {
             Some(p) => format!("--target-port {p} "),
             None => String::new(),
         };
-        let subcmd = format!(
-            "_forward-hop-recv --port 0 --target {target_arg} {target_port_arg}"
-        );
+        let subcmd = format!("_forward-hop-recv --port 0 --target {target_arg} {target_port_arg}");
 
-        eprintln!("multi-hop forward: local:{local_port} → relay:{relay_host} → {host}:{remote_host}:{remote_port}");
+        eprintln!(
+            "multi-hop forward: local:{local_port} → relay:{relay_host} → {host}:{remote_host}:{remote_port}"
+        );
         if fips_mode {
             eprintln!("  FIPS mode: AES-256-GCM transport");
         }
@@ -177,13 +181,18 @@ pub async fn run(args: ForwardArgs, fips_mode: bool) -> Result<()> {
         } else {
             format!("127.0.0.1:{local_port}")
         };
-        let listener = TcpListener::bind(&bind_addr).await
+        let listener = TcpListener::bind(&bind_addr)
+            .await
             .map_err(|e| anyhow!("cannot bind {bind_addr}: {e}"))?;
         let actual_port = listener.local_addr()?.port();
 
         eprintln!(
             "forward ready (via relay): {}:{actual_port} → {}:{remote_host}:{remote_port}",
-            if args.bind_all { "0.0.0.0" } else { "127.0.0.1" },
+            if args.bind_all {
+                "0.0.0.0"
+            } else {
+                "127.0.0.1"
+            },
             relay_host,
         );
 
@@ -237,7 +246,8 @@ pub async fn run(args: ForwardArgs, fips_mode: bool) -> Result<()> {
         };
 
         let subcmd = format!("_forward-recv --port 0");
-        let (conn, _child) = connect::bootstrap_and_connect(&remote, &host, &subcmd, cipher).await?;
+        let (conn, _child) =
+            connect::bootstrap_and_connect(&remote, &host, &subcmd, cipher).await?;
         let mux = SeamMux::new(conn);
 
         let bind_addr = if args.bind_all {
@@ -245,13 +255,18 @@ pub async fn run(args: ForwardArgs, fips_mode: bool) -> Result<()> {
         } else {
             format!("127.0.0.1:{local_port}")
         };
-        let listener = TcpListener::bind(&bind_addr).await
+        let listener = TcpListener::bind(&bind_addr)
+            .await
             .map_err(|e| anyhow!("cannot bind {bind_addr}: {e}"))?;
         let actual_port = listener.local_addr()?.port();
 
         eprintln!(
             "forward ready: {}:{actual_port} → {}{}:{}:{}",
-            if args.bind_all { "0.0.0.0" } else { "127.0.0.1" },
+            if args.bind_all {
+                "0.0.0.0"
+            } else {
+                "127.0.0.1"
+            },
             user.as_deref().map(|u| format!("{u}@")).unwrap_or_default(),
             host,
             remote_host,
@@ -414,7 +429,10 @@ pub async fn run_hop_recv(args: ForwardHopRecvArgs) -> Result<()> {
         .await
         .ok_or_else(|| anyhow!("hop-recv: no connection from client"))?;
     let mux = SeamMux::new(conn);
-    eprintln!("hop-recv: client connected; bridging to target {}", args.target);
+    eprintln!(
+        "hop-recv: client connected; bridging to target {}",
+        args.target
+    );
 
     // Now establish our own connection to the final target (via SSH bootstrap).
     let (target_user, target_host) = if let Some(at) = args.target.find('@') {
@@ -475,8 +493,12 @@ pub async fn run_hop_recv(args: ForwardHopRecvArgs) -> Result<()> {
                     let h = String::from_utf8_lossy(&header[2..2 + host_len]).to_string();
                     let p = u16::from_be_bytes([header[2 + host_len], header[2 + host_len + 1]]);
                     format!("{h}:{p}")
-                } else { "?".into() }
-            } else { "?".into() };
+                } else {
+                    "?".into()
+                }
+            } else {
+                "?".into()
+            };
 
             tracing::info!("hop-recv: bridging stream → {dest_str}");
             eprintln!("hop-recv: bridging → {dest_str}");

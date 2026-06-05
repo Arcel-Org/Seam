@@ -79,7 +79,9 @@ pub fn pad_to_size_class(packet: Vec<u8>, lcg: &mut u64) -> Vec<u8> {
     let mut out = packet;
     out.reserve(target - out.len());
     while out.len() < target {
-        *lcg = lcg.wrapping_mul(6364136223846793005).wrapping_add(0x14057b7ef767814f);
+        *lcg = lcg
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(0x14057b7ef767814f);
         let rand_byte = ((*lcg >> 33) & 0xFF) as u8;
         out.push(rand_byte);
     }
@@ -99,7 +101,10 @@ pub struct CoverTrafficConfig {
 
 impl CoverTrafficConfig {
     pub fn disabled() -> Self {
-        Self { target_kbps: 0, packet_size: 1024 }
+        Self {
+            target_kbps: 0,
+            packet_size: 1024,
+        }
     }
 
     pub fn is_enabled(&self) -> bool {
@@ -147,7 +152,12 @@ impl RateTracker {
         self.samples.push_back((now, bytes));
         // Purge expired samples.
         let cutoff = now - self.window;
-        while self.samples.front().map(|(t, _)| *t < cutoff).unwrap_or(false) {
+        while self
+            .samples
+            .front()
+            .map(|(t, _)| *t < cutoff)
+            .unwrap_or(false)
+        {
             self.samples.pop_front();
         }
     }
@@ -197,7 +207,9 @@ impl JitterConfig {
         if self.max_jitter_ms == 0 {
             return Duration::ZERO;
         }
-        *lcg = lcg.wrapping_mul(6364136223846793005).wrapping_add(0x14057b7ef767814f);
+        *lcg = lcg
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(0x14057b7ef767814f);
         let ms = (*lcg >> 33) % (self.max_jitter_ms as u64);
         Duration::from_millis(ms)
     }
@@ -377,7 +389,10 @@ impl TarState {
         let size = self.config.cover.packet_size as usize;
         let mut payload = vec![0u8; size];
         for byte in payload.iter_mut() {
-            self.lcg = self.lcg.wrapping_mul(6364136223846793005).wrapping_add(0x14057b7ef767814f);
+            self.lcg = self
+                .lcg
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(0x14057b7ef767814f);
             *byte = (self.lcg >> 33) as u8;
         }
         payload
@@ -409,7 +424,11 @@ mod tests {
         let pkt = vec![0xAAu8; 100];
         let padded = pad_to_size_class(pkt, &mut lcg);
         assert_eq!(padded.len(), 256, "100 bytes should pad to Small (256)");
-        assert_eq!(&padded[..100], &[0xAAu8; 100], "original bytes must be preserved");
+        assert_eq!(
+            &padded[..100],
+            &[0xAAu8; 100],
+            "original bytes must be preserved"
+        );
     }
 
     #[test]
@@ -465,7 +484,11 @@ mod tests {
     fn derive_obfuscation_secret_differs_from_key() {
         let key = [0x77u8; 32];
         let secret = derive_obfuscation_secret(&key);
-        assert_ne!(&secret[..], &key[..], "derived secret must differ from raw key");
+        assert_ne!(
+            &secret[..],
+            &key[..],
+            "derived secret must differ from raw key"
+        );
     }
 
     #[test]
@@ -487,7 +510,10 @@ mod tests {
 
     #[test]
     fn cover_traffic_interval_calculation() {
-        let cfg = CoverTrafficConfig { target_kbps: 100, packet_size: 1024 };
+        let cfg = CoverTrafficConfig {
+            target_kbps: 100,
+            packet_size: 1024,
+        };
         let interval = cfg.inter_packet_interval().unwrap();
         // 100 kbps = 12500 B/s; packet = 1024 B; interval = 1024/12500 s ≈ 81.92ms
         let expected_ns = 1024u64 * 1_000_000_000 / 12500;
@@ -535,7 +561,10 @@ mod tests {
     fn tar_state_cover_payload_correct_size() {
         let cfg = TarConfig {
             no_padding: true,
-            cover: CoverTrafficConfig { target_kbps: 10, packet_size: 512 },
+            cover: CoverTrafficConfig {
+                target_kbps: 10,
+                packet_size: 512,
+            },
             jitter: JitterConfig::disabled(),
             obfuscate: false,
         };

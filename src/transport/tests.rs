@@ -587,7 +587,12 @@ async fn high_level_client_server_roundtrip() {
                 .unwrap();
             timeout(
                 Duration::from_secs(5),
-                client.connect(server_addr, &server_x25519, &server_kem_pk, Default::default()),
+                client.connect(
+                    server_addr,
+                    &server_x25519,
+                    &server_kem_pk,
+                    Default::default(),
+                ),
             )
             .await
             .expect("client connect timed out")
@@ -639,7 +644,10 @@ fn bbr_controller_startup_reaches_bandwidth_within_4_rtts() {
         ctrl.on_ack(bytes_per_round, rtt, now + rtt * i as u32);
     }
 
-    assert!(ctrl.pacing_rate() > 0.0, "pacing rate must be positive within 4 RTTs");
+    assert!(
+        ctrl.pacing_rate() > 0.0,
+        "pacing rate must be positive within 4 RTTs"
+    );
 }
 
 #[test]
@@ -667,7 +675,8 @@ fn bbr_controller_drain_transitions_to_probe_bw() {
     // Should have passed through Drain and reached ProbeBw.
     assert!(
         reached_probe_bw || matches!(ctrl.state(), BbrState::Drain | BbrState::ProbeBw),
-        "expected ProbeBw (or at least Drain), got {:?}", ctrl.state()
+        "expected ProbeBw (or at least Drain), got {:?}",
+        ctrl.state()
     );
 }
 
@@ -696,7 +705,8 @@ fn rtt_estimator_rto_never_below_200ms() {
     est.update(Duration::from_micros(500));
     assert!(
         est.rto() >= Duration::from_millis(200),
-        "RTO must be at least 200ms, got {:?}", est.rto()
+        "RTO must be at least 200ms, got {:?}",
+        est.rto()
     );
 }
 
@@ -736,20 +746,20 @@ fn bandwidth_estimator_percentile_p50() {
 
 // ── Cipher suite negotiation ──────────────────────────────────────────────────
 
-async fn cipher_roundtrip(client_cipher: crate::crypto::CipherSuite, server_cipher: crate::crypto::CipherSuite) {
+async fn cipher_roundtrip(
+    client_cipher: crate::crypto::CipherSuite,
+    server_cipher: crate::crypto::CipherSuite,
+) {
     use crate::api::{Client, Server};
 
     let server_id = crate::handshake::IdentityKeypair::generate();
     let server_x25519: [u8; 32] = server_id.x25519_public.to_bytes();
     let server_kem_pk = server_id.kem_pk.clone();
 
-    let mut server = Server::bind_with_cipher(
-        "127.0.0.1:0".parse().unwrap(),
-        server_id,
-        server_cipher,
-    )
-    .await
-    .unwrap();
+    let mut server =
+        Server::bind_with_cipher("127.0.0.1:0".parse().unwrap(), server_id, server_cipher)
+            .await
+            .unwrap();
     let server_addr = server.local_addr().unwrap();
 
     let (server_conn, client_conn) = tokio::join!(

@@ -21,8 +21,8 @@ use anyhow::{Result, anyhow};
 use clap::Args;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-use crate::{connect, ssh};
 use crate::serve::{SVC_INFO, SVC_PING};
+use crate::{connect, ssh};
 
 // ── Health check result ───────────────────────────────────────────────────────
 
@@ -87,7 +87,11 @@ pub struct HealthArgs {
 
 pub async fn run(args: HealthArgs, fips_mode: bool) -> Result<()> {
     let cfg = super::config::Config::load().ok().unwrap_or_default();
-    let cipher_str = if fips_mode { "aes256gcm" } else { cfg.cipher.as_str() };
+    let cipher_str = if fips_mode {
+        "aes256gcm"
+    } else {
+        cfg.cipher.as_str()
+    };
     let cipher = seam_protocol::crypto::CipherSuite::parse(cipher_str).unwrap_or_default();
 
     if !args.quiet {
@@ -107,7 +111,8 @@ pub async fn run(args: HealthArgs, fips_mode: bool) -> Result<()> {
         } else {
             args.remote.clone()
         };
-        let conn = connect::dial(&host, port, x25519, kem_pk, cipher).await
+        let conn = connect::dial(&host, port, x25519, kem_pk, cipher)
+            .await
             .map_err(|e| anyhow!("cannot connect to seam serve: {e}"))?;
         (conn, None::<std::process::Child>)
     } else {
@@ -121,8 +126,8 @@ pub async fn run(args: HealthArgs, fips_mode: bool) -> Result<()> {
         // Start serve with --print-seam-line so it emits the handshake line and
         // continues running. We connect to it using the printed SEAM line.
         let subcmd = "serve --port 0 --print-seam-line".to_string();
-        let (conn, child) =
-            connect::bootstrap_and_connect(&remote, &host, &subcmd, cipher).await
+        let (conn, child) = connect::bootstrap_and_connect(&remote, &host, &subcmd, cipher)
+            .await
             .map_err(|e| anyhow!("SSH bootstrap to {} failed: {e}", args.remote))?;
         (conn, Some(child))
     };
@@ -165,43 +170,43 @@ pub async fn run(args: HealthArgs, fips_mode: bool) -> Result<()> {
         info_stream.write_all(&[SVC_INFO]).await.ok();
 
         let mut info_buf = Vec::new();
-        let read_result = tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            async {
-                let mut tmp = [0u8; 4096];
-                loop {
-                    match info_stream.read(&mut tmp).await {
-                        Ok(0) | Err(_) => break,
-                        Ok(n) => info_buf.extend_from_slice(&tmp[..n]),
-                    }
-                }
-            },
-        ).await;
-
-        match read_result {
-            Ok(_) => {
-                match serde_json::from_slice::<serde_json::Value>(&info_buf) {
-                    Ok(info) => {
-                        let server_version = info["version"].as_str().unwrap_or("unknown");
-                        let version_ok = server_version == local_version;
-                        results.push(CheckResult {
-                            name: "version",
-                            status: if version_ok { CheckStatus::Pass } else { CheckStatus::Warn },
-                            detail: format!(
-                                "server={server_version} client={local_version}{}",
-                                if version_ok { "" } else { " (mismatch)" }
-                            ),
-                        });
-                    }
-                    Err(e) => {
-                        results.push(CheckResult {
-                            name: "version",
-                            status: CheckStatus::Warn,
-                            detail: format!("could not parse info response: {e}"),
-                        });
-                    }
+        let read_result = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            let mut tmp = [0u8; 4096];
+            loop {
+                match info_stream.read(&mut tmp).await {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => info_buf.extend_from_slice(&tmp[..n]),
                 }
             }
+        })
+        .await;
+
+        match read_result {
+            Ok(_) => match serde_json::from_slice::<serde_json::Value>(&info_buf) {
+                Ok(info) => {
+                    let server_version = info["version"].as_str().unwrap_or("unknown");
+                    let version_ok = server_version == local_version;
+                    results.push(CheckResult {
+                        name: "version",
+                        status: if version_ok {
+                            CheckStatus::Pass
+                        } else {
+                            CheckStatus::Warn
+                        },
+                        detail: format!(
+                            "server={server_version} client={local_version}{}",
+                            if version_ok { "" } else { " (mismatch)" }
+                        ),
+                    });
+                }
+                Err(e) => {
+                    results.push(CheckResult {
+                        name: "version",
+                        status: CheckStatus::Warn,
+                        detail: format!("could not parse info response: {e}"),
+                    });
+                }
+            },
             Err(_) => {
                 results.push(CheckResult {
                     name: "version",
@@ -236,7 +241,9 @@ pub async fn run(args: HealthArgs, fips_mode: bool) -> Result<()> {
         match tokio::time::timeout(
             std::time::Duration::from_secs(5),
             stream.read_exact(&mut echo),
-        ).await {
+        )
+        .await
+        {
             Ok(Ok(_)) if echo == payload => {
                 rtts.push(t0.elapsed().as_secs_f64() * 1000.0);
             }
@@ -263,7 +270,11 @@ pub async fn run(args: HealthArgs, fips_mode: bool) -> Result<()> {
         let loss_pct = (ping_failed as f64 / ping_count as f64) * 100.0;
         results.push(CheckResult {
             name: "rtt",
-            status: if ping_failed > 0 { CheckStatus::Warn } else { CheckStatus::Pass },
+            status: if ping_failed > 0 {
+                CheckStatus::Warn
+            } else {
+                CheckStatus::Pass
+            },
             detail: format!(
                 "min={min:.2}ms avg={avg:.2}ms max={max:.2}ms loss={loss_pct:.0}% ({}/{} ok)",
                 rtts.len(),
@@ -274,14 +285,21 @@ pub async fn run(args: HealthArgs, fips_mode: bool) -> Result<()> {
 
     // ── Output ────────────────────────────────────────────────────────────────
     let any_fail = results.iter().any(|r| r.status.is_fail());
-    let any_warn = results.iter().any(|r| matches!(r.status, CheckStatus::Warn));
+    let any_warn = results
+        .iter()
+        .any(|r| matches!(r.status, CheckStatus::Warn));
 
     if args.json {
-        let checks: Vec<serde_json::Value> = results.iter().map(|r| serde_json::json!({
-            "check": r.name,
-            "status": r.status.symbol(),
-            "detail": r.detail,
-        })).collect();
+        let checks: Vec<serde_json::Value> = results
+            .iter()
+            .map(|r| {
+                serde_json::json!({
+                    "check": r.name,
+                    "status": r.status.symbol(),
+                    "detail": r.detail,
+                })
+            })
+            .collect();
         let output = serde_json::json!({
             "target": args.remote,
             "overall": if any_fail { "FAIL" } else if any_warn { "WARN" } else { "PASS" },
@@ -296,7 +314,13 @@ pub async fn run(args: HealthArgs, fips_mode: bool) -> Result<()> {
             eprintln!("  [{:<4}]  {:<20}  {}", r.status.symbol(), r.name, r.detail);
         }
         eprintln!("  {}", "─".repeat(58));
-        let overall = if any_fail { "FAIL" } else if any_warn { "WARN" } else { "PASS" };
+        let overall = if any_fail {
+            "FAIL"
+        } else if any_warn {
+            "WARN"
+        } else {
+            "PASS"
+        };
         eprintln!("  Overall: {overall}");
         eprintln!();
     }

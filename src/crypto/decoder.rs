@@ -1,5 +1,7 @@
 use crate::{
-    crypto::{header::apply_header_protection, keys::PacketKeys, make_cipher, replay::ReplayWindow},
+    crypto::{
+        header::apply_header_protection, keys::PacketKeys, make_cipher, replay::ReplayWindow,
+    },
     error::SeamError,
     packet::{HEADER_LEN, MAX_PACKET_LEN, MIN_PACKET_LEN, PktType, TAG_LEN},
 };
@@ -193,7 +195,9 @@ mod tests {
 
         // seq 1023 is the last valid slot in the window when base_seq = 0 (offset = 1023 < 1024)
         let mut buf_boundary = vec![0u8; HEADER_LEN + 4 + TAG_LEN];
-        encoder.encode(PktType::Data, b"bndl", &mut buf_boundary).unwrap();
+        encoder
+            .encode(PktType::Data, b"bndl", &mut buf_boundary)
+            .unwrap();
         // Decode the skipped packets first (1 .. 1022) is impractical here; instead we
         // decode only the boundary packet which requires sliding.  The important assertion
         // is that the decode does NOT return a TooOld / Replay error.

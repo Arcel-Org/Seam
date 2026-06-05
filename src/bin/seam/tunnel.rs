@@ -1,6 +1,6 @@
 use std::io::Write as _;
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::{Result, anyhow, bail};
@@ -162,9 +162,7 @@ fn print_status(stats: &TunnelStats, start: Instant) {
     let served = stats.connections_served.load(Ordering::Relaxed);
     let active = stats.connections_active.load(Ordering::Relaxed);
     let uptime = start.elapsed().as_secs();
-    let line = format!(
-        "  [{uptime:>6}s] {served} connections served  {active} active\r"
-    );
+    let line = format!("  [{uptime:>6}s] {served} connections served  {active} active\r");
     let _ = std::io::stderr().write_all(line.as_bytes());
     let _ = std::io::stderr().flush();
 }
@@ -176,7 +174,9 @@ pub async fn run(args: TunnelArgs) -> Result<()> {
     let cipher = seam_protocol::crypto::CipherSuite::parse(&cfg.cipher).unwrap_or_default();
 
     let mode = if args.http {
-        TunnelMode::Http { inspect: args.inspect }
+        TunnelMode::Http {
+            inspect: args.inspect,
+        }
     } else {
         TunnelMode::Tcp
     };
@@ -220,7 +220,10 @@ pub async fn run(args: TunnelArgs) -> Result<()> {
     eprintln!("  Hops:   1");
     eprintln!(
         "  Mode:   {}{}",
-        match mode { TunnelMode::Tcp => "TCP", TunnelMode::Http { .. } => "HTTP" },
+        match mode {
+            TunnelMode::Tcp => "TCP",
+            TunnelMode::Http { .. } => "HTTP",
+        },
         if args.inspect { " (inspect)" } else { "" },
     );
     eprintln!("  Name:   {name}");
@@ -241,10 +244,17 @@ pub async fn run(args: TunnelArgs) -> Result<()> {
 
         handles.push(tokio::spawn(async move {
             run_port_forward(
-                local_port, &remote, ssh_port,
-                direct.as_deref(), &name_c,
-                cipher_c, mode, stats_c, &mut srx,
-            ).await
+                local_port,
+                &remote,
+                ssh_port,
+                direct.as_deref(),
+                &name_c,
+                cipher_c,
+                mode,
+                stats_c,
+                &mut srx,
+            )
+            .await
         }));
     }
 
@@ -366,12 +376,17 @@ async fn connect_mux(
         (None, remote.to_string())
     };
 
-    let remote_info = ssh::RemoteInfo { host: host.clone(), user, ssh_port };
+    let remote_info = ssh::RemoteInfo {
+        host: host.clone(),
+        user,
+        ssh_port,
+    };
     let subcmd = format!(
         "_tunnel-recv localhost 0 --port 0 --name {}",
         connect::shell_quote(name)
     );
-    let (conn, _child) = connect::bootstrap_and_connect(&remote_info, &host, &subcmd, cipher).await?;
+    let (conn, _child) =
+        connect::bootstrap_and_connect(&remote_info, &host, &subcmd, cipher).await?;
 
     // _child is intentionally moved here and dropped when mux closes.
     let mux = SeamMux::new(conn);
@@ -446,13 +461,17 @@ async fn drain_control_streams(mux: Arc<SeamMux>, stats: Arc<TunnelStats>) {
             }
             if let Some(frame) = TunnelStatusFrame::decode(&buf) {
                 // Apply server stats to local view (server is authoritative for its counters).
-                stats_c.connections_active.store(frame.connections_active, Ordering::Relaxed);
+                stats_c
+                    .connections_active
+                    .store(frame.connections_active, Ordering::Relaxed);
                 stats_c.bytes_in.store(frame.bytes_in, Ordering::Relaxed);
                 stats_c.bytes_out.store(frame.bytes_out, Ordering::Relaxed);
                 tracing::debug!(
                     "tunnel status: active={} bytes_in={} bytes_out={} uptime={}s",
-                    frame.connections_active, frame.bytes_in,
-                    frame.bytes_out, frame.uptime_seconds,
+                    frame.connections_active,
+                    frame.bytes_in,
+                    frame.bytes_out,
+                    frame.uptime_seconds,
                 );
             }
         });
@@ -472,7 +491,9 @@ async fn bridge_counted(
         let mut buf = vec![0u8; 65536];
         loop {
             let n = sr.read(&mut buf).await?;
-            if n == 0 { break; }
+            if n == 0 {
+                break;
+            }
             stats_in.bytes_in.fetch_add(n as u64, Ordering::Relaxed);
             tw.write_all(&buf[..n]).await?;
         }
@@ -485,7 +506,9 @@ async fn bridge_counted(
         let mut buf = vec![0u8; 65536];
         loop {
             let n = tr.read(&mut buf).await?;
-            if n == 0 { break; }
+            if n == 0 {
+                break;
+            }
             stats_out.bytes_out.fetch_add(n as u64, Ordering::Relaxed);
             sw.write_all(&buf[..n]).await?;
         }
@@ -508,8 +531,8 @@ async fn bridge_http(
         Ok(0) | Err(_) => return,
         Ok(n) => n,
     };
-    let (method, path) = parse_http_request_line(&hdr[..n])
-        .unwrap_or_else(|| ("TCP".to_string(), "-".to_string()));
+    let (method, path) =
+        parse_http_request_line(&hdr[..n]).unwrap_or_else(|| ("TCP".to_string(), "-".to_string()));
 
     let mut seam = mux.open_stream().await;
     if seam.write_all(&hdr[..n]).await.is_err() {
@@ -542,7 +565,10 @@ pub async fn run_recv(args: TunnelRecvArgs) -> Result<()> {
     }
 
     let label = args.name.as_deref().unwrap_or("default");
-    eprintln!("tunnel-recv: session={label} target={}:{}", args.remote_host, args.remote_port);
+    eprintln!(
+        "tunnel-recv: session={label} target={}:{}",
+        args.remote_host, args.remote_port
+    );
 
     let id = IdentityKeypair::generate();
     let x25519_hex = hex::encode(id.x25519_public.as_bytes());
@@ -655,7 +681,9 @@ async fn bridge_recv(
         let mut buf = vec![0u8; 65536];
         loop {
             let n = sr.read(&mut buf).await?;
-            if n == 0 { break; }
+            if n == 0 {
+                break;
+            }
             stats_out.bytes_out.fetch_add(n as u64, Ordering::Relaxed);
             tw.write_all(&buf[..n]).await?;
         }
@@ -667,7 +695,9 @@ async fn bridge_recv(
         let mut buf = vec![0u8; 65536];
         loop {
             let n = tr.read(&mut buf).await?;
-            if n == 0 { break; }
+            if n == 0 {
+                break;
+            }
             stats_in.bytes_in.fetch_add(n as u64, Ordering::Relaxed);
             sw.write_all(&buf[..n]).await?;
         }

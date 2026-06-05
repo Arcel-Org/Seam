@@ -140,8 +140,7 @@ pub async fn run(args: ShellArgs) -> Result<()> {
         subcmd.push_str(&connect::shell_quote(arg));
     }
 
-    let (conn, _child) =
-        connect::bootstrap_and_connect(&remote, &host, &subcmd, cipher).await?;
+    let (conn, _child) = connect::bootstrap_and_connect(&remote, &host, &subcmd, cipher).await?;
 
     let mux = SeamMux::new(conn);
     let stream = mux.open_stream().await;
@@ -185,8 +184,7 @@ async fn run_interactive_pty(mut stream: seam_protocol::tunnel::SeamStream) -> R
     let saved_termios = set_raw_mode(stdin_fd)?;
 
     // Set up SIGWINCH handler for terminal resize.
-    let mut sigwinch = signal(SignalKind::window_change())
-        .map_err(|e| anyhow!("SIGWINCH: {e}"))?;
+    let mut sigwinch = signal(SignalKind::window_change()).map_err(|e| anyhow!("SIGWINCH: {e}"))?;
 
     // Pre-bind stdin/stdout so they're not temporaries inside the select loop.
     let mut local_stdin = tokio::io::stdin();
@@ -485,8 +483,9 @@ pub async fn run_recv(args: ShellRecvArgs) -> Result<()> {
     let cfg = super::config::Config::load().ok().unwrap_or_default();
     let cipher = seam_protocol::crypto::CipherSuite::parse(&cfg.cipher).unwrap_or_default();
     let addr: std::net::SocketAddr = format!("0.0.0.0:{}", args.port).parse()?;
-    let mut server =
-        Server::bind_with_cipher(addr, id, cipher).await.map_err(|e| anyhow!("{e}"))?;
+    let mut server = Server::bind_with_cipher(addr, id, cipher)
+        .await
+        .map_err(|e| anyhow!("{e}"))?;
     let port = server.local_addr()?.port();
 
     // Emit the SEAM handshake line over stdout so the SSH parent can parse it.
@@ -633,9 +632,8 @@ async fn pty_bridge_loop(
     tokio::task::spawn_blocking(move || {
         let mut buf = [0u8; 4096];
         loop {
-            let n = unsafe {
-                libc::read(master_rd, buf.as_mut_ptr() as *mut libc::c_void, buf.len())
-            };
+            let n =
+                unsafe { libc::read(master_rd, buf.as_mut_ptr() as *mut libc::c_void, buf.len()) };
             if n <= 0 {
                 break;
             }

@@ -206,7 +206,10 @@ fn rotate_key(id_path: &std::path::Path, format: &str) -> Result<()> {
             println!("  \"new\": {{");
             println!("    \"x25519\": \"{new_x25519}\",");
             println!("    \"ml_kem_768\": \"{new_kem}\",");
-            println!("    \"ml_dsa_65\": \"{}\",", hex::encode(&new_mldsa_pk_bytes));
+            println!(
+                "    \"ml_dsa_65\": \"{}\",",
+                hex::encode(&new_mldsa_pk_bytes)
+            );
             println!("    \"ml_dsa_65_fingerprint\": \"SHA256:{new_mldsa_fp}\"");
             println!("  }},");
             println!("  \"path\": \"{}\"", id_path.display());
@@ -256,7 +259,20 @@ fn fmt_timestamp_utc(secs: u64) -> String {
         year += 1;
     }
     let leap = is_leap(year);
-    let month_days: [u32; 12] = [31, if leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    let month_days: [u32; 12] = [
+        31,
+        if leap { 29 } else { 28 },
+        31,
+        30,
+        31,
+        30,
+        31,
+        31,
+        30,
+        31,
+        30,
+        31,
+    ];
     let mut month = 1u32;
     for &md in &month_days {
         if days < md {

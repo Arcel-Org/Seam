@@ -39,10 +39,7 @@ impl BandwidthEstimator {
     /// Current bandwidth estimate: maximum delivery rate observed in the window.
     /// Returns 0.0 if no samples are available.
     pub fn estimate(&self) -> f64 {
-        self.samples
-            .iter()
-            .map(|(r, _)| *r)
-            .fold(0.0_f64, f64::max)
+        self.samples.iter().map(|(r, _)| *r).fold(0.0_f64, f64::max)
     }
 
     /// p-th percentile delivery rate (0.0 ≤ p ≤ 1.0).
@@ -90,7 +87,7 @@ mod tests {
     fn bandwidth_windowed_max() {
         let mut bw = BandwidthEstimator::new(Duration::from_secs(30));
         bw.record_delivery(1000, Duration::from_millis(10)); // 100 KB/s
-        bw.record_delivery(1000, Duration::from_millis(5));  // 200 KB/s
+        bw.record_delivery(1000, Duration::from_millis(5)); // 200 KB/s
         bw.record_delivery(1000, Duration::from_millis(20)); //  50 KB/s
 
         let est = bw.estimate();

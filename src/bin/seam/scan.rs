@@ -138,7 +138,11 @@ async fn grab_banner(stream: &mut TcpStream) -> Option<String> {
                 .filter(|c| c.is_ascii_graphic() || *c == ' ')
                 .take(120)
                 .collect::<String>();
-            if banner.is_empty() { None } else { Some(banner) }
+            if banner.is_empty() {
+                None
+            } else {
+                Some(banner)
+            }
         }
         _ => None,
     }
@@ -169,7 +173,10 @@ pub async fn run_scan(args: ScanArgs) -> Result<()> {
             if ports.len() == 1 { "" } else { "s" },
             total_probes
         );
-        eprintln!("{:<20} {:<8} {:<12} {}", "HOST", "PORT", "LATENCY", "BANNER");
+        eprintln!(
+            "{:<20} {:<8} {:<12} {}",
+            "HOST", "PORT", "LATENCY", "BANNER"
+        );
         eprintln!("{}", "-".repeat(60));
     }
 

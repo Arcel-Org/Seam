@@ -221,6 +221,9 @@ impl GroupState {
 
         // Build a row for each of the k column indices in order.
         // If source i is available, use identity row. Otherwise use a repair row.
+        // Invariant: avail_rep.len() == n_missing (truncated above), so rep_iter
+        // always has an element when we enter the else branch.
+        debug_assert_eq!(avail_rep.len(), n_missing, "repair count must equal missing count");
         let mut rep_iter = avail_rep.iter();
         for col in 0..self.k {
             if let Some(src_data) = self.sources.get(&col) {
@@ -229,8 +232,8 @@ impl GroupState {
                 mat.push(row);
                 rhs.push(src_data.clone());
             } else {
-                // Take next available repair row for this missing column
-                let &ri = rep_iter.next().unwrap();
+                // Take next available repair row for this missing column.
+                let &ri = rep_iter.next().expect("repair count invariant violated");
                 let row: Vec<u8> = (0..self.k).map(|j| cauchy(ri, j, r)).collect();
                 mat.push(row);
                 rhs.push(self.repairs[&ri].clone());

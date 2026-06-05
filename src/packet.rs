@@ -4,6 +4,17 @@ pub const HEADER_LEN: usize = 32;
 pub const TAG_LEN: usize = 16;
 pub const MIN_PACKET_LEN: usize = HEADER_LEN + TAG_LEN;
 
+/// Maximum on-wire packet size (bytes) accepted by the decoder.
+///
+/// Standard IPv4/IPv6 UDP payloads are bounded by the 65 535-byte IP datagram
+/// limit, but government/military deployments often enforce tighter MTU budgets
+/// (typically ≤ 9 000 bytes for jumbo Ethernet or ≤ 1 500 bytes for standard
+/// Ethernet).  We accept any UDP payload up to the IP limit so we do not
+/// accidentally break legitimate jumbo-frame paths, but we **hard-reject**
+/// anything larger before wasting AEAD resources on it.  Amplification packets
+/// crafted by an attacker will almost always exceed this limit.
+pub const MAX_PACKET_LEN: usize = 65535;
+
 /// Minimum output buffer size for encoding `plaintext_len` bytes.
 pub fn encode_buf_len(plaintext_len: usize) -> usize {
     HEADER_LEN + plaintext_len + TAG_LEN

@@ -20,4 +20,6 @@ pub enum SeamError {
     StreamFinished(u32),
     #[error("protocol violation: {0}")]
     ProtocolViolation(String),
+    #[error("packet too large: {have} bytes exceeds maximum {max}")]
+    PacketTooLarge { have: usize, max: usize },
 }

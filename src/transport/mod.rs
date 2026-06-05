@@ -29,7 +29,7 @@ pub fn default_cc() -> Box<dyn CongestionControl> {
 }
 pub use chaff::ChaffScheduler;
 pub use connection::{ConnPhase, Connection};
-pub use endpoint::Endpoint;
+pub use endpoint::{DEFAULT_MAX_CONNECTIONS, Endpoint, EndpointConfig};
 pub use pacer::Pacer;
 pub use pool::BufferPool;
 pub use probe::PathProber;

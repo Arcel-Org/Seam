@@ -84,6 +84,7 @@ pub async fn run(args: SendArgs) -> Result<()> {
         .progress_chars("█▉▊▋▌▍▎▏ "),
     );
 
+    let send_start = std::time::Instant::now();
     for (rel_name, _meta) in &files {
         pb.set_message(format!("sending {rel_name}"));
         send_file(
@@ -95,10 +96,14 @@ pub async fn run(args: SendArgs) -> Result<()> {
     proto::send_frame(&conn, ctrl_sid, &[proto::DONE]).await?;
     conn.close().await;
 
+    let send_secs = send_start.elapsed().as_secs_f64().max(0.001);
+    let send_mib_s = (total_bytes as f64) / (1024.0 * 1024.0) / send_secs;
     pb.finish_with_message(format!(
-        "done — {} file(s), {} bytes",
+        "done — {} file(s), {} MiB in {:.1}s ({:.1} MiB/s)",
         files.len(),
-        total_bytes
+        total_bytes / (1024 * 1024),
+        send_secs,
+        send_mib_s,
     ));
     Ok(())
 }

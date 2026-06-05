@@ -100,9 +100,16 @@ pub async fn run(args: FwdArgs) -> Result<()> {
         };
         let target = format!("{local_host}:{local_port}");
         tokio::spawn(async move {
-            if let Ok(mut tcp) = tokio::net::TcpStream::connect(&target).await {
-                let mut s = stream;
-                let _ = tokio::io::copy_bidirectional(&mut s, &mut tcp).await;
+            match tokio::net::TcpStream::connect(&target).await {
+                Ok(mut tcp) => {
+                    let mut s = stream;
+                    let _ = tokio::io::copy_bidirectional(&mut s, &mut tcp).await;
+                }
+                Err(e) => {
+                    eprintln!("fwd: could not connect to local {target}: {e}");
+                    // Dropping stream closes it, signalling EOF to the remote side.
+                    drop(stream);
+                }
             }
         });
     }

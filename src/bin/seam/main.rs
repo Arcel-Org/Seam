@@ -11,6 +11,7 @@ mod health;
 mod key;
 mod known_hosts;
 mod ls;
+mod perf;
 mod ping;
 mod pipe;
 mod proto;
@@ -109,6 +110,10 @@ enum Commands {
     /// Measure transfer throughput to a remote host
     #[command(name = "bench")]
     Bench(bench::BenchArgs),
+
+    /// Run local in-process cryptographic performance self-test
+    #[command(name = "perf")]
+    Perf(perf::PerfArgs),
 
     /// Measure round-trip latency to a remote host (like ping, but post-quantum encrypted)
     #[command(name = "ping")]
@@ -216,6 +221,7 @@ fn print_splash() {
     eprintln!("    serve    Standalone server daemon    seam serve --port 2222");
     eprintln!("    health   Health-check seam serve      seam health user@host");
     eprintln!("    bench    Measure throughput        seam bench user@host");
+    eprintln!("    perf     Crypto performance self-test  seam perf");
     eprintln!("    proxy    SOCKS5 proxy                seam proxy user@host --port 1080");
     eprintln!("    ping     Latency measurement        seam ping user@host");
     eprintln!("    key      Show identity public key    seam key");
@@ -327,6 +333,7 @@ async fn main() -> Result<()> {
             let remote = args.remote.clone();
             audited!("bench", &remote, vec![], bench::run(args).await)
         }
+        Some(Commands::Perf(args)) => audited!("perf", "", vec![], perf::run(args)),
         Some(Commands::Ping(args)) => {
             let remote = args.remote.clone();
             audited!("ping", &remote, vec![], ping::run(args).await)

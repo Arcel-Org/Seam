@@ -1,4 +1,5 @@
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
+use seam_protocol::crypto::ratchet::{DoubleRatchet, ratchet_step};
 use seam_protocol::session::rack::RackTracker;
 use seam_protocol::session::{
     Session,
@@ -196,6 +197,30 @@ fn bench_pacer(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_ratchet_step(c: &mut Criterion) {
+    let mut group = c.benchmark_group("ratchet");
+    group.bench_function("chain_kdf_step", |b| {
+        let chain_key = [0x42u8; 32];
+        b.iter(|| {
+            let (new_ck, msg_key) = ratchet_step(&chain_key);
+            std::hint::black_box((new_ck, msg_key))
+        });
+    });
+    group.finish();
+}
+
+fn bench_ratchet_dh_step(c: &mut Criterion) {
+    let mut group = c.benchmark_group("ratchet");
+    group.bench_function("dh_root_ratchet_step", |b| {
+        let root = [0xABu8; 32];
+        b.iter(|| {
+            let mut r = DoubleRatchet::new(&root, true);
+            r.advance_send_ratchet()
+        });
+    });
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_stream_flush,
@@ -205,5 +230,7 @@ criterion_group!(
     bench_rack,
     bench_buffer_pool,
     bench_datagram_queue,
+    bench_ratchet_step,
+    bench_ratchet_dh_step,
 );
 criterion_main!(benches);

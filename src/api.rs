@@ -383,6 +383,16 @@ impl Server {
         local_addr: SocketAddr,
         identity: IdentityKeypair,
     ) -> Result<Self, SeamError> {
+        Self::bind_with_cipher(local_addr, identity, CipherSuite::default()).await
+    }
+
+    /// Like [`bind`] but lets the server express a cipher suite preference.
+    /// AES-256-GCM is used only when the client also requests it.
+    pub async fn bind_with_cipher(
+        local_addr: SocketAddr,
+        identity: IdentityKeypair,
+        preferred_cipher: CipherSuite,
+    ) -> Result<Self, SeamError> {
         let socket = create_bound_socket(local_addr)
             .map_err(|e| SeamError::HandshakeFailed(e.to_string()))?;
         let socket = Arc::new(socket);
@@ -405,6 +415,7 @@ impl Server {
             cookie_factory,
             ticket_key,
             accept_tx,
+            preferred_cipher,
         ));
 
         Ok(Self {
@@ -431,6 +442,7 @@ async fn server_recv_loop(
     cookie_factory: Arc<CookieFactory>,
     ticket_key: crate::transport::resumption::TicketKey,
     accept_tx: mpsc::UnboundedSender<SeamConn>,
+    preferred_cipher: CipherSuite,
 ) {
     let mut buf = vec![0u8; MAX_UDP];
     // Per-remote connection table.
@@ -479,6 +491,7 @@ async fn server_recv_loop(
                 identity.clone(),
                 cookie_factory.clone(),
                 Some(ticket_key.clone()),
+                preferred_cipher,
             )
             .await
             {

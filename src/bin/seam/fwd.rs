@@ -149,8 +149,10 @@ pub async fn run_recv(args: FwdRecvArgs) -> Result<()> {
     let x25519_hex = hex::encode(id.x25519_public.as_bytes());
     let kem_hex = hex::encode(pk_to_bytes(&id.kem_pk));
 
+    let cfg = super::config::Config::load().ok().unwrap_or_default();
+    let cipher = seam_protocol::crypto::CipherSuite::parse(&cfg.cipher).unwrap_or_default();
     let addr: std::net::SocketAddr = format!("0.0.0.0:{}", args.port).parse()?;
-    let mut server = Server::bind(addr, id).await.map_err(|e| anyhow!("{e}"))?;
+    let mut server = Server::bind_with_cipher(addr, id, cipher).await.map_err(|e| anyhow!("{e}"))?;
     let udp_port = server.local_addr()?.port();
 
     // Bind the TCP listener before announcing — so the port is ready when the

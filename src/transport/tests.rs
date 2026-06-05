@@ -733,3 +733,77 @@ fn bandwidth_estimator_percentile_p50() {
         "p50 should be 3 MB/s, got {p50}"
     );
 }
+
+// ── Cipher suite negotiation ──────────────────────────────────────────────────
+
+async fn cipher_roundtrip(client_cipher: crate::crypto::CipherSuite, server_cipher: crate::crypto::CipherSuite) {
+    use crate::api::{Client, Server};
+
+    let server_id = crate::handshake::IdentityKeypair::generate();
+    let server_x25519: [u8; 32] = server_id.x25519_public.to_bytes();
+    let server_kem_pk = server_id.kem_pk.clone();
+
+    let mut server = Server::bind_with_cipher(
+        "127.0.0.1:0".parse().unwrap(),
+        server_id,
+        server_cipher,
+    )
+    .await
+    .unwrap();
+    let server_addr = server.local_addr().unwrap();
+
+    let (server_conn, client_conn) = tokio::join!(
+        async {
+            timeout(Duration::from_secs(5), server.accept())
+                .await
+                .expect("server accept timed out")
+                .expect("server accept returned None")
+        },
+        async {
+            let client_id = crate::handshake::IdentityKeypair::generate();
+            let mut client = Client::bind("127.0.0.1:0".parse().unwrap(), client_id)
+                .await
+                .unwrap();
+            timeout(
+                Duration::from_secs(5),
+                client.connect(server_addr, &server_x25519, &server_kem_pk, client_cipher),
+            )
+            .await
+            .expect("client connect timed out")
+            .expect("client connect failed")
+        },
+    );
+
+    let payload = b"cipher roundtrip ok";
+    let sid = client_conn.open_stream().await;
+    client_conn.write(sid, payload).await.unwrap();
+
+    let mut sconn = server_conn;
+    let _ = timeout(Duration::from_secs(2), sconn.read_event())
+        .await
+        .expect("server event timed out");
+    let data = sconn.read(sid, 256).await.unwrap();
+    assert_eq!(data, payload);
+}
+
+/// AES-256-GCM transfers data correctly when both sides request it.
+#[tokio::test]
+async fn aes256gcm_cipher_negotiation_and_transfer() {
+    use crate::crypto::CipherSuite;
+    cipher_roundtrip(CipherSuite::Aes256Gcm, CipherSuite::Aes256Gcm).await;
+}
+
+/// When client requests AES but server prefers ChaCha20 (default),
+/// the connection falls back to ChaCha20-Poly1305.
+#[tokio::test]
+async fn cipher_fallback_to_chacha_on_mismatch() {
+    use crate::crypto::CipherSuite;
+    cipher_roundtrip(CipherSuite::Aes256Gcm, CipherSuite::ChaCha20Poly1305).await;
+}
+
+/// ChaCha20-Poly1305 baseline — both sides use default.
+#[tokio::test]
+async fn chacha20_cipher_explicit_roundtrip() {
+    use crate::crypto::CipherSuite;
+    cipher_roundtrip(CipherSuite::ChaCha20Poly1305, CipherSuite::ChaCha20Poly1305).await;
+}

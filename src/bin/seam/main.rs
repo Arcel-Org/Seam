@@ -5,7 +5,9 @@ mod connect;
 mod copy;
 mod doctor;
 mod fwd;
+mod key;
 mod ls;
+mod ping;
 mod pipe;
 mod proto;
 mod recv;
@@ -64,6 +66,14 @@ enum Commands {
     #[command(name = "bench")]
     Bench(bench::BenchArgs),
 
+    /// Measure round-trip latency to a remote host (like ping, but post-quantum encrypted)
+    #[command(name = "ping")]
+    Ping(ping::PingArgs),
+
+    /// Show local identity key public components
+    #[command(name = "key")]
+    Key(key::KeyArgs),
+
     /// Show connection statistics (RTT, throughput, MTU, cwnd)
     #[command(name = "stats")]
     Stats(stats::StatsArgs),
@@ -105,6 +115,8 @@ enum Commands {
     FwdRecv(fwd::FwdRecvArgs),
     #[command(name = "_stats-recv", hide = true)]
     StatsRecv(stats::StatsRecvArgs),
+    #[command(name = "_ping-recv", hide = true)]
+    PingRecv(ping::PingRecvArgs),
 }
 
 fn print_splash() {
@@ -121,6 +133,8 @@ fn print_splash() {
     eprintln!("    tunnel   TCP port forward          seam tunnel 8080:user@host:3000");
     eprintln!("    fwd      Reverse port forward      seam fwd user@host:3000 8080");
     eprintln!("    bench    Measure throughput        seam bench user@host");
+    eprintln!("    ping     Latency measurement        seam ping user@host");
+    eprintln!("    key      Show identity public key    seam key");
     eprintln!("    stats    Connection statistics     seam stats user@host");
     eprintln!("    ls       List remote files         seam ls user@host:/path");
     eprintln!("    doctor   System readiness check    seam doctor");
@@ -154,6 +168,8 @@ async fn main() -> Result<()> {
         Some(Commands::Tunnel(args)) => tunnel::run(args).await,
         Some(Commands::Fwd(args)) => fwd::run(args).await,
         Some(Commands::Bench(args)) => bench::run(args).await,
+        Some(Commands::Ping(args)) => ping::run(args).await,
+        Some(Commands::Key(args)) => key::run(args),
         Some(Commands::Stats(args)) => stats::run(args).await,
         Some(Commands::Update(args)) => update::run(args),
         Some(Commands::Config(args)) => config::run(args),
@@ -168,5 +184,6 @@ async fn main() -> Result<()> {
         Some(Commands::BenchRecv(args)) => bench::run_recv(args).await,
         Some(Commands::FwdRecv(args)) => fwd::run_recv(args).await,
         Some(Commands::StatsRecv(args)) => stats::run_recv(args).await,
+        Some(Commands::PingRecv(args)) => ping::run_recv(args).await,
     }
 }

@@ -37,6 +37,21 @@ pub struct CopyArgs {
     /// Example: --rate 10  (limits to 10 Mbps ≈ 1.25 MB/s)
     #[arg(long, value_name = "Mbps")]
     pub rate: Option<f64>,
+
+    /// Local bind addresses for multi-path transport (comma-separated ip:port pairs).
+    ///
+    /// Example: --multipath 192.168.1.100:0,10.0.0.1:0
+    ///
+    /// Sends file chunks over multiple network interfaces simultaneously.
+    /// Combine with --multipath-redundant for maximum anti-jamming protection.
+    #[arg(long, value_name = "addr1,addr2,...")]
+    pub multipath: Option<String>,
+
+    /// Anti-jamming mode: send every packet on ALL active paths simultaneously.
+    ///
+    /// Receiver deduplicates by sequence number. Best for contested RF environments.
+    #[arg(long)]
+    pub multipath_redundant: bool,
 }
 
 // ── Token-bucket rate limiter (same algorithm as bench --bw-cap) ──────────────

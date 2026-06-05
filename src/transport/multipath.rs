@@ -595,13 +595,15 @@ mod tests {
 
         // Each receiver should get at least 1 packet (not necessarily exactly 2
         // due to cursor starting position, but both must receive at least once).
-        // tokio::net::UdpSocket is always non-blocking; use try_recv_from.
+        r0.set_nonblocking(true).unwrap();
+        r1.set_nonblocking(true).unwrap();
+
         let mut count0 = 0u32;
         let mut count1 = 0u32;
-        while let Ok((n, _)) = r0.try_recv_from(&mut buf) {
+        while let Ok((n, _)) = r0.recv_from(&mut buf) {
             if n > 0 { count0 += 1; }
         }
-        while let Ok((n, _)) = r1.try_recv_from(&mut buf) {
+        while let Ok((n, _)) = r1.recv_from(&mut buf) {
             if n > 0 { count1 += 1; }
         }
 
@@ -663,13 +665,16 @@ mod tests {
             ep.send(payload).await.unwrap();
         }
 
+        r0.set_nonblocking(true).unwrap();
+        r1.set_nonblocking(true).unwrap();
+
         let mut buf = vec![0u8; 256];
         let mut count0 = 0u32;
         let mut count1 = 0u32;
-        while let Ok((n, _)) = r0.try_recv_from(&mut buf) {
+        while let Ok((n, _)) = r0.recv_from(&mut buf) {
             if n > 0 { count0 += 1; }
         }
-        while let Ok((n, _)) = r1.try_recv_from(&mut buf) {
+        while let Ok((n, _)) = r1.recv_from(&mut buf) {
             if n > 0 { count1 += 1; }
         }
 

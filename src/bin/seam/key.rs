@@ -1,6 +1,7 @@
 use anyhow::Result;
 use clap::Args;
-use seam_protocol::handshake::{IdentityKeypair, pk_to_bytes};
+use fips204::traits::SerDes as _;
+use seam_protocol::handshake::{IdentityKeypair, MLDSA_PK_LEN, pk_to_bytes};
 
 #[derive(Args)]
 pub struct KeyArgs {
@@ -78,22 +79,34 @@ pub fn run(args: KeyArgs) -> Result<()> {
 
     let x25519 = hex::encode(id.x25519_public.as_bytes());
     let kem = hex::encode(pk_to_bytes(&id.kem_pk));
+    let mldsa_pk_bytes: [u8; MLDSA_PK_LEN] = id.mldsa_pk.clone().into_bytes();
+    let mldsa_pk_hex = hex::encode(&mldsa_pk_bytes);
+    let mldsa_fp = id.mldsa_fingerprint();
 
     match args.format.as_str() {
         "json" => {
             println!("{{");
             println!("  \"x25519\": \"{x25519}\",");
-            println!("  \"kem\": \"{kem}\",");
+            println!("  \"ml_kem_768\": \"{kem}\",");
+            println!("  \"ml_dsa_65\": \"{mldsa_pk_hex}\",");
+            println!("  \"ml_dsa_65_fingerprint\": \"SHA256:{mldsa_fp}\",");
             println!("  \"path\": \"{}\"", id_path.display());
             println!("}}");
         }
         _ => {
             println!("identity key: {}", id_path.display());
             println!();
-            println!("  x25519  {x25519}");
-            println!("  kem     {kem}");
+            println!("  X25519 public key:          {x25519}");
+            println!("  ML-KEM-768 public key:      {kem}");
+            println!("  ML-DSA-65 public key:       {mldsa_pk_hex}");
+            println!("  ML-DSA-65 fingerprint:      SHA256:{mldsa_fp}");
             println!();
-            println!("Use these with --x25519 and --kem when configuring a Seamless relay.");
+            println!("  X25519 (32 bytes)     — classical key agreement");
+            println!("  ML-KEM-768 (1184 B)   — post-quantum key encapsulation (FIPS 203)");
+            println!("  ML-DSA-65 (1952 B)    — quantum-resistant identity signature (FIPS 204)");
+            println!();
+            println!("Use X25519 and ML-KEM-768 keys when configuring a Seamless relay.");
+            println!("The ML-DSA-65 fingerprint identifies this node to quantum-resistant peers.");
         }
     }
     Ok(())
@@ -164,6 +177,8 @@ fn rotate_key(id_path: &std::path::Path, format: &str) -> Result<()> {
 
     let new_x25519 = hex::encode(new_id.x25519_public.as_bytes());
     let new_kem = hex::encode(pk_to_bytes(&new_id.kem_pk));
+    let new_mldsa_pk_bytes: [u8; MLDSA_PK_LEN] = new_id.mldsa_pk.clone().into_bytes();
+    let new_mldsa_fp = new_id.mldsa_fingerprint();
 
     match format {
         "json" => {
@@ -171,16 +186,20 @@ fn rotate_key(id_path: &std::path::Path, format: &str) -> Result<()> {
             if let Some(ref old) = old_id {
                 let old_x25519 = hex::encode(old.x25519_public.as_bytes());
                 let old_kem = hex::encode(pk_to_bytes(&old.kem_pk));
+                let old_mldsa_fp = old.mldsa_fingerprint();
                 println!();
                 println!("  \"old\": {{");
                 println!("    \"x25519\": \"{old_x25519}\",");
-                println!("    \"kem\": \"{old_kem}\"");
+                println!("    \"ml_kem_768\": \"{old_kem}\",");
+                println!("    \"ml_dsa_65_fingerprint\": \"SHA256:{old_mldsa_fp}\"");
                 println!("  }},");
             }
             println!();
             println!("  \"new\": {{");
             println!("    \"x25519\": \"{new_x25519}\",");
-            println!("    \"kem\": \"{new_kem}\"");
+            println!("    \"ml_kem_768\": \"{new_kem}\",");
+            println!("    \"ml_dsa_65\": \"{}\",", hex::encode(&new_mldsa_pk_bytes));
+            println!("    \"ml_dsa_65_fingerprint\": \"SHA256:{new_mldsa_fp}\"");
             println!("  }},");
             println!("  \"path\": \"{}\"", id_path.display());
             println!("}}");
@@ -191,14 +210,17 @@ fn rotate_key(id_path: &std::path::Path, format: &str) -> Result<()> {
             if let Some(ref old) = old_id {
                 let old_x25519 = hex::encode(old.x25519_public.as_bytes());
                 let old_kem = hex::encode(pk_to_bytes(&old.kem_pk));
+                let old_mldsa_fp = old.mldsa_fingerprint();
                 println!("  OLD (backed up)");
-                println!("  x25519  {old_x25519}");
-                println!("  kem     {old_kem}");
+                println!("  x25519              {old_x25519}");
+                println!("  ml-kem-768          {old_kem}");
+                println!("  ml-dsa-65 fp        SHA256:{old_mldsa_fp}");
                 println!();
             }
             println!("  NEW (now active)");
-            println!("  x25519  {new_x25519}");
-            println!("  kem     {new_kem}");
+            println!("  x25519              {new_x25519}");
+            println!("  ml-kem-768          {new_kem}");
+            println!("  ml-dsa-65 fp        SHA256:{new_mldsa_fp}");
             println!();
             println!("ACTION REQUIRED: update all peer configurations with the new public key.");
             println!("Old key backup is retained for audit purposes.");

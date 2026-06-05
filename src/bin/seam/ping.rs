@@ -23,6 +23,17 @@ pub struct PingArgs {
     /// Interval between pings in milliseconds
     #[arg(short = 'i', long, default_value_t = 1000)]
     pub interval: u64,
+
+    /// Local bind addresses for multi-path transport (comma-separated ip:port pairs).
+    ///
+    /// When set, ping measures per-path RTT and shows aggregate statistics.
+    /// Example: --multipath 192.168.1.100:0,10.0.0.1:0
+    #[arg(long, value_name = "addr1,addr2,...")]
+    pub multipath: Option<String>,
+
+    /// Anti-jamming mode: send every packet on ALL active paths simultaneously.
+    #[arg(long)]
+    pub multipath_redundant: bool,
 }
 
 #[derive(Args)]

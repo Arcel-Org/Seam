@@ -3,6 +3,7 @@ pub mod arq;
 pub mod datagram;
 pub mod flow;
 pub mod rack;
+pub mod ratchet_session;
 pub mod stream;
 
 use bytes::Bytes;

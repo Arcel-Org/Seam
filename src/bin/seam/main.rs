@@ -316,7 +316,7 @@ async fn main() -> Result<()> {
             audited!("pipe", &remote, vec![], pipe::run(args).await)
         }
         Some(Commands::Tunnel(args)) => {
-            let remote = args.spec.clone();
+            let remote = args.remote.clone();
             audited!("tunnel", &remote, vec![], tunnel::run(args).await)
         }
         Some(Commands::Fwd(args)) => {

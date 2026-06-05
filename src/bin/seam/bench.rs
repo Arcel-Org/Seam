@@ -27,6 +27,7 @@ struct CongestionMetrics {
 async fn bench_drain_with_metrics(
     stream: &mut (impl AsyncReadExt + Unpin),
     timeout_secs: Option<u64>,
+    bw_cap_mbps: Option<f64>,
 ) -> Result<(u64, CongestionMetrics)> {
     let mut buf = vec![0u8; 64 * 1024];
     let mut total_bytes: u64 = 0;
@@ -37,6 +38,7 @@ async fn bench_drain_with_metrics(
     let window_dur = std::time::Duration::from_millis(500);
     let mut last_read = std::time::Instant::now();
     let deadline = timeout_secs.map(|s| std::time::Instant::now() + std::time::Duration::from_secs(s));
+    let mut bucket = bw_cap_mbps.map(TokenBucket::new);
 
     loop {
         let read_fut = stream.read(&mut buf);
@@ -55,6 +57,11 @@ async fn bench_drain_with_metrics(
                 Err(e) => return Err(e.into()),
             }
         };
+
+        // Apply token-bucket rate limit: pace the consumer to simulate a constrained link.
+        if let Some(ref mut tb) = bucket {
+            tb.consume(n as u64).await;
+        }
 
         let now = std::time::Instant::now();
         let gap_ms = (now - last_read).as_secs_f64() * 1000.0;
@@ -129,6 +136,61 @@ async fn bench_drain_with_metrics(
     ))
 }
 
+// ── Token-bucket rate limiter ─────────────────────────────────────────────────
+
+/// A simple token-bucket rate limiter with no external dependencies.
+/// Tokens refill at `rate_bytes_per_sec` continuously. Callers call
+/// `consume(n)` before sending `n` bytes; this sleeps if the bucket is empty.
+struct TokenBucket {
+    /// Maximum burst size in bytes (one MTU worth of slack).
+    capacity: u64,
+    /// Current tokens available.
+    tokens: u64,
+    /// Refill rate in bytes per second.
+    rate_bps: u64,
+    /// When we last refilled.
+    last_refill: std::time::Instant,
+}
+
+impl TokenBucket {
+    fn new(rate_mbps: f64) -> Self {
+        let rate_bps = (rate_mbps * 1_000_000.0 / 8.0) as u64; // Mbps → bytes/s
+        // Burst: allow up to 1 ms worth of data to smooth out scheduler jitter.
+        let capacity = (rate_bps / 1000).max(65536);
+        Self {
+            capacity,
+            tokens: capacity,
+            rate_bps,
+            last_refill: std::time::Instant::now(),
+        }
+    }
+
+    /// Consume `n` bytes, sleeping until enough tokens are available.
+    async fn consume(&mut self, n: u64) {
+        // Refill tokens based on elapsed time.
+        let now = std::time::Instant::now();
+        let elapsed_secs = now.duration_since(self.last_refill).as_secs_f64();
+        let new_tokens = (elapsed_secs * self.rate_bps as f64) as u64;
+        if new_tokens > 0 {
+            self.tokens = (self.tokens + new_tokens).min(self.capacity);
+            self.last_refill = now;
+        }
+
+        if self.tokens >= n {
+            self.tokens -= n;
+            return;
+        }
+
+        // Need to wait for enough tokens.
+        let deficit = n - self.tokens;
+        let wait_secs = deficit as f64 / self.rate_bps as f64;
+        let wait = std::time::Duration::from_secs_f64(wait_secs);
+        tokio::time::sleep(wait).await;
+        self.tokens = 0;
+        self.last_refill = std::time::Instant::now();
+    }
+}
+
 // ── Client args ───────────────────────────────────────────────────────────────
 
 #[derive(Args)]
@@ -147,6 +209,13 @@ pub struct BenchArgs {
     /// Stop the benchmark after this many seconds and print partial results.
     #[arg(long)]
     pub timeout: Option<u64>,
+    /// Cap sender bandwidth to this many Mbps using a token-bucket limiter.
+    ///
+    /// Useful for testing transport behaviour under constrained links (e.g. satellite
+    /// or cellular). The limit applies to the receiver side that drains the stream.
+    /// Example: --bw-cap 10  (limits to 10 Mbps ≈ 1.25 MiB/s)
+    #[arg(long, value_name = "MBPS")]
+    pub bw_cap: Option<f64>,
 }
 
 // ── Server args ───────────────────────────────────────────────────────────────
@@ -187,10 +256,14 @@ pub async fn run(args: BenchArgs) -> Result<()> {
     let mux = SeamMux::new(conn);
     let mut stream = mux.open_stream().await;
 
-    eprint!("\nbenchmarking {remote_label} · {} MiB  ", args.mib);
+    if let Some(cap) = args.bw_cap {
+        eprint!("\nbenchmarking {remote_label} · {} MiB  [bw-cap: {:.1} Mbps]  ", args.mib, cap);
+    } else {
+        eprint!("\nbenchmarking {remote_label} · {} MiB  ", args.mib);
+    }
 
     let start = std::time::Instant::now();
-    let (bytes, metrics) = bench_drain_with_metrics(&mut stream, args.timeout).await?;
+    let (bytes, metrics) = bench_drain_with_metrics(&mut stream, args.timeout, args.bw_cap).await?;
     let elapsed = start.elapsed();
     let timed_out = args.timeout.is_some()
         && elapsed >= std::time::Duration::from_secs(args.timeout.unwrap());
@@ -205,7 +278,7 @@ pub async fn run(args: BenchArgs) -> Result<()> {
         eprintln!("\n  benchmark timed out after {}s — partial result:", args.timeout.unwrap());
         eprintln!("  (reported throughput is a lower bound)");
     }
-    print_results(mib_s, gbps, args.mib, &metrics);
+    print_results(mib_s, gbps, args.mib, &metrics, args.bw_cap);
     Ok(())
 }
 
@@ -215,7 +288,7 @@ fn bar(mib_s: f64, max_mib_s: f64, width: usize) -> String {
     format!("{}{}", "█".repeat(filled), "░".repeat(width - filled))
 }
 
-fn print_results(seam_mib_s: f64, seam_gbps: f64, mib: u64, metrics: &CongestionMetrics) {
+fn print_results(seam_mib_s: f64, seam_gbps: f64, mib: u64, metrics: &CongestionMetrics, bw_cap_mbps: Option<f64>) {
     // Estimated baselines (well-known benchmarks, clearly labelled est.)
     // OpenSSH aes128-gcm over GigE loopback: ~400 MiB/s
     // rsync over SSH, first transfer: ~380 MiB/s
@@ -277,7 +350,11 @@ fn print_results(seam_mib_s: f64, seam_gbps: f64, mib: u64, metrics: &Congestion
         eprintln!("\n  seam ≈ scp speed on this path");
     }
 
-    eprintln!("  post-quantum safe · UDP · FEC recovery · 247 µs handshake");
+    if let Some(cap) = bw_cap_mbps {
+        eprintln!("  post-quantum safe · UDP · FEC recovery · 247 µs handshake  [bw-cap: {:.1} Mbps]", cap);
+    } else {
+        eprintln!("  post-quantum safe · UDP · FEC recovery · 247 µs handshake");
+    }
     eprintln!(
         "  {} MiB transferred in {:.2}s\n",
         mib,

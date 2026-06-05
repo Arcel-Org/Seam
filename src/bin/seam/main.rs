@@ -152,6 +152,10 @@ enum Commands {
     #[command(name = "proxy")]
     Proxy(proxy::ProxyArgs),
 
+    /// View and query the local audit log (NIST AU-2/AU-12)
+    #[command(name = "audit")]
+    Audit(audit::AuditArgs),
+
     // Hidden internal subcommands — started by SSH bootstrap, not for direct use
     #[command(name = "_forward-recv", hide = true)]
     ForwardRecv(forward::ForwardRecvArgs),
@@ -204,6 +208,7 @@ fn print_splash() {
     eprintln!("    stats    Connection statistics     seam stats user@host");
     eprintln!("    ls       List remote files         seam ls user@host:/path");
     eprintln!("    doctor   System readiness check    seam doctor");
+    eprintln!("    audit    View/query audit log       seam audit show");
     eprintln!("    version  Version & cipher info      seam version");
     eprintln!("    update   Self-update               seam update");
     eprintln!();
@@ -334,6 +339,7 @@ async fn main() -> Result<()> {
             let remote = args.remote.clone();
             audited!("proxy", &remote, vec![], proxy::run(args, fips_active).await)
         }
+        Some(Commands::Audit(args)) => audit::run(args),
         // Hidden internal subcommands — not audited (remote side, not client-initiated)
         Some(Commands::ForwardRecv(args)) => forward::run_recv(args).await,
         Some(Commands::SyncRecv(args)) => sync::run_recv(args, fips_active).await,

@@ -82,6 +82,16 @@ pub struct Config {
     /// --fips-mode CLI flag. Required for NIST FIPS 140-3 / CNSA 2.0 deployments.
     #[serde(default)]
     pub fips_mode: bool,
+    /// List of relay/infrastructure hosts to ping in `seam doctor`.
+    ///
+    /// Each entry is a `user@host` or `host` string. `seam doctor` will attempt
+    /// a Seam ping to each relay and report RTT. Gives ops a single command to
+    /// verify the health of their entire Seam infrastructure.
+    ///
+    /// Example in config.toml:
+    ///   relays = ["ops@relay1.example.com", "ops@relay2.example.com"]
+    #[serde(default)]
+    pub relays: Vec<String>,
 }
 
 fn default_cc() -> String {
@@ -109,6 +119,7 @@ impl Default for Config {
             fec_k: None,
             fec_r: None,
             fips_mode: false,
+            relays: Vec::new(),
         }
     }
 }
@@ -211,6 +222,11 @@ pub fn print() -> Result<()> {
         cfg.fec_r.map(|v| v.to_string()).unwrap_or_else(|| "auto".into())
     );
     println!("fips_mode       = {}", cfg.fips_mode);
+    if cfg.relays.is_empty() {
+        println!("relays          = []");
+    } else {
+        println!("relays          = [{}]", cfg.relays.iter().map(|r| format!("{r:?}")).collect::<Vec<_>>().join(", "));
+    }
     Ok(())
 }
 
@@ -227,8 +243,13 @@ pub fn get(key: &str) -> Result<()> {
         "fec_k" => println!("{}", cfg.fec_k.map(|v| v.to_string()).unwrap_or_else(|| "auto".into())),
         "fec_r" => println!("{}", cfg.fec_r.map(|v| v.to_string()).unwrap_or_else(|| "auto".into())),
         "fips_mode" => println!("{}", cfg.fips_mode),
+        "relays" => {
+            for r in &cfg.relays {
+                println!("{r}");
+            }
+        }
         _ => bail!(
-            "unknown config key: {key}\n  valid keys: cc, compress, identity, cipher, max_connections, listen_port, fec_k, fec_r, fips_mode"
+            "unknown config key: {key}\n  valid keys: cc, compress, identity, cipher, max_connections, listen_port, fec_k, fec_r, fips_mode, relays"
         ),
     }
     Ok(())
@@ -300,8 +321,18 @@ pub fn set(key: &str, value: &str) -> Result<()> {
         "fips_mode" => {
             cfg.fips_mode = value.parse().context("fips_mode must be true or false")?;
         }
+        "relays" => {
+            // value is a comma-separated list of user@host entries, or a single entry.
+            // Special case: empty string clears the list.
+            if value.trim().is_empty() {
+                cfg.relays = Vec::new();
+            } else {
+                let entries: Vec<String> = value.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+                cfg.relays = entries;
+            }
+        }
         _ => bail!(
-            "unknown config key: {key}\n  valid keys: cc, compress, identity, cipher, max_connections, listen_port, fec_k, fec_r, fips_mode"
+            "unknown config key: {key}\n  valid keys: cc, compress, identity, cipher, max_connections, listen_port, fec_k, fec_r, fips_mode, relays"
         ),
     }
     cfg.save()?;

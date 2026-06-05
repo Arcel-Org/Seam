@@ -116,7 +116,7 @@ pub fn run(_args: DoctorArgs) -> Result<()> {
                 // Check for unknown keys by comparing raw TOML table keys against the known set.
                 let known_keys = [
                     "cc", "compress", "identity", "cipher",
-                    "max_connections", "listen_port", "fec_k", "fec_r", "fips_mode",
+                    "max_connections", "listen_port", "fec_k", "fec_r", "fips_mode", "relays",
                 ];
                 match text.parse::<toml::Value>() {
                     Err(e) => {
@@ -404,6 +404,37 @@ pub fn run(_args: DoctorArgs) -> Result<()> {
                 "  ·  audit log: not yet created (will be at {})",
                 super::audit::audit_log_path_display().display()
             );
+        }
+    }
+
+    // ── 7.12. Relay connectivity test ──────────────────────────────────────────
+    //
+    // For each relay configured in `relays = [...]` in the config, we attempt a
+    // TCP connection to the SSH port (22) to verify basic reachability, then
+    // report the result. Full Seam ping requires SSH bootstrap which is slow and
+    // involves spawning a process — for doctor we use a TCP RST probe instead.
+    {
+        let cfg = super::config::Config::load().ok().unwrap_or_default();
+        if cfg.relays.is_empty() {
+            eprintln!("  ·  relay hosts: none configured (add relays = [\"user@host\", ...] in config)");
+        } else {
+            eprintln!("  ── relay connectivity ({} host(s)) ─────────────────────", cfg.relays.len());
+            for relay in &cfg.relays {
+                let host = if let Some(at) = relay.rfind('@') {
+                    &relay[at + 1..]
+                } else {
+                    relay.as_str()
+                };
+                match probe_relay_tcp(host, 22, std::time::Duration::from_secs(5)) {
+                    Ok(rtt_ms) => {
+                        eprintln!("  ✓  relay {relay}  SSH port reachable  (TCP RTT: {rtt_ms}ms)");
+                    }
+                    Err(e) => {
+                        eprintln!("  ✗  relay {relay}  unreachable: {e}");
+                        ok = false;
+                    }
+                }
+            }
         }
     }
 
@@ -735,6 +766,48 @@ fn check_known_hosts_integrity() -> KnownHostsStatus {
     } else {
         KnownHostsStatus::Ok { count }
     }
+}
+
+/// Probe a remote host:port via TCP and return the connection RTT in milliseconds.
+///
+/// We attempt a TCP SYN (connect) and measure the time until the SYN-ACK
+/// arrives. The socket is immediately closed after connect — no data is sent.
+/// This is safe and does not leave open connections.
+///
+/// Used by `seam doctor` to verify relay host reachability without requiring
+/// a full Seam bootstrap (which is slow and would pollute the audit log).
+fn probe_relay_tcp(host: &str, port: u16, timeout: std::time::Duration) -> anyhow::Result<u64> {
+    use std::net::TcpStream;
+    use std::time::Instant;
+
+    // Resolve host to addresses
+    let addrs: Vec<std::net::SocketAddr> = {
+        use std::net::ToSocketAddrs;
+        let spec = format!("{host}:{port}");
+        spec.to_socket_addrs()
+            .map_err(|e| anyhow::anyhow!("DNS resolution failed for {host}: {e}"))?
+            .collect()
+    };
+
+    if addrs.is_empty() {
+        anyhow::bail!("DNS returned no addresses for {host}");
+    }
+
+    let t0 = Instant::now();
+    let mut last_err = anyhow::anyhow!("no address to try");
+    for addr in &addrs {
+        match TcpStream::connect_timeout(addr, timeout) {
+            Ok(_stream) => {
+                // Connection established — measure RTT and drop immediately.
+                let rtt_ms = t0.elapsed().as_millis() as u64;
+                return Ok(rtt_ms);
+            }
+            Err(e) => {
+                last_err = anyhow::anyhow!("{e}");
+            }
+        }
+    }
+    Err(last_err)
 }
 
 fn try_udp_buffer_test() -> Option<(usize, usize)> {

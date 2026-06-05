@@ -19,9 +19,234 @@
 /// Government/DoD rationale: NIST SP 800-53 AU-2 / AU-12 require that all
 /// privileged operations are auditable. Client-side logs complement the
 /// server-side tracing spans already emitted by seam server components.
-use serde::Serialize;
+use anyhow::Result;
+use clap::{Args, Subcommand};
+use serde::{Deserialize, Serialize};
 use std::io::Write as _;
 use std::path::PathBuf;
+
+// ── seam audit subcommand ─────────────────────────────────────────────────────
+
+#[derive(Args)]
+pub struct AuditArgs {
+    #[command(subcommand)]
+    pub cmd: AuditCmd,
+}
+
+#[derive(Subcommand)]
+pub enum AuditCmd {
+    /// Show recent audit log entries (default: last 20)
+    Show {
+        /// Number of entries to show (0 = all)
+        #[arg(short = 'n', long, default_value_t = 20)]
+        lines: usize,
+        /// Filter entries on or after this date (YYYY-MM-DD or RFC3339)
+        #[arg(long, value_name = "DATE")]
+        since: Option<String>,
+        /// Filter entries for a specific remote host (substring match)
+        #[arg(long, value_name = "HOST")]
+        host: Option<String>,
+        /// Output raw JSONL instead of formatted table
+        #[arg(long)]
+        json: bool,
+    },
+    /// Remove all entries from the audit log (prompts for confirmation)
+    Clear {
+        /// Skip confirmation prompt (dangerous — use in scripts)
+        #[arg(long)]
+        yes: bool,
+    },
+}
+
+/// A deserialized audit entry for querying.
+#[derive(Debug, Deserialize)]
+struct AuditRecord {
+    ts: String,
+    subcommand: String,
+    remote: String,
+    #[serde(default)]
+    exit_code: Option<i32>,
+    #[serde(default)]
+    bytes_tx: Option<u64>,
+    #[serde(default)]
+    fips_mode: bool,
+    /// PID from log entry (used in JSON output mode)
+    #[serde(default)]
+    #[allow(dead_code)]
+    pid: u32,
+}
+
+pub fn run(args: AuditArgs) -> Result<()> {
+    match args.cmd {
+        AuditCmd::Show { lines, since, host, json } => show(lines, since.as_deref(), host.as_deref(), json),
+        AuditCmd::Clear { yes } => clear(yes),
+    }
+}
+
+fn show(limit: usize, since: Option<&str>, host_filter: Option<&str>, raw_json: bool) -> Result<()> {
+    let path = audit_log_path();
+    if !path.exists() {
+        println!("Audit log not found: {}", path.display());
+        println!("No operations have been recorded yet.");
+        return Ok(());
+    }
+
+    let text = std::fs::read_to_string(&path)
+        .map_err(|e| anyhow::anyhow!("cannot read audit log: {e}"))?;
+
+    // Parse --since as a date/datetime prefix for lexicographic comparison.
+    // RFC3339 timestamps sort lexicographically, so prefix comparison works.
+    let since_prefix = since.map(|s| {
+        // Accept YYYY-MM-DD (10 chars) or full RFC3339. Normalize to at least YYYY-MM-DD.
+        if s.len() == 10 && s.chars().nth(4) == Some('-') {
+            s.to_string()
+        } else {
+            s.to_string()
+        }
+    });
+
+    // Collect all matching records. We load all lines and filter, then take last N.
+    let mut records: Vec<(String, AuditRecord)> = Vec::new();
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let rec: AuditRecord = match serde_json::from_str(line) {
+            Ok(r) => r,
+            Err(_) => continue, // skip malformed lines
+        };
+
+        // Apply --since filter
+        if let Some(ref prefix) = since_prefix {
+            if !rec.ts.starts_with(prefix.as_str()) && rec.ts.as_str() < prefix.as_str() {
+                continue;
+            }
+        }
+
+        // Apply --host filter (substring match on remote field)
+        if let Some(hf) = host_filter {
+            if !rec.remote.contains(hf) {
+                continue;
+            }
+        }
+
+        records.push((line.to_string(), rec));
+    }
+
+    // Take the last `limit` entries (or all if limit==0).
+    let start = if limit > 0 && records.len() > limit {
+        records.len() - limit
+    } else {
+        0
+    };
+    let records = &records[start..];
+
+    if records.is_empty() {
+        println!("No audit entries match the given filters.");
+        return Ok(());
+    }
+
+    if raw_json {
+        for (raw, _) in records {
+            println!("{raw}");
+        }
+        return Ok(());
+    }
+
+    // Formatted table output.
+    println!(
+        "{:<25} {:<10} {:<28} {:<6} {:<10} {}",
+        "timestamp", "command", "remote", "exit", "bytes_tx", "fips"
+    );
+    println!("{}", "-".repeat(90));
+    for (_, rec) in records {
+        let exit = match rec.exit_code {
+            Some(0) => "ok".to_string(),
+            Some(n) => format!("err({n})"),
+            None => "-".to_string(),
+        };
+        let bytes = match rec.bytes_tx {
+            Some(b) => format_bytes(b),
+            None => "-".to_string(),
+        };
+        let fips = if rec.fips_mode { "yes" } else { "no" };
+        // Truncate remote to fit column
+        let remote_disp = if rec.remote.len() > 28 {
+            format!("{}…", &rec.remote[..27])
+        } else {
+            rec.remote.clone()
+        };
+        println!(
+            "{:<25} {:<10} {:<28} {:<6} {:<10} {}",
+            rec.ts, rec.subcommand, remote_disp, exit, bytes, fips
+        );
+    }
+    println!();
+    println!(
+        "  {} entries shown  |  log: {}",
+        records.len(),
+        path.display()
+    );
+    Ok(())
+}
+
+fn format_bytes(b: u64) -> String {
+    if b >= 1_073_741_824 {
+        format!("{:.1}G", b as f64 / 1_073_741_824.0)
+    } else if b >= 1_048_576 {
+        format!("{:.1}M", b as f64 / 1_048_576.0)
+    } else if b >= 1024 {
+        format!("{:.1}K", b as f64 / 1024.0)
+    } else {
+        format!("{b}B")
+    }
+}
+
+fn clear(yes: bool) -> Result<()> {
+    let path = audit_log_path();
+    if !path.exists() {
+        println!("Audit log does not exist — nothing to clear.");
+        return Ok(());
+    }
+
+    let meta = std::fs::metadata(&path)?;
+    let size = meta.len();
+    let line_count = std::fs::read_to_string(&path)
+        .map(|s| s.lines().count())
+        .unwrap_or(0);
+
+    if !yes {
+        eprintln!(
+            "This will permanently delete {} entries ({} bytes) from:",
+            line_count, size
+        );
+        eprintln!("  {}", path.display());
+        eprint!("Type 'yes' to confirm: ");
+        use std::io::BufRead;
+        let stdin = std::io::stdin();
+        let line = stdin.lock().lines().next()
+            .and_then(|l| l.ok())
+            .unwrap_or_default();
+        if line.trim() != "yes" {
+            eprintln!("Aborted — audit log unchanged.");
+            return Ok(());
+        }
+    }
+
+    // Atomic clear: write empty file via tmp then rename.
+    let tmp = path.with_extension("jsonl.clearing");
+    std::fs::write(&tmp, b"")?;
+    std::fs::rename(&tmp, &path)?;
+
+    println!(
+        "Audit log cleared ({} entries, {} bytes removed).",
+        line_count, size
+    );
+    Ok(())
+}
+
+// ── Internal audit infrastructure (used by main.rs) ──────────────────────────
 
 /// A single audit log entry.
 #[derive(Serialize)]

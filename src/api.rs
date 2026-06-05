@@ -236,6 +236,19 @@ impl SeamConn {
         self.inner.lock().await.is_idle()
     }
 
+    /// Snapshot connection metrics: (srtt, path_mtu, cwnd_bytes).
+    pub async fn connection_metrics(&self) -> (std::time::Duration, usize, u64) {
+        let g = self.inner.lock().await;
+        let srtt = g
+            .session
+            .as_ref()
+            .map(|s| std::time::Duration::from_micros(s.srtt_us()))
+            .unwrap_or_default();
+        let path_mtu = g.prober.path_mtu;
+        let cwnd_bytes = g.cc.available();
+        (srtt, path_mtu, cwnd_bytes)
+    }
+
     /// Split into a shareable writer and an exclusive event receiver.
     /// Use `SeamMux::new(conn)` instead unless you need raw access.
     pub fn split(self) -> (SeamConnWriter, mpsc::UnboundedReceiver<SessionEvent>) {

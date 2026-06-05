@@ -1,5 +1,5 @@
 use anyhow::Result;
-use clap::Args;
+use clap::{Args, Subcommand};
 use fips204::traits::SerDes as _;
 use seam_protocol::handshake::{IdentityKeypair, MLDSA_PK_LEN, pk_to_bytes};
 
@@ -8,14 +8,6 @@ pub struct KeyArgs {
     /// Output format: text (default) or json
     #[arg(long, default_value = "text", value_parser = ["text", "json"])]
     pub format: String,
-
-    /// Rotate the identity keypair: back up old key with a timestamp suffix and generate a new one.
-    ///
-    /// The old key is saved as `identity.YYYYMMDDTHHMMSSZ` next to the current identity file.
-    /// Both old and new public keys are printed so you can update relay configurations.
-    /// After rotation, update all peer configurations with the new public key.
-    #[arg(long)]
-    pub rotate: bool,
 
     /// List all TOFU-pinned server keys from ~/.config/seam/known_hosts.
     #[arg(long)]
@@ -27,6 +19,24 @@ pub struct KeyArgs {
     /// the new key on the next connection (and re-pin it via TOFU).
     #[arg(long, value_name = "HOST")]
     pub remove_pin: Option<String>,
+
+    #[command(subcommand)]
+    pub command: Option<KeyCommand>,
+}
+
+#[derive(Subcommand)]
+pub enum KeyCommand {
+    /// Show the current identity key's public fingerprints (no private material exposed).
+    #[command(name = "show")]
+    Show,
+
+    /// Rotate the identity keypair: back up old key and generate a new one.
+    ///
+    /// Backs up the existing key to ~/.config/seam/identity.key.backup.<timestamp>,
+    /// writes a new keypair to ~/.config/seam/identity.key, prints old and new
+    /// fingerprints, and warns you to update peer known_hosts entries.
+    #[command(name = "rotate")]
+    Rotate,
 }
 
 pub fn run(args: KeyArgs) -> Result<()> {
@@ -51,27 +61,30 @@ pub fn run(args: KeyArgs) -> Result<()> {
         return Ok(());
     }
 
-    if args.rotate {
-        return rotate_key(&id_path, &args.format);
+    match args.command {
+        Some(KeyCommand::Rotate) => rotate_key(&id_path, &args.format),
+        Some(KeyCommand::Show) | None => show_key(&id_path, &args.format),
     }
+}
 
+/// Print the current identity key's public components without exposing private material.
+fn show_key(id_path: &std::path::Path, format: &str) -> Result<()> {
     let id = if id_path.exists() {
-        let bytes = std::fs::read(&id_path)?;
+        let bytes = std::fs::read(id_path)?;
         IdentityKeypair::from_bytes(&bytes)
             .ok_or_else(|| anyhow::anyhow!("identity key at {} is corrupt", id_path.display()))?
     } else {
-        // Generate + save so subsequent commands have a stable key
         let id = IdentityKeypair::generate();
         if let Some(parent) = id_path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        std::fs::write(&id_path, id.to_bytes())?;
+        std::fs::write(id_path, id.to_bytes())?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let mut perms = std::fs::metadata(&id_path)?.permissions();
+            let mut perms = std::fs::metadata(id_path)?.permissions();
             perms.set_mode(0o600);
-            std::fs::set_permissions(&id_path, perms)?;
+            std::fs::set_permissions(id_path, perms)?;
         }
         eprintln!("generated new identity key at {}", id_path.display());
         id
@@ -83,7 +96,7 @@ pub fn run(args: KeyArgs) -> Result<()> {
     let mldsa_pk_hex = hex::encode(&mldsa_pk_bytes);
     let mldsa_fp = id.mldsa_fingerprint();
 
-    match args.format.as_str() {
+    match format {
         "json" => {
             println!("{{");
             println!("  \"x25519\": \"{x25519}\",");
@@ -114,18 +127,16 @@ pub fn run(args: KeyArgs) -> Result<()> {
 
 /// Rotate the identity keypair.
 ///
-/// 1. Back up the existing key (if any) to `<path>.YYYYMMDDTHHMMSSZ`.
+/// 1. Back up the existing key (if any) to `~/.config/seam/identity.key.backup.<timestamp>`.
 /// 2. Generate a new keypair and write it to `<path>` with mode 0o600.
 /// 3. Print old and new public keys (or just the new key if no old key existed).
 fn rotate_key(id_path: &std::path::Path, format: &str) -> Result<()> {
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    // Ensure parent dir exists.
     if let Some(parent) = id_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
 
-    // Load and back up the existing key (if present).
     let old_id: Option<IdentityKeypair> = if id_path.exists() {
         let bytes = std::fs::read(id_path)?;
         let id = IdentityKeypair::from_bytes(&bytes).ok_or_else(|| {
@@ -136,19 +147,17 @@ fn rotate_key(id_path: &std::path::Path, format: &str) -> Result<()> {
             )
         })?;
 
-        // Build timestamp suffix: YYYYMMDDTHHMMSSZ
         let secs = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
         let ts = fmt_timestamp_utc(secs);
-        let backup_path = id_path.with_file_name(format!(
-            "{}.{}",
-            id_path.file_name().unwrap_or_default().to_string_lossy(),
-            ts
-        ));
+        let backup_name = format!(
+            "{}.backup.{ts}",
+            id_path.file_name().unwrap_or_default().to_string_lossy()
+        );
+        let backup_path = id_path.with_file_name(backup_name);
 
-        // Atomic backup: copy bytes then set perms.
         std::fs::write(&backup_path, &bytes)?;
         #[cfg(unix)]
         {
@@ -164,7 +173,6 @@ fn rotate_key(id_path: &std::path::Path, format: &str) -> Result<()> {
         None
     };
 
-    // Generate and write new keypair.
     let new_id = IdentityKeypair::generate();
     std::fs::write(id_path, new_id.to_bytes())?;
     #[cfg(unix)]
@@ -211,18 +219,18 @@ fn rotate_key(id_path: &std::path::Path, format: &str) -> Result<()> {
                 let old_x25519 = hex::encode(old.x25519_public.as_bytes());
                 let old_kem = hex::encode(pk_to_bytes(&old.kem_pk));
                 let old_mldsa_fp = old.mldsa_fingerprint();
-                println!("  OLD (backed up)");
+                println!("  OLD fingerprint (backed up)");
                 println!("  x25519              {old_x25519}");
                 println!("  ml-kem-768          {old_kem}");
                 println!("  ml-dsa-65 fp        SHA256:{old_mldsa_fp}");
                 println!();
             }
-            println!("  NEW (now active)");
+            println!("  NEW fingerprint (now active)");
             println!("  x25519              {new_x25519}");
             println!("  ml-kem-768          {new_kem}");
             println!("  ml-dsa-65 fp        SHA256:{new_mldsa_fp}");
             println!();
-            println!("ACTION REQUIRED: update all peer configurations with the new public key.");
+            println!("WARNING: Update your known_hosts on peer systems with the new public key.");
             println!("Old key backup is retained for audit purposes.");
         }
     }
@@ -230,16 +238,13 @@ fn rotate_key(id_path: &std::path::Path, format: &str) -> Result<()> {
 }
 
 /// Format a Unix timestamp as a compact UTC string: `YYYYMMDDTHHMMSSZ`.
-/// Pure Rust, no external crate needed.
 fn fmt_timestamp_utc(secs: u64) -> String {
-    // Days since 1970-01-01
     let mut days = (secs / 86400) as u32;
     let time_of_day = (secs % 86400) as u32;
     let hh = time_of_day / 3600;
     let mm = (time_of_day % 3600) / 60;
     let ss = time_of_day % 60;
 
-    // Gregorian calendar decomposition (works until 2099).
     let mut year = 1970u32;
     loop {
         let leap = is_leap(year);

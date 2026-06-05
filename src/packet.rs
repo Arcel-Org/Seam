@@ -45,6 +45,10 @@ pub enum PktType {
     Pong = 0x0C,
     /// Encrypted session ticket for 0-RTT resumption.
     SessionTicket = 0x0D,
+    /// Client → server: request session resumption. Payload: ticket_id(16) + nonce(16) + proof(32).
+    SvcResume = 0x0E,
+    /// Server → client: resumption accepted. Payload: session_id(8).
+    SvcResumeOk = 0x0F,
 }
 
 impl TryFrom<u8> for PktType {
@@ -65,6 +69,8 @@ impl TryFrom<u8> for PktType {
             0x0B => Ok(Self::Ping),
             0x0C => Ok(Self::Pong),
             0x0D => Ok(Self::SessionTicket),
+            0x0E => Ok(Self::SvcResume),
+            0x0F => Ok(Self::SvcResumeOk),
             other => Err(SeamError::InvalidPktType(other)),
         }
     }
@@ -97,6 +103,8 @@ mod tests {
             (0x0B, PktType::Ping),
             (0x0C, PktType::Pong),
             (0x0D, PktType::SessionTicket),
+            (0x0E, PktType::SvcResume),
+            (0x0F, PktType::SvcResumeOk),
         ];
         for (raw, expected) in cases {
             assert_eq!(PktType::try_from(raw).unwrap(), expected);

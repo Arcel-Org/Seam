@@ -1,7 +1,7 @@
 use crate::{
     crypto::{header::apply_header_protection, keys::PacketKeys, make_cipher, replay::ReplayWindow},
     error::SeamError,
-    packet::{HEADER_LEN, MIN_PACKET_LEN, PktType, TAG_LEN},
+    packet::{HEADER_LEN, MAX_PACKET_LEN, MIN_PACKET_LEN, PktType, TAG_LEN},
 };
 
 pub struct PacketDecoder {
@@ -20,6 +20,14 @@ impl PacketDecoder {
     /// Decode a packet in-place. Returns `(pkt_type, packet_number, plaintext_slice)`.
     /// The buffer is modified: header is unprotected, payload is decrypted.
     pub fn decode<'a>(&mut self, buf: &'a mut [u8]) -> Result<(PktType, u64, &'a [u8]), SeamError> {
+        // Hard-reject oversized frames before touching the AEAD — prevents wasting
+        // crypto resources on amplification or malformed packets.
+        if buf.len() > MAX_PACKET_LEN {
+            return Err(SeamError::PacketTooLarge {
+                have: buf.len(),
+                max: MAX_PACKET_LEN,
+            });
+        }
         if buf.len() < MIN_PACKET_LEN {
             return Err(SeamError::BufferTooSmall {
                 need: MIN_PACKET_LEN,
@@ -82,6 +90,19 @@ mod tests {
         let encoder = PacketEncoder::new(enc_keys, 0xdeadbeef);
         let decoder = PacketDecoder::new(dec_keys);
         (encoder, decoder)
+    }
+
+    #[test]
+    fn test_oversized_packet_rejected() {
+        let (_, mut dec) = make_pair();
+        // A buffer larger than MAX_PACKET_LEN (65535) must be rejected before
+        // any AEAD work is attempted.
+        let mut oversized = vec![0u8; MAX_PACKET_LEN + 1];
+        assert!(matches!(
+            dec.decode(&mut oversized),
+            Err(SeamError::PacketTooLarge { have, max })
+            if have == MAX_PACKET_LEN + 1 && max == MAX_PACKET_LEN
+        ));
     }
 
     #[test]

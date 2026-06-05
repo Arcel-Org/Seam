@@ -20,7 +20,32 @@ use crate::{
 
 const MAX_UDP: usize = 65535;
 
+/// Default maximum number of simultaneous connections an endpoint will accept.
+///
+/// When this limit is reached the server sends a stateless cookie challenge as
+/// usual but drops the connection after cookie verification, effectively silently
+/// rejecting the new session without revealing internal resource state.  Operators
+/// can raise or lower this via [`EndpointConfig::max_connections`].
+pub const DEFAULT_MAX_CONNECTIONS: usize = 1024;
+
 pub type SharedConn = Arc<Mutex<Connection>>;
+
+/// Configuration knobs for [`Endpoint::bind_with_config`].
+#[derive(Debug, Clone)]
+pub struct EndpointConfig {
+    /// Maximum number of simultaneous connections (server-side).
+    /// New connections are silently dropped once this limit is reached.
+    /// Default: [`DEFAULT_MAX_CONNECTIONS`].
+    pub max_connections: usize,
+}
+
+impl Default for EndpointConfig {
+    fn default() -> Self {
+        Self {
+            max_connections: DEFAULT_MAX_CONNECTIONS,
+        }
+    }
+}
 
 pub struct Endpoint {
     socket: Arc<UdpSocket>,
@@ -37,6 +62,15 @@ impl Endpoint {
     pub async fn bind(
         local_addr: SocketAddr,
         identity: IdentityKeypair,
+    ) -> Result<Self, SeamError> {
+        Self::bind_with_config(local_addr, identity, EndpointConfig::default()).await
+    }
+
+    /// Bind with explicit configuration (e.g. custom `max_connections` limit).
+    pub async fn bind_with_config(
+        local_addr: SocketAddr,
+        identity: IdentityKeypair,
+        config: EndpointConfig,
     ) -> Result<Self, SeamError> {
         let socket = Arc::new(
             UdpSocket::bind(local_addr)
@@ -61,6 +95,7 @@ impl Endpoint {
             cookie_factory.clone(),
             conns.clone(),
             accept_tx,
+            config.max_connections,
         ));
 
         Ok(Self {
@@ -107,6 +142,7 @@ async fn recv_loop(
     cookie_factory: Arc<CookieFactory>,
     conns: Arc<Mutex<HashMap<SocketAddr, SharedConn>>>,
     accept_tx: mpsc::UnboundedSender<SharedConn>,
+    max_connections: usize,
 ) {
     let mut buf = vec![0u8; MAX_UDP];
     loop {
@@ -121,6 +157,19 @@ async fn recv_loop(
             if let Some(c) = map.get(&remote) {
                 c.clone()
             } else {
+                // Enforce connection limit before allocating any per-connection state.
+                // We silently drop the packet rather than sending an ICMP-unreachable or
+                // any application-level error that could be used to fingerprint the server.
+                if map.len() >= max_connections {
+                    tracing::warn!(
+                        remote = %remote,
+                        current = map.len(),
+                        max = max_connections,
+                        "connection limit reached — dropping new connection"
+                    );
+                    continue;
+                }
+
                 // Unknown remote → issue stateless cookie challenge (no state allocated yet)
                 let (new_conn, _events) = match Connection::accept_challenge(
                     socket.clone(),

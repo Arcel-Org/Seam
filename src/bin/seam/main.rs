@@ -16,6 +16,7 @@ mod ssh;
 mod stats;
 mod tunnel;
 mod update;
+mod version;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -94,6 +95,10 @@ enum Commands {
     #[command(name = "doctor")]
     Doctor(doctor::DoctorArgs),
 
+    /// Show version, build metadata, and supported cipher suites
+    #[command(name = "version")]
+    Version(version::VersionArgs),
+
     /// Generate shell completion scripts
     #[command(name = "completions")]
     Completions(completions::CompletionsArgs),
@@ -138,6 +143,7 @@ fn print_splash() {
     eprintln!("    stats    Connection statistics     seam stats user@host");
     eprintln!("    ls       List remote files         seam ls user@host:/path");
     eprintln!("    doctor   System readiness check    seam doctor");
+    eprintln!("    version  Version & cipher info      seam version");
     eprintln!("    update   Self-update               seam update");
     eprintln!();
     eprintln!("  Run  seam <command> --help  for flags and options.");
@@ -175,6 +181,7 @@ async fn main() -> Result<()> {
         Some(Commands::Config(args)) => config::run(args),
         Some(Commands::Ls(args)) => ls::run(args).await,
         Some(Commands::Doctor(args)) => doctor::run(args),
+        Some(Commands::Version(args)) => version::run(args),
         Some(Commands::Completions(args)) => completions::run(args),
         Some(Commands::Recv(args)) => recv::run(args).await,
         Some(Commands::Send(args)) => send::run(args).await,

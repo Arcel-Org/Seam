@@ -4,10 +4,20 @@
 /// Usage:
 ///   seam shell user@host -- ls -la /etc
 ///   seam shell user@host -- /usr/bin/uptime
+///   echo "hello" | seam shell user@host -- cat
 ///
 /// The remote end runs `seam _shell-recv`, which spawns the requested command
 /// and bridges its stdio over the Seam stream.  The local side inherits the
 /// remote exit code and forwards it to the OS via `std::process::exit`.
+///
+/// Wire protocol:
+///   Client → Server stream (stdin pipe):
+///     [0x10][len: u16 BE][data bytes]  — SHELL_STDIN: stdin chunk
+///     [0x11]                            — SHELL_STDIN_EOF: stdin closed
+///   Server → Client stream (output + control):
+///     [0x01][exit_code: u8]            — SHELL_EXIT: command finished
+///     [0x02][msg_len: u16 BE][msg]     — SHELL_ERR: spawn failed
+///     All other bytes are raw stdout/stderr from the command.
 ///
 /// Security properties:
 ///   • Channel encrypted with Noise_XX + ML-KEM-768 (post-quantum KEM)
@@ -25,18 +35,18 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::{connect, ssh};
 
-// ── Wire protocol ─────────────────────────────────────────────────────────────
-//
-// After the Seam stream is established the receiver writes a single-byte
-// STATUS frame when the command exits:
-//
-//   [0x01][exit_code: u8]   — SHELL_EXIT: command finished
-//   [0x02][msg_len: u16 BE][msg bytes]  — SHELL_ERR: spawn failed
-//
-// All other bytes on the stream are raw stdout/stderr from the command.
+// ── Wire protocol constants ───────────────────────────────────────────────────
 
+/// Server → Client: command exited. Next byte is the exit code (u8).
 const SHELL_EXIT: u8 = 0x01;
+/// Server → Client: command failed to spawn. Next 2 bytes are msg_len (u16 BE),
+/// followed by msg_len bytes of error text.
 const SHELL_ERR: u8 = 0x02;
+/// Client → Server: stdin data chunk. Next 2 bytes are length (u16 BE),
+/// followed by that many bytes of stdin data.
+const SHELL_STDIN: u8 = 0x10;
+/// Client → Server: stdin EOF — remote process will see EOF on its stdin.
+const SHELL_STDIN_EOF: u8 = 0x11;
 
 // ── Client args ───────────────────────────────────────────────────────────────
 
@@ -88,64 +98,180 @@ pub async fn run(args: ShellArgs) -> Result<()> {
         connect::bootstrap_and_connect(&remote, &host, &subcmd, cipher).await?;
 
     let mux = SeamMux::new(conn);
+    // Open a single bidirectional stream: client sends stdin frames, server
+    // sends stdout/stderr bytes plus the SHELL_EXIT / SHELL_ERR control frames.
     let mut stream = mux.open_stream().await;
 
-    // Stream remote output to local stdout until we see SHELL_EXIT / SHELL_ERR.
-    let mut stdout = tokio::io::stdout();
-    let mut exit_code: i32 = 0;
+    // ── Stdin forwarding ─────────────────────────────────────────────────────
+    // Detect whether stdin is a pipe/file (non-interactive).  If it is, spawn
+    // a task that reads stdin and sends SHELL_STDIN frames to the remote.
+    // On TTY we skip this so interactive use still works naturally.
+    #[cfg(unix)]
+    let stdin_is_pipe = {
+        use std::os::unix::io::AsRawFd;
+        let fd = std::io::stdin().as_raw_fd();
+        !is_tty(fd)
+    };
+    #[cfg(not(unix))]
+    let stdin_is_pipe = false;
 
-    // Read byte-by-byte to detect protocol frames without missing output bytes.
-    // In practice the remote buffers output in 4 KiB chunks so this is fast.
-    let mut buf = Vec::with_capacity(4096);
-    'outer: loop {
-        let mut byte = [0u8; 1];
-        match stream.read_exact(&mut byte).await {
-            Err(_) => break, // stream closed — remote side exited
-            Ok(_) => {}
-        }
+    let exit_code: i32;
 
-        match byte[0] {
-            SHELL_EXIT => {
-                // Read exit code byte
-                let mut code = [0u8; 1];
-                if stream.read_exact(&mut code).await.is_ok() {
-                    exit_code = code[0] as i32;
-                }
-                // Flush any remaining buffered output
-                if !buf.is_empty() {
-                    stdout.write_all(&buf).await?;
-                    buf.clear();
-                }
-                stdout.flush().await?;
-                break 'outer;
-            }
-            SHELL_ERR => {
-                // Read 2-byte message length then the message
-                let mut len_buf = [0u8; 2];
-                if stream.read_exact(&mut len_buf).await.is_err() {
-                    bail!("shell: truncated error frame");
-                }
-                let msg_len = u16::from_be_bytes(len_buf) as usize;
-                let mut msg = vec![0u8; msg_len];
-                stream.read_exact(&mut msg).await.ok();
-                bail!(
-                    "remote command failed to start: {}",
-                    String::from_utf8_lossy(&msg)
-                );
-            }
-            b => {
-                // Regular output byte — buffer and periodically flush.
-                buf.push(b);
-                if buf.len() >= 4096 {
-                    stdout.write_all(&buf).await?;
-                    buf.clear();
+    if stdin_is_pipe {
+        // Split the stream so we can write stdin frames while reading output.
+        // SeamMux streams are already Send, so we use a channel to coordinate.
+        use tokio::sync::mpsc;
+
+        let (stdin_tx, mut stdin_rx) = mpsc::channel::<Vec<u8>>(16);
+
+        // Task: read raw stdin and forward as SHELL_STDIN frames.
+        let stdin_fwd = tokio::spawn(async move {
+            let mut raw_stdin = tokio::io::stdin();
+            let mut buf = vec![0u8; 4096];
+            loop {
+                match raw_stdin.read(&mut buf).await {
+                    Ok(0) | Err(_) => {
+                        let _ = stdin_tx.send(vec![]).await; // empty = EOF sentinel
+                        break;
+                    }
+                    Ok(n) => {
+                        // SHELL_STDIN: [0x10][len u16 BE][data]
+                        let chunk = buf[..n].to_vec();
+                        if stdin_tx.send(chunk).await.is_err() {
+                            break;
+                        }
+                    }
                 }
             }
-        }
+        });
+
+        let mut stdout = tokio::io::stdout();
+        let mut out_buf = Vec::with_capacity(4096);
+        exit_code = 'reader: loop {
+            // Interleave stdin writes and output reads.
+            tokio::select! {
+                chunk = stdin_rx.recv() => {
+                    match chunk {
+                        Some(data) if data.is_empty() => {
+                            // EOF sentinel — send SHELL_STDIN_EOF
+                            stream.write_all(&[SHELL_STDIN_EOF]).await.ok();
+                            stream.flush().await.ok();
+                        }
+                        Some(data) => {
+                            let len = (data.len() as u16).to_be_bytes();
+                            let mut frame = Vec::with_capacity(3 + data.len());
+                            frame.push(SHELL_STDIN);
+                            frame.extend_from_slice(&len);
+                            frame.extend_from_slice(&data);
+                            if stream.write_all(&frame).await.is_err() {
+                                break 'reader 1;
+                            }
+                        }
+                        None => {
+                            // Channel closed — stdin task done
+                            stream.write_all(&[SHELL_STDIN_EOF]).await.ok();
+                            stream.flush().await.ok();
+                        }
+                    }
+                }
+                result = stream.read_u8() => {
+                    match result {
+                        Err(_) => break 'reader 0,
+                        Ok(SHELL_EXIT) => {
+                            let code = stream.read_u8().await.unwrap_or(1);
+                            if !out_buf.is_empty() {
+                                stdout.write_all(&out_buf).await.ok();
+                                out_buf.clear();
+                            }
+                            stdout.flush().await.ok();
+                            break 'reader code as i32;
+                        }
+                        Ok(SHELL_ERR) => {
+                            let mut len_buf = [0u8; 2];
+                            stream.read_exact(&mut len_buf).await.ok();
+                            let msg_len = u16::from_be_bytes(len_buf) as usize;
+                            let mut msg = vec![0u8; msg_len];
+                            stream.read_exact(&mut msg).await.ok();
+                            eprintln!(
+                                "remote command failed to start: {}",
+                                String::from_utf8_lossy(&msg)
+                            );
+                            break 'reader 1;
+                        }
+                        Ok(b) => {
+                            out_buf.push(b);
+                            if out_buf.len() >= 4096 {
+                                stdout.write_all(&out_buf).await.ok();
+                                out_buf.clear();
+                            }
+                        }
+                    }
+                }
+            }
+        };
+        stdin_fwd.abort();
+        stdout.flush().await.ok();
+    } else {
+        // Non-pipe path: no stdin forwarding (original behavior).
+        let mut stdout = tokio::io::stdout();
+        let mut buf = Vec::with_capacity(4096);
+        exit_code = 'outer: loop {
+            let mut byte = [0u8; 1];
+            match stream.read_exact(&mut byte).await {
+                Err(_) => break 0,
+                Ok(_) => {}
+            }
+            match byte[0] {
+                SHELL_EXIT => {
+                    let mut code = [0u8; 1];
+                    let ec = if stream.read_exact(&mut code).await.is_ok() {
+                        code[0] as i32
+                    } else {
+                        0
+                    };
+                    if !buf.is_empty() {
+                        stdout.write_all(&buf).await?;
+                        buf.clear();
+                    }
+                    stdout.flush().await?;
+                    break 'outer ec;
+                }
+                SHELL_ERR => {
+                    let mut len_buf = [0u8; 2];
+                    if stream.read_exact(&mut len_buf).await.is_err() {
+                        bail!("shell: truncated error frame");
+                    }
+                    let msg_len = u16::from_be_bytes(len_buf) as usize;
+                    let mut msg = vec![0u8; msg_len];
+                    stream.read_exact(&mut msg).await.ok();
+                    bail!(
+                        "remote command failed to start: {}",
+                        String::from_utf8_lossy(&msg)
+                    );
+                }
+                b => {
+                    buf.push(b);
+                    if buf.len() >= 4096 {
+                        stdout.write_all(&buf).await?;
+                        buf.clear();
+                    }
+                }
+            }
+        };
+        stdout.flush().await?;
     }
 
-    stdout.flush().await?;
     std::process::exit(exit_code);
+}
+
+/// Returns true if the given file descriptor is a terminal (not a pipe/file).
+#[cfg(unix)]
+fn is_tty(fd: i32) -> bool {
+    unsafe extern "C" {
+        fn isatty(fd: i32) -> i32;
+    }
+    // SAFETY: isatty is a standard POSIX function with no undefined behavior.
+    unsafe { isatty(fd) == 1 }
 }
 
 // ── Server (hidden, invoked via SSH bootstrap) ────────────────────────────────
@@ -184,7 +310,7 @@ pub async fn run_recv(args: ShellRecvArgs) -> Result<()> {
 
     let spawn_result = Command::new(&args.command[0])
         .args(&args.command[1..])
-        .stdin(std::process::Stdio::null())
+        .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn();
@@ -206,17 +332,21 @@ pub async fn run_recv(args: ShellRecvArgs) -> Result<()> {
         }
     };
 
-    // Stream stdout and stderr to the Seam stream concurrently.
+    // Stream stdout and stderr to the Seam stream concurrently, and forward
+    // any SHELL_STDIN frames from the stream to the child's stdin.
     let mut child_stdout = child.stdout.take().unwrap();
     let mut child_stderr = child.stderr.take().unwrap();
+    let mut child_stdin = child.stdin.take();
 
-    // We read from both stdout and stderr and write to the single Seam stream.
-    // Use select! to interleave without blocking.
     let mut out_buf = vec![0u8; 4096];
     let mut err_buf = vec![0u8; 4096];
     let mut stdout_done = false;
     let mut stderr_done = false;
 
+    // We interleave three sources:
+    //   1. child stdout → stream
+    //   2. child stderr → stream
+    //   3. stream → child stdin (SHELL_STDIN / SHELL_STDIN_EOF frames)
     loop {
         if stdout_done && stderr_done {
             break;
@@ -242,8 +372,42 @@ pub async fn run_recv(args: ShellRecvArgs) -> Result<()> {
                     }
                 }
             }
+            byte = stream.read_u8(), if child_stdin.is_some() => {
+                match byte {
+                    Err(_) => {
+                        // Stream closed by client — drop stdin so the child sees EOF.
+                        child_stdin = None;
+                    }
+                    Ok(SHELL_STDIN) => {
+                        // Read 2-byte length, then data.
+                        let mut len_buf = [0u8; 2];
+                        if stream.read_exact(&mut len_buf).await.is_err() {
+                            child_stdin = None;
+                            continue;
+                        }
+                        let data_len = u16::from_be_bytes(len_buf) as usize;
+                        let mut data = vec![0u8; data_len];
+                        if stream.read_exact(&mut data).await.is_err() {
+                            child_stdin = None;
+                            continue;
+                        }
+                        if let Some(ref mut stdin_w) = child_stdin {
+                            if stdin_w.write_all(&data).await.is_err() {
+                                child_stdin = None;
+                            }
+                        }
+                    }
+                    Ok(SHELL_STDIN_EOF) | Ok(_) => {
+                        // EOF signaled — drop stdin so child gets EOF.
+                        child_stdin = None;
+                    }
+                }
+            }
         }
     }
+
+    // Ensure child stdin is closed so the child process exits cleanly.
+    drop(child_stdin);
 
     // Wait for the process and send exit code.
     let status = child.wait().await?;

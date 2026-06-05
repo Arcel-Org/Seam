@@ -64,6 +64,18 @@ pub struct Config {
     /// 0 = OS-assigned (ephemeral). Set a fixed port for firewall-friendly deployments.
     #[serde(default)]
     pub listen_port: u16,
+    /// FEC source symbols per group (k). 0 = disabled (pure ARQ).
+    /// Tune for the link type:
+    ///   LAN / fiber:      fec_k = 0  (no FEC overhead)
+    ///   Mobile / WiFi:    fec_k = 8, fec_r = 2
+    ///   Satellite / HF:   fec_k = 4, fec_r = 4
+    /// When set, overrides the dynamic FEC arbiter.
+    #[serde(default)]
+    pub fec_k: Option<u8>,
+    /// FEC repair symbols per group (r). Only used when fec_k > 0.
+    /// Overhead = fec_r / fec_k. Must be ≥ 1 when fec_k > 0.
+    #[serde(default)]
+    pub fec_r: Option<u8>,
 }
 
 fn default_cc() -> String {
@@ -88,6 +100,8 @@ impl Default for Config {
             cipher: default_cipher(),
             max_connections: default_max_connections(),
             listen_port: 0,
+            fec_k: None,
+            fec_r: None,
         }
     }
 }
@@ -164,6 +178,14 @@ pub fn print() -> Result<()> {
             cfg.listen_port.to_string()
         }
     );
+    println!(
+        "fec_k           = {}",
+        cfg.fec_k.map(|v| v.to_string()).unwrap_or_else(|| "auto".into())
+    );
+    println!(
+        "fec_r           = {}",
+        cfg.fec_r.map(|v| v.to_string()).unwrap_or_else(|| "auto".into())
+    );
     Ok(())
 }
 
@@ -177,8 +199,10 @@ pub fn get(key: &str) -> Result<()> {
         "cipher" => println!("{}", cfg.cipher),
         "max_connections" => println!("{}", cfg.max_connections),
         "listen_port" => println!("{}", cfg.listen_port),
+        "fec_k" => println!("{}", cfg.fec_k.map(|v| v.to_string()).unwrap_or_else(|| "auto".into())),
+        "fec_r" => println!("{}", cfg.fec_r.map(|v| v.to_string()).unwrap_or_else(|| "auto".into())),
         _ => bail!(
-            "unknown config key: {key}\n  valid keys: cc, compress, identity, cipher, max_connections, listen_port"
+            "unknown config key: {key}\n  valid keys: cc, compress, identity, cipher, max_connections, listen_port, fec_k, fec_r"
         ),
     }
     Ok(())
@@ -221,8 +245,34 @@ pub fn set(key: &str, value: &str) -> Result<()> {
                 .context("listen_port must be 0–65535")?;
             cfg.listen_port = p;
         }
+        "fec_k" => {
+            if value == "auto" || value == "0" {
+                if value == "0" {
+                    cfg.fec_k = Some(0);
+                } else {
+                    cfg.fec_k = None;
+                }
+            } else {
+                let k: u8 = value.parse().context("fec_k must be 0–255 or 'auto'")?;
+                if k == 1 {
+                    bail!("fec_k must be 0 (disabled/auto) or ≥ 2");
+                }
+                cfg.fec_k = Some(k);
+            }
+        }
+        "fec_r" => {
+            if value == "auto" {
+                cfg.fec_r = None;
+            } else {
+                let r: u8 = value.parse().context("fec_r must be 1–255 or 'auto'")?;
+                if r == 0 {
+                    bail!("fec_r must be ≥ 1 when set (or use 'auto')");
+                }
+                cfg.fec_r = Some(r);
+            }
+        }
         _ => bail!(
-            "unknown config key: {key}\n  valid keys: cc, compress, identity, cipher, max_connections, listen_port"
+            "unknown config key: {key}\n  valid keys: cc, compress, identity, cipher, max_connections, listen_port, fec_k, fec_r"
         ),
     }
     cfg.save()?;

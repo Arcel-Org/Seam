@@ -11,16 +11,17 @@ pub struct ConfigArgs {
 
 #[derive(Subcommand)]
 pub enum ConfigCmd {
-    /// Print the full effective configuration
+    /// Print the full effective configuration (alias: show)
+    #[command(alias = "show")]
     List,
     /// Get a single config value
     Get {
-        /// Key name: cc, compress, identity
+        /// Key name: cc, compress, identity, cipher, max_connections, listen_port
         key: String,
     },
     /// Set a config value and persist
     Set {
-        /// Key name: cc, compress, identity
+        /// Key name: cc, compress, identity, cipher, max_connections, listen_port
         key: String,
         /// New value
         value: String,
@@ -54,6 +55,15 @@ pub struct Config {
     /// Set to "aes256gcm" for NSS/DoD deployments that require CNSA 2.0 compliance.
     #[serde(default = "default_cipher")]
     pub cipher: String,
+    /// Maximum simultaneous connections the server endpoint will accept.
+    /// New connections are silently dropped once this limit is reached.
+    /// Default: 1024.
+    #[serde(default = "default_max_connections")]
+    pub max_connections: usize,
+    /// Default UDP listen port for server subcommands (recv, bench-recv, etc.).
+    /// 0 = OS-assigned (ephemeral). Set a fixed port for firewall-friendly deployments.
+    #[serde(default)]
+    pub listen_port: u16,
 }
 
 fn default_cc() -> String {
@@ -65,6 +75,9 @@ fn default_true() -> bool {
 fn default_cipher() -> String {
     "chacha20poly1305".into()
 }
+fn default_max_connections() -> usize {
+    1024
+}
 
 impl Default for Config {
     fn default() -> Self {
@@ -73,6 +86,8 @@ impl Default for Config {
             compress: default_true(),
             identity: None,
             cipher: default_cipher(),
+            max_connections: default_max_connections(),
+            listen_port: 0,
         }
     }
 }
@@ -131,15 +146,24 @@ pub fn print() -> Result<()> {
     let cfg = Config::load()?;
     println!("# config path: {}", Config::config_path().display());
     println!();
-    println!("cc        = {}", cfg.cc);
-    println!("compress  = {}", cfg.compress);
+    println!("cc              = {}", cfg.cc);
+    println!("compress        = {}", cfg.compress);
     println!(
-        "identity  = {}",
+        "identity        = {}",
         cfg.identity
             .as_ref()
             .unwrap_or(&cfg.identity_path().display().to_string())
     );
-    println!("cipher    = {}", cfg.cipher);
+    println!("cipher          = {}", cfg.cipher);
+    println!("max_connections = {}", cfg.max_connections);
+    println!(
+        "listen_port     = {}",
+        if cfg.listen_port == 0 {
+            "0 (OS-assigned)".to_string()
+        } else {
+            cfg.listen_port.to_string()
+        }
+    );
     Ok(())
 }
 
@@ -151,7 +175,11 @@ pub fn get(key: &str) -> Result<()> {
         "compress" => println!("{}", cfg.compress),
         "identity" => println!("{}", cfg.identity_path().display()),
         "cipher" => println!("{}", cfg.cipher),
-        _ => bail!("unknown config key: {key}\n  valid keys: cc, compress, identity, cipher"),
+        "max_connections" => println!("{}", cfg.max_connections),
+        "listen_port" => println!("{}", cfg.listen_port),
+        _ => bail!(
+            "unknown config key: {key}\n  valid keys: cc, compress, identity, cipher, max_connections, listen_port"
+        ),
     }
     Ok(())
 }
@@ -178,7 +206,24 @@ pub fn set(key: &str, value: &str) -> Result<()> {
             }
             cfg.cipher = value.into();
         }
-        _ => bail!("unknown config key: {key}\n  valid keys: cc, compress, identity, cipher"),
+        "max_connections" => {
+            let n: usize = value
+                .parse()
+                .context("max_connections must be a positive integer")?;
+            if n == 0 {
+                bail!("max_connections must be at least 1");
+            }
+            cfg.max_connections = n;
+        }
+        "listen_port" => {
+            let p: u16 = value
+                .parse()
+                .context("listen_port must be 0–65535")?;
+            cfg.listen_port = p;
+        }
+        _ => bail!(
+            "unknown config key: {key}\n  valid keys: cc, compress, identity, cipher, max_connections, listen_port"
+        ),
     }
     cfg.save()?;
     println!("{key} = {value}");

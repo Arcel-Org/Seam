@@ -1,3 +1,7 @@
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
+
 use anyhow::{Result, anyhow};
 use clap::Args;
 use seam_protocol::{
@@ -93,21 +97,39 @@ pub async fn run(args: FwdArgs) -> Result<()> {
 
     // The remote side pushes streams to us whenever a TCP connection is accepted.
     // We accept each stream and connect it to local_host:local_port.
+    // consecutive_failures tracks repeated local connect failures; after 5 in a row
+    // we back off briefly to avoid spamming logs and burning CPU.
+    let consecutive_failures: Arc<AtomicU32> = Arc::new(AtomicU32::new(0));
+
     loop {
         let stream = match mux.accept_stream().await {
             Some(s) => s,
             None => break,
         };
         let target = format!("{local_host}:{local_port}");
+        let failures = Arc::clone(&consecutive_failures);
         tokio::spawn(async move {
+            // Back off if local target has been repeatedly unreachable.
+            let fail_count = failures.load(Ordering::Relaxed);
+            if fail_count > 0 {
+                let delay = Duration::from_millis(match fail_count {
+                    1..=2 => 100,
+                    3..=5 => 500,
+                    _ => 2000,
+                });
+                tokio::time::sleep(delay).await;
+            }
+
             match tokio::net::TcpStream::connect(&target).await {
                 Ok(mut tcp) => {
+                    failures.store(0, Ordering::Relaxed);
                     let mut s = stream;
                     let _ = tokio::io::copy_bidirectional(&mut s, &mut tcp).await;
                 }
                 Err(e) => {
-                    eprintln!("fwd: could not connect to local {target}: {e}");
-                    // Dropping stream closes it, signalling EOF to the remote side.
+                    let n = failures.fetch_add(1, Ordering::Relaxed) + 1;
+                    eprintln!("fwd: could not connect to local {target}: {e} (failure #{n})");
+                    // Dropping stream signals EOF to the remote side.
                     drop(stream);
                 }
             }

@@ -29,6 +29,7 @@ use crate::{
         chaff::ChaffScheduler,
         default_cc,
         probe::PathProber,
+        tar::{TarConfig, TarState},
     },
 };
 
@@ -104,6 +105,9 @@ pub struct Connection {
     /// Peer's X25519 static public key, available after handshake completion.
     /// On the server side this is the client's identity key.
     pub peer_static_pubkey: Option<[u8; 32]>,
+
+    /// Traffic analysis resistance state (padding, cover traffic, jitter, obfuscation).
+    pub tar: TarState,
 }
 
 impl Connection {
@@ -183,6 +187,16 @@ impl Connection {
         phase: ConnPhase,
         event_tx: mpsc::UnboundedSender<SessionEvent>,
     ) -> Self {
+        Self::new_base_with_tar(socket, remote, phase, event_tx, TarConfig::disabled())
+    }
+
+    fn new_base_with_tar(
+        socket: Arc<UdpSocket>,
+        remote: SocketAddr,
+        phase: ConnPhase,
+        event_tx: mpsc::UnboundedSender<SessionEvent>,
+        tar_config: TarConfig,
+    ) -> Self {
         Self {
             remote,
             phase,
@@ -210,6 +224,7 @@ impl Connection {
             last_send: Instant::now(),
             ticket_key: None,
             peer_static_pubkey: None,
+            tar: TarState::new(tar_config),
         }
     }
 
@@ -237,6 +252,10 @@ impl Connection {
         self.server_identity = None;
         self.cookie_factory = None;
         self._server_kem_pk = None;
+
+        // Install session secret into TAR state for obfuscation key derivation
+        // and cover traffic schedule initialisation.
+        self.tar.set_session_secret(&result.keys.enc_key);
 
         // Server: issue and send an encrypted session ticket for 0-RTT resumption.
         if let Some(tk) = &self.ticket_key {
@@ -457,11 +476,23 @@ impl Connection {
 
         for tp in packets {
             self.last_send = Instant::now();
-            let size = tp.bytes.len() as u64;
+
+            // ── TAR: apply timing jitter before each data send ────────────────
+            let jitter = self.tar.jitter_delay();
+            if !jitter.is_zero() {
+                tokio::time::sleep(jitter).await;
+            }
+
+            // ── TAR: pad and obfuscate ─────────────────────────────────────────
+            let mut wire_bytes = self.tar.maybe_pad(tp.bytes.clone());
+            self.tar.maybe_obfuscate(&mut wire_bytes);
+
+            let size = wire_bytes.len() as u64;
+
             if tp.is_control {
                 // ACK / MaxData — always send, do not count against CC or FEC.
                 self.socket
-                    .send_to(&tp.bytes, self.remote)
+                    .send_to(&wire_bytes, self.remote)
                     .await
                     .map_err(|e| SeamError::HandshakeFailed(e.to_string()))?;
                 self.send_counter += 1;
@@ -476,11 +507,12 @@ impl Connection {
                 break;
             }
             self.socket
-                .send_to(&tp.bytes, self.remote)
+                .send_to(&wire_bytes, self.remote)
                 .await
                 .map_err(|e| SeamError::HandshakeFailed(e.to_string()))?;
             self.cc.on_send(size);
             self.bbr.on_send(size as usize);
+            self.tar.on_real_send(wire_bytes.len());
             self.send_counter += 1;
 
             if let (Some(k), Some(r)) = (fec_k, fec_r) {
@@ -500,6 +532,44 @@ impl Connection {
             }
         }
         Ok(())
+    }
+
+    /// Inject a cover traffic packet if the TAR cover-traffic schedule requires one.
+    ///
+    /// Cover packets are encrypted random bytes sent as `PktType::Chaff` frames
+    /// and silently discarded by the receiver.  They are indistinguishable in size
+    /// and encryption from real data packets, defeating constant-rate analysis.
+    pub async fn maybe_send_cover(&mut self) -> Result<(), SeamError> {
+        if !self.tar.should_send_cover() {
+            return Ok(());
+        }
+        let session = match self.session.as_mut() {
+            Some(s) => s,
+            None => return Ok(()),
+        };
+        let payload = self.tar.cover_payload();
+        // Encode as a Chaff frame — receiver discards it without delivering to app.
+        let mut out = vec![0u8; 32 + payload.len() + 16];
+        if let Ok(n) = session.encode_raw(PktType::Chaff, &payload, &mut out) {
+            out.truncate(n);
+            // Apply the same obfuscation as real packets so cover and real traffic
+            // are indistinguishable to an observer.
+            self.tar.maybe_obfuscate(&mut out);
+            self.socket
+                .send_to(&out, self.remote)
+                .await
+                .map_err(|e| SeamError::HandshakeFailed(e.to_string()))?;
+            self.tar.mark_cover_sent();
+            self.send_counter += 1;
+        }
+        Ok(())
+    }
+
+    /// De-obfuscate an incoming packet's header (if obfuscation is enabled).
+    ///
+    /// Must be called before passing the buffer to `on_packet`.
+    pub fn deobfuscate_incoming(&self, buf: &mut [u8]) {
+        self.tar.maybe_deobfuscate(buf);
     }
 
     pub async fn maybe_send_chaff(&mut self) -> Result<(), SeamError> {
@@ -621,6 +691,45 @@ impl Connection {
     /// Allow overriding the CC implementation (e.g. for testing or ML controller).
     pub fn set_congestion_controller(&mut self, cc: Box<dyn CongestionControl>) {
         self.cc = cc;
+    }
+
+    /// Replace the traffic analysis resistance configuration.
+    ///
+    /// Must be called before `finish_handshake` if you need the session secret
+    /// to be derived for obfuscation.  Safe to call at any time for non-obfuscation
+    /// settings (padding, jitter, cover traffic).
+    pub fn set_tar_config(&mut self, config: TarConfig) {
+        self.tar = TarState::new(config);
+    }
+
+    /// Initiate an outbound connection with traffic analysis resistance settings.
+    pub async fn connect_with_tar(
+        socket: Arc<UdpSocket>,
+        remote: SocketAddr,
+        local_identity: &IdentityKeypair,
+        server_x25519: &[u8; 32],
+        server_kem_pk: &KemPublicKey,
+        preferred_cipher: CipherSuite,
+        tar_config: TarConfig,
+    ) -> Result<(Self, mpsc::UnboundedReceiver<SessionEvent>), SeamError> {
+        tracing::debug!(
+            remote = %remote,
+            cipher = ?preferred_cipher,
+            "seam.handshake.client: initiating with TAR — sending cookie request"
+        );
+
+        socket
+            .send_to(&[PKT_COOKIE_REQ], remote)
+            .await
+            .map_err(|e| SeamError::HandshakeFailed(e.to_string()))?;
+
+        let client_hs = ClientHandshake::new_with_cipher(local_identity, server_x25519, preferred_cipher)?;
+
+        let (tx, rx) = mpsc::unbounded_channel();
+        let mut conn = Self::new_base_with_tar(socket, remote, ConnPhase::ClientWaitChallenge, tx, tar_config);
+        conn.client_hs = Some(client_hs);
+        conn._server_kem_pk = Some(server_kem_pk.clone());
+        Ok((conn, rx))
     }
 }
 

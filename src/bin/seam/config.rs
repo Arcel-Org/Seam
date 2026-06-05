@@ -92,6 +92,82 @@ pub struct Config {
     ///   relays = ["ops@relay1.example.com", "ops@relay2.example.com"]
     #[serde(default)]
     pub relays: Vec<String>,
+
+    // ── Traffic Analysis Resistance ───────────────────────────────────────
+    /// Pad all outgoing packets to fixed size-class boundaries (256/512/1024/1400 bytes).
+    ///
+    /// Prevents passive observers from inferring payload size from packet length.
+    /// Default: true in FIPS mode, false otherwise.
+    /// Disable with `traffic_padding = false` for maximum throughput.
+    #[serde(default)]
+    pub traffic_padding: Option<bool>,
+
+    /// Constant-rate cover traffic target in kbps.  0 = disabled (default).
+    ///
+    /// When > 0 a background task injects encrypted random-byte packets to maintain
+    /// a steady apparent bandwidth even when no real data is flowing.  Makes traffic
+    /// volume patterns uninformative to a passive observer.
+    ///
+    /// Note: consumes real bandwidth.  Recommended values: 10–100 kbps.
+    #[serde(default)]
+    pub cover_traffic_kbps: u32,
+
+    /// Maximum random timing jitter applied before each packet send, in milliseconds.
+    /// 0 = disabled (default).
+    ///
+    /// Introduces per-packet delay drawn uniformly from [0, timing_jitter_ms) to break
+    /// timing-correlation attacks where an adversary watching both endpoints attempts
+    /// to correlate packet arrival times.
+    ///
+    /// Tradeoff: higher values → stronger resistance, higher latency.
+    /// Recommended: ≤ 10 ms for interactive (shell), up to 50 ms for file transfer.
+    #[serde(default)]
+    pub timing_jitter_ms: u32,
+
+    /// Obfuscate packet headers by XOR-ing the first 8 bytes with a per-session
+    /// secret derived from the handshake keys.  Default: false.
+    ///
+    /// Makes individual packets indistinguishable from random bytes to naive DPI
+    /// engines that look for fixed header magic.  There is no fixed magic number in
+    /// obfuscated mode.  Both sides must enable this for a given session.
+    #[serde(default)]
+    pub obfuscate: bool,
+
+    // ── Multi-path transport ──────────────────────────────────────────────────
+    /// Comma-separated list of local bind addresses for multi-path transport.
+    ///
+    /// Each entry is ip:port (use port 0 for OS-assigned ephemeral port).
+    /// Example: "192.168.1.100:0,10.0.0.1:0"
+    ///
+    /// When non-empty, commands that support --multipath will default to these
+    /// addresses. Override per-command with --multipath.
+    #[serde(default)]
+    pub multipath_addrs: String,
+
+    /// Multi-path scheduling mode.
+    ///
+    /// "round-robin"  - rotate evenly across paths (default).
+    /// "min-latency"  - always use lowest-RTT path.
+    /// "redundant"    - send on ALL paths simultaneously; receiver deduplicates.
+    ///                  Best for adversarial anti-jamming scenarios.
+    /// "weighted"     - weight by bandwidth estimate.
+    #[serde(default = "default_multipath_mode")]
+    pub multipath_mode: String,
+    /// Double ratchet: rotate epoch after this many packets (default: 1000).
+    ///
+    /// Lower values increase forward-secrecy granularity at the cost of slightly
+    /// more DH ratchet overhead per epoch.
+    #[serde(default = "default_ratchet_epoch_packets")]
+    pub ratchet_epoch_packets: u64,
+    /// Double ratchet: rotate epoch after this many seconds (default: 30).
+    ///
+    /// Lower values reduce the window of exposure if a session key is compromised.
+    #[serde(default = "default_ratchet_epoch_seconds")]
+    pub ratchet_epoch_seconds: u64,
+}
+
+fn default_multipath_mode() -> String {
+    "round-robin".into()
 }
 
 fn default_cc() -> String {
@@ -105,6 +181,12 @@ fn default_cipher() -> String {
 }
 fn default_max_connections() -> usize {
     1024
+}
+fn default_ratchet_epoch_packets() -> u64 {
+    1000
+}
+fn default_ratchet_epoch_seconds() -> u64 {
+    30
 }
 
 impl Default for Config {
@@ -120,6 +202,14 @@ impl Default for Config {
             fec_r: None,
             fips_mode: false,
             relays: Vec::new(),
+            traffic_padding: None,
+            cover_traffic_kbps: 0,
+            timing_jitter_ms: 0,
+            obfuscate: false,
+            multipath_addrs: String::new(),
+            multipath_mode: default_multipath_mode(),
+            ratchet_epoch_packets: default_ratchet_epoch_packets(),
+            ratchet_epoch_seconds: default_ratchet_epoch_seconds(),
         }
     }
 }
@@ -138,6 +228,17 @@ impl Config {
     /// Print the FIPS mode banner and return the algorithm list string.
     pub fn fips_banner() -> &'static str {
         "AES-256-GCM (FIPS 197), ML-KEM-768 (FIPS 203), X25519 (SP 800-186), SHA-256 (FIPS 180-4)"
+    }
+
+    /// Resolve whether traffic padding is active.
+    ///
+    /// FIPS mode defaults to padding enabled; otherwise defaults to disabled.
+    /// Explicit `traffic_padding` config overrides the default.
+    pub fn effective_traffic_padding(&self, fips_active: bool) -> bool {
+        match self.traffic_padding {
+            Some(v) => v,
+            None => fips_active, // FIPS default: on; non-FIPS default: off
+        }
     }
 }
 
@@ -227,6 +328,48 @@ pub fn print() -> Result<()> {
     } else {
         println!("relays          = [{}]", cfg.relays.iter().map(|r| format!("{r:?}")).collect::<Vec<_>>().join(", "));
     }
+    println!();
+    println!("# Traffic Analysis Resistance");
+    println!(
+        "traffic_padding     = {}",
+        match cfg.traffic_padding {
+            Some(true) => "true".to_string(),
+            Some(false) => "false".to_string(),
+            None => "auto (true in FIPS mode, false otherwise)".to_string(),
+        }
+    );
+    println!(
+        "cover_traffic_kbps  = {}",
+        if cfg.cover_traffic_kbps == 0 {
+            "0 (disabled)".to_string()
+        } else {
+            format!("{} kbps", cfg.cover_traffic_kbps)
+        }
+    );
+    println!(
+        "timing_jitter_ms    = {}",
+        if cfg.timing_jitter_ms == 0 {
+            "0 (disabled)".to_string()
+        } else {
+            format!("{} ms", cfg.timing_jitter_ms)
+        }
+    );
+    println!("obfuscate           = {}", cfg.obfuscate);
+    println!();
+    println!("# Multi-path Transport");
+    println!(
+        "multipath_addrs     = {}",
+        if cfg.multipath_addrs.is_empty() {
+            "(disabled)".to_string()
+        } else {
+            cfg.multipath_addrs.clone()
+        }
+    );
+    println!("multipath_mode      = {}", cfg.multipath_mode);
+    println!();
+    println!("# Double Ratchet (per-epoch forward secrecy)");
+    println!("ratchet_epoch_packets = {}", cfg.ratchet_epoch_packets);
+    println!("ratchet_epoch_seconds = {}", cfg.ratchet_epoch_seconds);
     Ok(())
 }
 
@@ -248,8 +391,19 @@ pub fn get(key: &str) -> Result<()> {
                 println!("{r}");
             }
         }
+        "traffic_padding" => println!("{}", match cfg.traffic_padding {
+            Some(v) => v.to_string(),
+            None => "auto".to_string(),
+        }),
+        "cover_traffic_kbps" => println!("{}", cfg.cover_traffic_kbps),
+        "timing_jitter_ms" => println!("{}", cfg.timing_jitter_ms),
+        "obfuscate" => println!("{}", cfg.obfuscate),
+        "multipath_addrs" => println!("{}", cfg.multipath_addrs),
+        "multipath_mode" => println!("{}", cfg.multipath_mode),
+        "ratchet_epoch_packets" => println!("{}", cfg.ratchet_epoch_packets),
+        "ratchet_epoch_seconds" => println!("{}", cfg.ratchet_epoch_seconds),
         _ => bail!(
-            "unknown config key: {key}\n  valid keys: cc, compress, identity, cipher, max_connections, listen_port, fec_k, fec_r, fips_mode, relays"
+            "unknown config key: {key}\n  valid keys: cc, compress, identity, cipher, max_connections, listen_port, fec_k, fec_r, fips_mode, relays, traffic_padding, cover_traffic_kbps, timing_jitter_ms, obfuscate, multipath_addrs, multipath_mode, ratchet_epoch_packets, ratchet_epoch_seconds"
         ),
     }
     Ok(())
@@ -331,8 +485,56 @@ pub fn set(key: &str, value: &str) -> Result<()> {
                 cfg.relays = entries;
             }
         }
+        "traffic_padding" => {
+            if value == "auto" {
+                cfg.traffic_padding = None;
+            } else {
+                cfg.traffic_padding = Some(value.parse().context("traffic_padding must be true, false, or auto")?);
+            }
+        }
+        "cover_traffic_kbps" => {
+            cfg.cover_traffic_kbps = value.parse().context("cover_traffic_kbps must be an integer ≥ 0")?;
+        }
+        "timing_jitter_ms" => {
+            let ms: u32 = value.parse().context("timing_jitter_ms must be an integer ≥ 0")?;
+            if ms > 5000 {
+                bail!("timing_jitter_ms must be ≤ 5000 ms");
+            }
+            cfg.timing_jitter_ms = ms;
+        }
+        "obfuscate" => {
+            cfg.obfuscate = value.parse().context("obfuscate must be true or false")?;
+        }
+        "multipath_addrs" => {
+            cfg.multipath_addrs = value.to_string();
+        }
+        "multipath_mode" => {
+            use seam_protocol::transport::multipath::PathScheduler;
+            if PathScheduler::parse(value).is_none() {
+                bail!("multipath_mode must be one of: round-robin, min-latency, redundant, weighted");
+            }
+            cfg.multipath_mode = value.to_string();
+        }
+        "ratchet_epoch_packets" => {
+            let n: u64 = value
+                .parse()
+                .context("ratchet_epoch_packets must be a positive integer")?;
+            if n == 0 {
+                bail!("ratchet_epoch_packets must be ≥ 1");
+            }
+            cfg.ratchet_epoch_packets = n;
+        }
+        "ratchet_epoch_seconds" => {
+            let n: u64 = value
+                .parse()
+                .context("ratchet_epoch_seconds must be a positive integer")?;
+            if n == 0 {
+                bail!("ratchet_epoch_seconds must be ≥ 1");
+            }
+            cfg.ratchet_epoch_seconds = n;
+        }
         _ => bail!(
-            "unknown config key: {key}\n  valid keys: cc, compress, identity, cipher, max_connections, listen_port, fec_k, fec_r, fips_mode, relays"
+            "unknown config key: {key}\n  valid keys: cc, compress, identity, cipher, max_connections, listen_port, fec_k, fec_r, fips_mode, relays, traffic_padding, cover_traffic_kbps, timing_jitter_ms, obfuscate, multipath_addrs, multipath_mode, ratchet_epoch_packets, ratchet_epoch_seconds"
         ),
     }
     cfg.save()?;

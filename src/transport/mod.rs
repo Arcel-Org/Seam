@@ -5,12 +5,14 @@ pub mod chaff;
 pub mod congestion;
 pub mod connection;
 pub mod endpoint;
+pub mod multipath;
 pub mod pacer;
 pub mod pool;
 pub mod probe;
 pub mod resumption;
 pub mod rtt;
 pub mod stats;
+pub mod tar;
 mod tests;
 
 pub use bandwidth::BandwidthEstimator;
@@ -35,3 +37,8 @@ pub use pool::BufferPool;
 pub use probe::PathProber;
 pub use resumption::{SessionTicket, TicketKey, WEAKER_FS_WARNING};
 pub use stats::ConnectionStats;
+pub use tar::{
+    CoverTrafficConfig, JitterConfig, PacketSizeClass, TarConfig, TarState,
+    derive_obfuscation_secret, obfuscate_header, pad_to_size_class,
+};
+pub use multipath::{MultiPathEndpoint, PathScheduler, PathStat};

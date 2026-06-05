@@ -7,6 +7,7 @@ mod copy;
 mod doctor;
 mod forward;
 mod fwd;
+mod health;
 mod key;
 mod known_hosts;
 mod ls;
@@ -161,6 +162,10 @@ enum Commands {
     #[command(name = "serve")]
     Serve(serve::ServeArgs),
 
+    /// Check the health of a remote seam serve instance
+    #[command(name = "health")]
+    Health(health::HealthArgs),
+
     // Hidden internal subcommands — started by SSH bootstrap, not for direct use
     #[command(name = "_forward-recv", hide = true)]
     ForwardRecv(forward::ForwardRecvArgs),
@@ -209,6 +214,7 @@ fn print_splash() {
     eprintln!("    fwd      Reverse port forward      seam fwd user@host:3000 8080");
     eprintln!("    shell    Interactive/remote shell    seam shell user@host");
     eprintln!("    serve    Standalone server daemon    seam serve --port 2222");
+    eprintln!("    health   Health-check seam serve      seam health user@host");
     eprintln!("    bench    Measure throughput        seam bench user@host");
     eprintln!("    proxy    SOCKS5 proxy                seam proxy user@host --port 1080");
     eprintln!("    ping     Latency measurement        seam ping user@host");
@@ -351,6 +357,10 @@ async fn main() -> Result<()> {
         Some(Commands::Serve(args)) => {
             let addr_str = format!("{}:{}", args.bind, args.port);
             audited!("serve", &addr_str, vec![], serve::run(args, fips_active).await)
+        }
+        Some(Commands::Health(args)) => {
+            let remote = args.remote.clone();
+            audited!("health", &remote, vec![], health::run(args, fips_active).await)
         }
         // Hidden internal subcommands — not audited (remote side, not client-initiated)
         Some(Commands::ForwardRecv(args)) => forward::run_recv(args).await,

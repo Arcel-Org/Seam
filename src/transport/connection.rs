@@ -100,6 +100,10 @@ pub struct Connection {
 
     // Resumption
     pub ticket_key: Option<crate::transport::resumption::TicketKey>,
+
+    /// Peer's X25519 static public key, available after handshake completion.
+    /// On the server side this is the client's identity key.
+    pub peer_static_pubkey: Option<[u8; 32]>,
 }
 
 impl Connection {
@@ -205,6 +209,7 @@ impl Connection {
             last_recv: Instant::now(),
             last_send: Instant::now(),
             ticket_key: None,
+            peer_static_pubkey: None,
         }
     }
 
@@ -226,6 +231,7 @@ impl Connection {
             crate::session::Role::Client
         };
         self.session = Some(Session::with_role(result.session_id, role, enc, dec));
+        self.peer_static_pubkey = Some(result.peer_static_pubkey);
         self.phase = ConnPhase::Established;
         self.chaff.enable();
         self.server_identity = None;

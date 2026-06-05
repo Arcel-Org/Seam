@@ -237,6 +237,12 @@ impl SeamConn {
         self.inner.lock().await.is_idle()
     }
 
+    /// The peer's X25519 static public key (available after handshake).
+    /// On the server side this is the connecting client's identity key.
+    pub async fn peer_static_pubkey(&self) -> Option<[u8; 32]> {
+        self.inner.lock().await.peer_static_pubkey
+    }
+
     /// Snapshot connection metrics: (srtt, path_mtu, cwnd_bytes).
     pub async fn connection_metrics(&self) -> (std::time::Duration, usize, u64) {
         let g = self.inner.lock().await;

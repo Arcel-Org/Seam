@@ -33,6 +33,7 @@ use seam_protocol::{
     handshake::{IdentityKeypair, pk_to_bytes},
     tunnel::SeamMux,
 };
+use std::collections::HashSet;
 use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -46,6 +47,9 @@ pub const SVC_SHELL: u8 = 0x01;
 pub const SVC_FORWARD: u8 = 0x02;
 /// Info service: no payload; server writes JSON and closes.
 pub const SVC_INFO: u8 = 0x03;
+/// Ping service: client writes 4-byte payload, server echoes it back.
+/// Used by `seam health` for RTT measurement against seam serve instances.
+pub const SVC_PING: u8 = 0x04;
 
 // ── Wire protocol re-exports (shell constants used by serve clients) ──────────
 
@@ -85,14 +89,109 @@ pub struct ServeArgs {
     /// Print the SEAM handshake line to stdout (for SSH-bootstrap integration)
     #[arg(long, hide = true)]
     pub print_seam_line: bool,
+
+    /// Path to a file containing allowed client X25519 public keys (one hex-encoded key per line).
+    ///
+    /// When specified, only clients whose X25519 identity key matches an entry in this file
+    /// are allowed to connect. Connections from unknown keys are rejected after handshake.
+    /// Lines starting with '#' are treated as comments. Empty lines are ignored.
+    ///
+    /// Generate a client's key with: seam key
+    /// Example file:
+    ///   # alice's workstation
+    ///   a1b2c3d4e5f6...  (64 hex chars)
+    ///   # bob's laptop
+    ///   deadbeef...
+    #[arg(long, value_name = "FILE")]
+    pub auth_keys: Option<std::path::PathBuf>,
+
+    /// Directory containing authorized key files (*.pub, one hex X25519 key per file).
+    ///
+    /// All files with a `.pub` extension in this directory are loaded. This mirrors
+    /// the SSH authorized_keys.d pattern for easy key management in production environments.
+    /// Each file may contain one or more hex X25519 keys (one per line, '#' comments allowed).
+    #[arg(long, value_name = "DIR")]
+    pub auth_keys_dir: Option<std::path::PathBuf>,
 }
 
 // ── Entry point ───────────────────────────────────────────────────────────────
+
+/// Load authorized X25519 public keys from a file.
+///
+/// File format: one hex-encoded 32-byte key per line. Lines starting with '#'
+/// are comments; empty lines are ignored. Returns the set of allowed key bytes.
+pub fn load_auth_keys_file(path: &std::path::Path) -> Result<HashSet<[u8; 32]>> {
+    let content = std::fs::read_to_string(path)
+        .map_err(|e| anyhow!("cannot read auth-keys file {}: {e}", path.display()))?;
+    parse_auth_keys_content(&content, path.display().to_string().as_str())
+}
+
+fn parse_auth_keys_content(content: &str, source: &str) -> Result<HashSet<[u8; 32]>> {
+    let mut keys = HashSet::new();
+    for (lineno, line) in content.lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let bytes = hex::decode(line)
+            .map_err(|e| anyhow!("{}:{}: invalid hex: {e}", source, lineno + 1))?;
+        if bytes.len() != 32 {
+            return Err(anyhow!(
+                "{}:{}: X25519 key must be 32 bytes (64 hex chars), got {}",
+                source, lineno + 1, bytes.len()
+            ));
+        }
+        let mut key = [0u8; 32];
+        key.copy_from_slice(&bytes);
+        keys.insert(key);
+    }
+    Ok(keys)
+}
+
+/// Load all authorized keys from a directory (files matching `*.pub`).
+pub fn load_auth_keys_dir(dir: &std::path::Path) -> Result<HashSet<[u8; 32]>> {
+    let mut keys = HashSet::new();
+    let entries = std::fs::read_dir(dir)
+        .map_err(|e| anyhow!("cannot read auth-keys-dir {}: {e}", dir.display()))?;
+    for entry in entries {
+        let entry = entry.map_err(|e| anyhow!("reading dir entry: {e}"))?;
+        let path = entry.path();
+        if path.extension().map(|e| e == "pub").unwrap_or(false) {
+            let file_keys = load_auth_keys_file(&path)?;
+            keys.extend(file_keys);
+        }
+    }
+    Ok(keys)
+}
 
 pub async fn run(args: ServeArgs, fips_mode: bool) -> Result<()> {
     let cfg = super::config::Config::load().ok().unwrap_or_default();
     let cipher_str = if fips_mode { "aes256gcm" } else { cfg.cipher.as_str() };
     let cipher = seam_protocol::crypto::CipherSuite::parse(cipher_str).unwrap_or_default();
+
+    // ── Load authorized keys (if any) ────────────────────────────────────────
+    let mut allowed_keys: HashSet<[u8; 32]> = HashSet::new();
+    let auth_enabled = args.auth_keys.is_some() || args.auth_keys_dir.is_some();
+
+    if let Some(ref path) = args.auth_keys {
+        let file_keys = load_auth_keys_file(path)?;
+        eprintln!("serve: loaded {} authorized key(s) from {}", file_keys.len(), path.display());
+        allowed_keys.extend(file_keys);
+    }
+    if let Some(ref dir) = args.auth_keys_dir {
+        let dir_keys = load_auth_keys_dir(dir)?;
+        eprintln!("serve: loaded {} authorized key(s) from {}/", dir_keys.len(), dir.display());
+        allowed_keys.extend(dir_keys);
+    }
+
+    if auth_enabled {
+        eprintln!("serve: authentication ENABLED — {} authorized key(s) total", allowed_keys.len());
+        if allowed_keys.is_empty() {
+            eprintln!("WARNING: auth enabled but no keys loaded — ALL connections will be rejected");
+        }
+    }
+
+    let allowed_keys = Arc::new(allowed_keys);
 
     // Load (or generate) a persistent server identity key so clients can pin it.
     let id_path = connect::identity_path();
@@ -135,6 +234,9 @@ pub async fn run(args: ServeArgs, fips_mode: bool) -> Result<()> {
         if args.no_shell {
             eprintln!("  Shell:       disabled");
         }
+        if auth_enabled {
+            eprintln!("  Auth:        {} key(s) authorized", allowed_keys.len());
+        }
         eprintln!();
         eprintln!("  Connect (SSH bootstrap):  seam shell user@<host> -p {actual_port}");
         eprintln!("  Port forward:             seam forward 8080:localhost:80 user@<host> -p {actual_port}");
@@ -157,6 +259,38 @@ pub async fn run(args: ServeArgs, fips_mode: bool) -> Result<()> {
         };
 
         let peer = conn.remote_addr().await;
+
+        // ── Authentication check ──────────────────────────────────────────────
+        // After the Noise_XX handshake, the client's X25519 static public key
+        // is available. If auth is enabled, reject unknown keys immediately.
+        if auth_enabled {
+            let client_pk = conn.peer_static_pubkey().await;
+            match client_pk {
+                None => {
+                    eprintln!("serve: REJECTED {peer} — handshake did not yield client public key");
+                    drop(conn);
+                    continue;
+                }
+                Some(pk) => {
+                    if !allowed_keys.contains(&pk) {
+                        let pk_hex = hex::encode(pk);
+                        eprintln!(
+                            "serve: REJECTED {peer} — unauthorized key {pk_hex}"
+                        );
+                        tracing::warn!(
+                            peer = %peer,
+                            key = %pk_hex,
+                            "serve: connection rejected — key not in authorized list"
+                        );
+                        drop(conn);
+                        continue;
+                    }
+                    let pk_hex = hex::encode(pk);
+                    eprintln!("serve: {peer} authenticated — key {}", &pk_hex[..16]);
+                }
+            }
+        }
+
         let current = active.fetch_add(1, Ordering::Relaxed) + 1;
 
         if max_conn > 0 && current > max_conn {
@@ -234,6 +368,10 @@ async fn dispatch_stream(
         SVC_INFO => {
             tracing::info!("serve: {peer} → info");
             serve_info(stream).await
+        }
+        SVC_PING => {
+            tracing::debug!("serve: {peer} → ping");
+            serve_ping(stream).await
         }
         tag => {
             eprintln!("serve: unknown service 0x{tag:02x} from {peer}");
@@ -622,10 +760,23 @@ async fn serve_info(mut stream: seam_protocol::tunnel::SeamStream) -> Result<()>
         "version": env!("CARGO_PKG_VERSION"),
         "transport": "Noise_XX + ML-KEM-768",
         "cipher": "negotiated per-connection",
-        "services": ["shell", "forward", "info"],
+        "services": ["shell", "forward", "info", "ping"],
         "pty": cfg!(unix),
     });
     let json = serde_json::to_string_pretty(&info)?;
     stream.write_all(json.as_bytes()).await.ok();
+    Ok(())
+}
+
+// ── Ping service ──────────────────────────────────────────────────────────────
+
+/// Simple echo service for RTT measurement by `seam health`.
+/// Protocol: client writes [4-byte payload], server echoes it back, then closes.
+/// Multiple pings are issued by opening multiple streams.
+async fn serve_ping(mut stream: seam_protocol::tunnel::SeamStream) -> Result<()> {
+    let mut buf = [0u8; 4];
+    if stream.read_exact(&mut buf).await.is_ok() {
+        stream.write_all(&buf).await.ok();
+    }
     Ok(())
 }

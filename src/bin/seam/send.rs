@@ -88,7 +88,7 @@ pub async fn run(args: SendArgs) -> Result<()> {
     for (rel_name, _meta) in &files {
         pb.set_message(format!("sending {rel_name}"));
         send_file(
-            &mut conn, ctrl_sid, src, rel_name, compress, &pb, true, &mut buf, false,
+            &mut conn, ctrl_sid, src, rel_name, compress, &pb, true, &mut buf, false, None,
         )
         .await?;
     }

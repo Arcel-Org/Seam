@@ -31,6 +31,58 @@ pub struct CopyArgs {
     /// Useful for testing: start `seam recv /dest --port 0 --once` manually first.
     #[arg(long)]
     pub direct: Option<String>,
+    /// Limit transfer bandwidth to at most RATE Mbps (token-bucket throttle).
+    ///
+    /// Prevents seam cp from saturating network links during business hours.
+    /// Example: --rate 10  (limits to 10 Mbps ≈ 1.25 MB/s)
+    #[arg(long, value_name = "Mbps")]
+    pub rate: Option<f64>,
+}
+
+// ── Token-bucket rate limiter (same algorithm as bench --bw-cap) ──────────────
+
+/// A simple token-bucket rate limiter.
+/// Tokens refill at `rate_bytes_per_sec` continuously. `consume(n)` sleeps if
+/// the bucket is empty, producing back-pressure on the sender.
+pub struct TokenBucket {
+    capacity: u64,
+    tokens: u64,
+    rate_bps: u64,
+    last_refill: std::time::Instant,
+}
+
+impl TokenBucket {
+    pub fn new(rate_mbps: f64) -> Self {
+        let rate_bps = (rate_mbps * 1_000_000.0 / 8.0) as u64; // Mbps → bytes/s
+        // Burst: allow up to 1 ms worth of data to smooth scheduler jitter.
+        let capacity = (rate_bps / 1000).max(65536);
+        Self {
+            capacity,
+            tokens: capacity,
+            rate_bps,
+            last_refill: std::time::Instant::now(),
+        }
+    }
+
+    pub async fn consume(&mut self, bytes: u64) {
+        // Refill tokens since last call.
+        let now = std::time::Instant::now();
+        let elapsed = now.duration_since(self.last_refill).as_secs_f64();
+        let new_tokens = (elapsed * self.rate_bps as f64) as u64;
+        self.tokens = (self.tokens + new_tokens).min(self.capacity);
+        self.last_refill = now;
+
+        if self.tokens >= bytes {
+            self.tokens -= bytes;
+        } else {
+            // Need to wait for enough tokens.
+            let deficit = bytes - self.tokens;
+            self.tokens = 0;
+            let wait_secs = deficit as f64 / self.rate_bps as f64;
+            let wait = std::time::Duration::from_secs_f64(wait_secs);
+            tokio::time::sleep(wait).await;
+        }
+    }
 }
 
 pub async fn run(args: CopyArgs, fips_mode: bool) -> Result<()> {
@@ -40,6 +92,12 @@ pub async fn run(args: CopyArgs, fips_mode: bool) -> Result<()> {
     } else {
         cfg.compress
     };
+
+    // ── Rate limiter ──────────────────────────────────────────────────────────
+    let mut rate_limiter = args.rate.map(|mbps| {
+        eprintln!("cp: bandwidth cap: {mbps} Mbps");
+        TokenBucket::new(mbps)
+    });
     // In FIPS mode, always use AES-256-GCM regardless of config.
     let cipher_str = if fips_mode { "aes256gcm" } else { &cfg.cipher };
     let cipher = seam_protocol::crypto::CipherSuite::parse(cipher_str).unwrap_or_default();
@@ -229,6 +287,7 @@ pub async fn run(args: CopyArgs, fips_mode: bool) -> Result<()> {
                 args.resume,
                 &mut buf,
                 fips_mode,
+                rate_limiter.as_mut(),
             )
             .await?;
         }
@@ -314,6 +373,7 @@ pub async fn send_file(
     resume: bool,
     buf: &mut Vec<u8>,
     fips_mode: bool,
+    mut rate_limiter: Option<&mut TokenBucket>,
 ) -> Result<()> {
     use std::io::{Read, Seek, SeekFrom};
 
@@ -365,6 +425,10 @@ pub async fn send_file(
         } else {
             raw.to_vec()
         };
+        // Apply rate limiting (token-bucket back-pressure) before sending.
+        if let Some(ref mut tb) = rate_limiter {
+            tb.consume(n as u64).await;
+        }
         let mut frame = Vec::with_capacity(1 + payload.len());
         frame.push(proto::DATA);
         frame.extend_from_slice(&payload);

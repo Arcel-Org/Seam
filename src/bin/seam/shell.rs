@@ -73,6 +73,18 @@ pub struct ShellArgs {
     /// Force non-interactive (no PTY) even when stdin is a TTY
     #[arg(long)]
     pub no_pty: bool,
+
+    /// Local bind addresses for multi-path transport (comma-separated ip:port pairs).
+    ///
+    /// Example: --multipath 192.168.1.100:0,10.0.0.1:0
+    ///
+    /// Sends encrypted shell traffic over multiple network paths simultaneously.
+    #[arg(long, value_name = "addr1,addr2,...")]
+    pub multipath: Option<String>,
+
+    /// Anti-jamming mode: send every packet on ALL active paths simultaneously.
+    #[arg(long)]
+    pub multipath_redundant: bool,
 }
 
 // ── Server args ───────────────────────────────────────────────────────────────

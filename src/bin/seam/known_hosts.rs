@@ -1,12 +1,15 @@
 /// TOFU (Trust-On-First-Use) server identity pinning for Seam.
 ///
-/// On the first connection to a host, the server's X25519 public key fingerprint
-/// is saved in `~/.config/seam/known_hosts`. On subsequent connections the stored
-/// fingerprint is compared to what the server presents; a mismatch is a fatal error
+/// On the first connection to a host, the server's public key fingerprints
+/// are saved in `~/.config/seam/known_hosts`. On subsequent connections the stored
+/// fingerprints are compared to what the server presents; a mismatch is a fatal error
 /// unless `--insecure-ignore-pin` is explicitly passed.
 ///
-/// The format is one entry per line:
-///   `<host> <sha256-fingerprint-hex>`
+/// The format is one entry per line (v1 — classical only):
+///   `<host> <sha256-x25519-hex>`
+///
+/// Extended format (v2 — hybrid, quantum-resistant):
+///   `<host> <sha256-x25519-hex> mldsa65:<sha256-mldsa-pk-hex>`
 ///
 /// This is intentionally simple and human-readable, like SSH known_hosts.
 use anyhow::{bail, Result};
@@ -17,6 +20,13 @@ use std::path::PathBuf;
 /// SHA-256 fingerprint of a 32-byte X25519 public key, returned as lowercase hex.
 pub fn fingerprint(x25519_pub: &[u8; 32]) -> String {
     let hash = sha2::Sha256::digest(x25519_pub);
+    hex::encode(hash)
+}
+
+/// SHA-256 fingerprint of an ML-DSA-65 verify key, returned as lowercase hex.
+/// This is quantum-resistant: a quantum adversary cannot forge it.
+pub fn mldsa_fingerprint(mldsa_pk: &[u8]) -> String {
+    let hash = sha2::Sha256::digest(mldsa_pk);
     hex::encode(hash)
 }
 

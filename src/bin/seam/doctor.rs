@@ -1,6 +1,7 @@
 use anyhow::Result;
 use clap::Args;
-use seam_protocol::handshake::IdentityKeypair;
+use fips204::traits::SerDes as _;
+use seam_protocol::handshake::{IdentityKeypair, MLDSA_PK_LEN};
 
 #[derive(Args)]
 pub struct DoctorArgs {}
@@ -76,13 +77,40 @@ pub fn run(_args: DoctorArgs) -> Result<()> {
                 }
                 match IdentityKeypair::from_bytes(&bytes) {
                     Some(id) => {
-                        let x25519_hex =
-                            hex::encode(id.x25519_public.as_bytes());
+                        let x25519_hex = hex::encode(id.x25519_public.as_bytes());
+                        let mldsa_fp = id.mldsa_fingerprint();
+                        let is_v3 = bytes.first().copied().unwrap_or(0) == 3;
                         eprintln!(
-                            "  ✓  identity key at {} (X25519: {}…)",
-                            id_path.display(),
+                            "  ✓  identity key at {} (X25519+ML-KEM-768+ML-DSA-65, hybrid PQ)",
+                            id_path.display()
+                        );
+                        eprintln!(
+                            "     X25519:          {}…",
                             &x25519_hex[..12]
                         );
+                        eprintln!(
+                            "     ML-DSA-65 fp:    SHA256:{}…",
+                            &mldsa_fp[..16]
+                        );
+                        if !is_v3 {
+                            eprintln!(
+                                "  !  identity is v2 format — will be upgraded to v3 (ML-DSA-65) on next use"
+                            );
+                        }
+                        // Sanity-check ML-DSA-65 key roundtrip
+                        let pk_bytes: [u8; MLDSA_PK_LEN] = id.mldsa_pk.clone().into_bytes();
+                        if let Ok(msg) = id.mldsa_sign(b"seam-doctor-selftest") {
+                            use seam_protocol::handshake::mldsa_verify;
+                            if mldsa_verify(&pk_bytes, b"seam-doctor-selftest", &msg) {
+                                eprintln!("  ✓  ML-DSA-65 sign/verify self-test passed");
+                            } else {
+                                eprintln!("  ✗  ML-DSA-65 sign/verify self-test FAILED");
+                                ok = false;
+                            }
+                        } else {
+                            eprintln!("  ✗  ML-DSA-65 signing self-test FAILED");
+                            ok = false;
+                        }
                     }
                     None => {
                         eprintln!(

@@ -112,6 +112,19 @@ pub struct ServeArgs {
     /// Each file may contain one or more hex X25519 keys (one per line, '#' comments allowed).
     #[arg(long, value_name = "DIR")]
     pub auth_keys_dir: Option<std::path::PathBuf>,
+
+    /// Local bind addresses for multi-path transport (comma-separated ip:port pairs).
+    ///
+    /// Example: --multipath 192.168.1.100:0,10.0.0.1:0
+    ///
+    /// When set, the server simultaneously listens on multiple network interfaces.
+    /// Enables clients to connect over whichever path is available.
+    #[arg(long, value_name = "addr1,addr2,...")]
+    pub multipath: Option<String>,
+
+    /// Anti-jamming mode: send every packet on ALL active paths simultaneously.
+    #[arg(long)]
+    pub multipath_redundant: bool,
 }
 
 // ── Entry point ───────────────────────────────────────────────────────────────

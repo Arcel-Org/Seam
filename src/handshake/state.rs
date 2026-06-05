@@ -1,10 +1,10 @@
-use crate::handshake::hybrid_keys::{KemPublicKey, KemSecretKey};
+use crate::handshake::hybrid_keys::{KemPublicKey, KemSecretKey, MLDSA_PK_LEN, MLDSA_SIG_LEN};
 use crate::{
     crypto::{CipherSuite, keys::PacketKeys},
     error::SeamError,
     handshake::hybrid_keys::{
-        HybridSharedSecret, IdentityKeypair, kem_decapsulate, kem_encapsulate, pk_from_bytes,
-        pk_to_bytes,
+        HybridSharedSecret, IdentityKeypair, kem_decapsulate, kem_encapsulate, mldsa_verify,
+        pk_from_bytes, pk_to_bytes,
     },
 };
 use snow::Builder;
@@ -27,6 +27,57 @@ pub struct HandshakeResult {
     pub peer_static_pubkey: [u8; 32],
     /// The cipher suite agreed during the handshake.
     pub cipher_suite: CipherSuite,
+    /// BLAKE3 hash of the Noise handshake transcript (used for identity proof signing).
+    pub handshake_hash: Vec<u8>,
+}
+
+/// Post-handshake identity proof message (ML-DSA-65 / FIPS 204).
+///
+/// Each party sends this immediately after the Noise handshake completes.
+/// The signature covers the BLAKE3 handshake transcript hash, binding the
+/// ML-DSA-65 identity to the session in a quantum-resistant manner.
+///
+/// Wire format: mldsa_pk(1952) + signature(3309) = 5261 bytes total.
+pub struct IdentityProof {
+    /// ML-DSA-65 verify key (1952 bytes).
+    pub mldsa_pk: [u8; MLDSA_PK_LEN],
+    /// ML-DSA-65 signature over the handshake transcript hash (3309 bytes).
+    pub signature: [u8; MLDSA_SIG_LEN],
+}
+
+impl IdentityProof {
+    /// Serialise to wire bytes (MLDSA_PK_LEN + MLDSA_SIG_LEN = 5261 bytes).
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(MLDSA_PK_LEN + MLDSA_SIG_LEN);
+        out.extend_from_slice(&self.mldsa_pk);
+        out.extend_from_slice(&self.signature);
+        out
+    }
+
+    /// Deserialise from wire bytes.
+    pub fn from_bytes(bytes: &[u8]) -> Option<Self> {
+        if bytes.len() != MLDSA_PK_LEN + MLDSA_SIG_LEN {
+            return None;
+        }
+        let mldsa_pk: [u8; MLDSA_PK_LEN] = bytes[..MLDSA_PK_LEN].try_into().ok()?;
+        let signature: [u8; MLDSA_SIG_LEN] = bytes[MLDSA_PK_LEN..].try_into().ok()?;
+        Some(Self { mldsa_pk, signature })
+    }
+
+    /// Build an identity proof by signing the handshake transcript hash.
+    pub fn sign(id: &IdentityKeypair, handshake_hash: &[u8]) -> Result<Self, SeamError> {
+        use fips204::traits::SerDes as _;
+        let mldsa_pk: [u8; MLDSA_PK_LEN] = id.mldsa_pk.clone().into_bytes();
+        let signature = id
+            .mldsa_sign(handshake_hash)
+            .map_err(|e| SeamError::HandshakeFailed(e.to_string()))?;
+        Ok(Self { mldsa_pk, signature })
+    }
+
+    /// Verify this identity proof against the handshake transcript hash.
+    pub fn verify(&self, handshake_hash: &[u8]) -> bool {
+        mldsa_verify(&self.mldsa_pk, handshake_hash, &self.signature)
+    }
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -239,6 +290,7 @@ fn finish(
         keys,
         peer_static_pubkey: peer_static,
         cipher_suite,
+        handshake_hash: hash,
     })
 }
 

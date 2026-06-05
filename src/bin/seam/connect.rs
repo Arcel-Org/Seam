@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use seam_protocol::{
     api::{Client, SeamConn},
+    crypto::CipherSuite,
     handshake::{IdentityKeypair, pk_from_bytes},
 };
 use std::net::SocketAddr;
@@ -61,6 +62,7 @@ pub async fn dial(
     port: u16,
     x25519: [u8; 32],
     kem_pk: seam_protocol::handshake::hybrid_keys::KemPublicKey,
+    cipher: CipherSuite,
 ) -> Result<SeamConn> {
     let server_addr: SocketAddr = format!("{}:{}", host, port)
         .parse()
@@ -71,7 +73,7 @@ pub async fn dial(
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     let conn = client
-        .connect(server_addr, &x25519, &kem_pk)
+        .connect(server_addr, &x25519, &kem_pk, cipher)
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     Ok(conn)
@@ -81,6 +83,7 @@ pub async fn bootstrap_and_connect(
     remote: &RemoteInfo,
     host: &str,
     subcmd: &str,
+    cipher: CipherSuite,
 ) -> Result<(SeamConn, Child)> {
     let seam_bin = match remote.seam_path() {
         Some(p) => p,
@@ -93,7 +96,7 @@ pub async fn bootstrap_and_connect(
     let (line, child) = remote.start_remote_seam(&seam_bin, subcmd)?;
     let (port, x25519, kem_pk) = parse_seam_line(&line)?;
     eprintln!("connecting (post-quantum handshake)…");
-    let conn = dial(host, port, x25519, kem_pk).await?;
+    let conn = dial(host, port, x25519, kem_pk, cipher).await?;
     eprintln!("connected");
     Ok((conn, child))
 }

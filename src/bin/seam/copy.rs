@@ -38,6 +38,7 @@ pub async fn run(args: CopyArgs) -> Result<()> {
     } else {
         cfg.compress
     };
+    let cipher = seam_protocol::crypto::CipherSuite::parse(&cfg.cipher).unwrap_or_default();
 
     // ── Resolve direction and connection info ─────────────────────────────────
 
@@ -117,7 +118,7 @@ pub async fn run(args: CopyArgs) -> Result<()> {
     let (port, x25519_bytes, kem_pk) = connect::parse_seam_line(&ready_line)?;
 
     eprintln!("connecting to {}:{}…", host, port);
-    let mut conn = connect::dial(&host, port, x25519_bytes, kem_pk).await?;
+    let mut conn = connect::dial(&host, port, x25519_bytes, kem_pk, cipher).await?;
     eprintln!("connected — post-quantum handshake complete");
 
     let ctrl_sid = conn.open_stream().await;

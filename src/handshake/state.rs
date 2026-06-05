@@ -158,7 +158,7 @@ impl ServerHandshake {
         let cipher_flag = if payload.len() > 2 {
             // last byte after the KEM PK length prefix block
             let len = u16::from_le_bytes([payload[0], payload[1]]) as usize;
-            if payload.len() >= 2 + len + 1 {
+            if payload.len() > 2 + len {
                 payload[2 + len]
             } else {
                 CIPHER_FLAG_CHACHA
@@ -291,7 +291,7 @@ fn extract_prefix_with_flag(buf: &[u8]) -> Result<(&[u8], u8), SeamError> {
         return Err(SeamError::HandshakeFailed("payload truncated".into()));
     }
     let data = &buf[2..2 + len];
-    let flag = if buf.len() >= 2 + len + 1 {
+    let flag = if buf.len() > 2 + len {
         buf[2 + len]
     } else {
         CIPHER_FLAG_CHACHA

@@ -11,6 +11,7 @@ use tokio::sync::{Mutex, mpsc};
 use tokio::task::JoinHandle;
 
 use crate::{
+    crypto::CipherSuite,
     error::SeamError,
     handshake::{CookieFactory, IdentityKeypair},
     session::SessionEvent,
@@ -78,6 +79,7 @@ impl Endpoint {
         remote: SocketAddr,
         server_x25519: &[u8; 32],
         server_kem_pk: &crate::handshake::hybrid_keys::KemPublicKey,
+        preferred_cipher: CipherSuite,
     ) -> Result<(SharedConn, mpsc::UnboundedReceiver<SessionEvent>), SeamError> {
         let (conn, rx) = Connection::connect(
             self.socket.clone(),
@@ -85,6 +87,7 @@ impl Endpoint {
             &self.identity,
             server_x25519,
             server_kem_pk,
+            preferred_cipher,
         )
         .await?;
 

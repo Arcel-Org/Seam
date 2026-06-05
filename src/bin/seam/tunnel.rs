@@ -84,6 +84,8 @@ fn parse_tunnel_spec(spec: &str) -> Result<(u16, Option<String>, String, String,
 // ── Client ────────────────────────────────────────────────────────────────────
 
 pub async fn run(args: TunnelArgs) -> Result<()> {
+    let cfg = super::config::Config::load().ok().unwrap_or_default();
+    let cipher = seam_protocol::crypto::CipherSuite::parse(&cfg.cipher).unwrap_or_default();
     let (local_port, user, host, remote_host, remote_port, _child, mux) =
         if let Some(direct) = args.direct {
             // --direct: parse local spec differently — need local port from args.spec
@@ -92,7 +94,7 @@ pub async fn run(args: TunnelArgs) -> Result<()> {
                 .parse()
                 .map_err(|_| anyhow!("with --direct, spec should be just LOCAL_PORT"))?;
             let (port, x25519, kem_pk) = connect::parse_seam_line(&direct)?;
-            let conn = connect::dial("127.0.0.1", port, x25519, kem_pk).await?;
+            let conn = connect::dial("127.0.0.1", port, x25519, kem_pk, cipher).await?;
             let mux = SeamMux::new(conn);
             (
                 local_port,
@@ -115,7 +117,7 @@ pub async fn run(args: TunnelArgs) -> Result<()> {
                 connect::shell_quote(&remote_host),
                 remote_port
             );
-            let (conn, child) = connect::bootstrap_and_connect(&remote, &host, &subcmd).await?;
+            let (conn, child) = connect::bootstrap_and_connect(&remote, &host, &subcmd, cipher).await?;
             let mux = SeamMux::new(conn);
             (
                 local_port,

@@ -327,16 +327,16 @@ impl BbrController {
     }
 
     fn maybe_exit_probe_rtt(&mut self, now: Instant) {
-        if let Some(done) = self.probe_rtt_done_stamp {
-            if now >= done {
-                self.min_rtt_stamp = now; // reset so we don't immediately re-enter
-                self.probe_rtt_done_stamp = None;
-                self.state = BbrState::ProbeBw;
-                self.cycle_idx = 0;
-                self.cycle_stamp = now;
-                self.update_pacing_rate();
-                debug!("BBR: exiting ProbeRtt → ProbeBw");
-            }
+        if let Some(done) = self.probe_rtt_done_stamp
+            && now >= done
+        {
+            self.min_rtt_stamp = now; // reset so we don't immediately re-enter
+            self.probe_rtt_done_stamp = None;
+            self.state = BbrState::ProbeBw;
+            self.cycle_idx = 0;
+            self.cycle_stamp = now;
+            self.update_pacing_rate();
+            debug!("BBR: exiting ProbeRtt → ProbeBw");
         }
     }
 }

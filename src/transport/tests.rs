@@ -58,6 +58,7 @@ async fn do_handshake() -> (Connection, Connection) {
         &client_id,
         &server_x25519,
         &server_id.kem_pk,
+        Default::default(),
     )
     .await
     .unwrap();
@@ -292,6 +293,7 @@ async fn test_stream_data_transfer() {
         &client_id,
         &server_id.x25519_public.to_bytes(),
         &server_id.kem_pk,
+        Default::default(),
     )
     .await
     .unwrap();
@@ -391,6 +393,7 @@ async fn test_datagram_roundtrip() {
         &client_id,
         &server_id.x25519_public.to_bytes(),
         &server_id.kem_pk,
+        Default::default(),
     )
     .await
     .unwrap();
@@ -581,7 +584,7 @@ async fn high_level_client_server_roundtrip() {
                 .unwrap();
             timeout(
                 Duration::from_secs(5),
-                client.connect(server_addr, &server_x25519, &server_kem_pk),
+                client.connect(server_addr, &server_x25519, &server_kem_pk, Default::default()),
             )
             .await
             .expect("client connect timed out")

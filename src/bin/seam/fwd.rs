@@ -71,6 +71,8 @@ pub async fn run(args: FwdArgs) -> Result<()> {
     let (user, host, remote_port) = parse_fwd_spec(&args.remote_spec)?;
     let local_host = args.local_host.clone();
     let local_port = args.local_port;
+    let cfg = super::config::Config::load().ok().unwrap_or_default();
+    let cipher = seam_protocol::crypto::CipherSuite::parse(&cfg.cipher).unwrap_or_default();
 
     let remote = ssh::RemoteInfo {
         host: host.clone(),
@@ -81,7 +83,7 @@ pub async fn run(args: FwdArgs) -> Result<()> {
     // Start the remote receiver: it will listen on TCP :remote_port and wait for
     // the Seam client (us) to connect, then forward accepted TCP connections back.
     let subcmd = format!("_fwd-recv --listen-port {} --port 0", remote_port);
-    let (conn, _child) = connect::bootstrap_and_connect(&remote, &host, &subcmd).await?;
+    let (conn, _child) = connect::bootstrap_and_connect(&remote, &host, &subcmd, cipher).await?;
 
     let mux = SeamMux::new(conn);
 

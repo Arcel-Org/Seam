@@ -174,10 +174,6 @@ impl RemoteInfo {
         );
     }
 
-    /// Start `seam recv` on remote via SSH.
-    pub fn start_receiver(&self, seam_bin: &str, dest: &str) -> Result<(String, Child)> {
-        self.start_remote_seam(seam_bin, &format!("recv {} --port 0 --once", dest))
-    }
 }
 
 /// Parse `"user@host"` into `(Option<user>, host)`.

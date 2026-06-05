@@ -76,6 +76,12 @@ pub struct Config {
     /// Overhead = fec_r / fec_k. Must be ≥ 1 when fec_k > 0.
     #[serde(default)]
     pub fec_r: Option<u8>,
+    /// Enable FIPS-140 compliant mode.
+    /// When true: forces AES-256-GCM cipher, uses SHA-256 instead of BLAKE3 for
+    /// file integrity checks. Also settable via SEAM_FIPS_MODE=1 env var or
+    /// --fips-mode CLI flag. Required for NIST FIPS 140-3 / CNSA 2.0 deployments.
+    #[serde(default)]
+    pub fips_mode: bool,
 }
 
 fn default_cc() -> String {
@@ -102,7 +108,25 @@ impl Default for Config {
             listen_port: 0,
             fec_k: None,
             fec_r: None,
+            fips_mode: false,
         }
+    }
+}
+
+impl Config {
+    /// Resolve effective FIPS mode: config file < env var < CLI flag.
+    /// Returns true if FIPS mode should be active.
+    pub fn effective_fips_mode(config_fips: bool, cli_fips: bool) -> bool {
+        cli_fips
+            || std::env::var("SEAM_FIPS_MODE")
+                .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+                .unwrap_or(false)
+            || config_fips
+    }
+
+    /// Print the FIPS mode banner and return the algorithm list string.
+    pub fn fips_banner() -> &'static str {
+        "AES-256-GCM (FIPS 197), ML-KEM-768 (FIPS 203), X25519 (SP 800-186), SHA-256 (FIPS 180-4)"
     }
 }
 
@@ -186,6 +210,7 @@ pub fn print() -> Result<()> {
         "fec_r           = {}",
         cfg.fec_r.map(|v| v.to_string()).unwrap_or_else(|| "auto".into())
     );
+    println!("fips_mode       = {}", cfg.fips_mode);
     Ok(())
 }
 
@@ -201,8 +226,9 @@ pub fn get(key: &str) -> Result<()> {
         "listen_port" => println!("{}", cfg.listen_port),
         "fec_k" => println!("{}", cfg.fec_k.map(|v| v.to_string()).unwrap_or_else(|| "auto".into())),
         "fec_r" => println!("{}", cfg.fec_r.map(|v| v.to_string()).unwrap_or_else(|| "auto".into())),
+        "fips_mode" => println!("{}", cfg.fips_mode),
         _ => bail!(
-            "unknown config key: {key}\n  valid keys: cc, compress, identity, cipher, max_connections, listen_port, fec_k, fec_r"
+            "unknown config key: {key}\n  valid keys: cc, compress, identity, cipher, max_connections, listen_port, fec_k, fec_r, fips_mode"
         ),
     }
     Ok(())
@@ -271,8 +297,11 @@ pub fn set(key: &str, value: &str) -> Result<()> {
                 cfg.fec_r = Some(r);
             }
         }
+        "fips_mode" => {
+            cfg.fips_mode = value.parse().context("fips_mode must be true or false")?;
+        }
         _ => bail!(
-            "unknown config key: {key}\n  valid keys: cc, compress, identity, cipher, max_connections, listen_port, fec_k, fec_r"
+            "unknown config key: {key}\n  valid keys: cc, compress, identity, cipher, max_connections, listen_port, fec_k, fec_r, fips_mode"
         ),
     }
     cfg.save()?;

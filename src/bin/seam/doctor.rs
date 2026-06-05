@@ -116,7 +116,7 @@ pub fn run(_args: DoctorArgs) -> Result<()> {
                 // Check for unknown keys by comparing raw TOML table keys against the known set.
                 let known_keys = [
                     "cc", "compress", "identity", "cipher",
-                    "max_connections", "listen_port", "fec_k", "fec_r",
+                    "max_connections", "listen_port", "fec_k", "fec_r", "fips_mode",
                 ];
                 match text.parse::<toml::Value>() {
                     Err(e) => {
@@ -321,6 +321,20 @@ pub fn run(_args: DoctorArgs) -> Result<()> {
         }
         VersionCheckResult::NetworkError(e) => {
             eprintln!("  ·  version check skipped (no network: {e})");
+        }
+    }
+
+    // ── 7.9. FIPS mode status ───────────────────────────────────────────────────
+    {
+        let cfg = super::config::Config::load().ok().unwrap_or_default();
+        let fips_active = super::config::Config::effective_fips_mode(cfg.fips_mode, false);
+        if fips_active {
+            eprintln!(
+                "  ✓  FIPS mode: enabled — algorithms: {}",
+                super::config::Config::fips_banner()
+            );
+        } else {
+            eprintln!("  ·  FIPS mode: disabled (set fips_mode = true in config or SEAM_FIPS_MODE=1 to enable)");
         }
     }
 

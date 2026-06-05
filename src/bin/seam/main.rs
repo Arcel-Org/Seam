@@ -4,6 +4,7 @@ mod config;
 mod connect;
 mod copy;
 mod doctor;
+mod forward;
 mod fwd;
 mod key;
 mod ls;
@@ -15,6 +16,7 @@ mod send;
 mod shell;
 mod ssh;
 mod stats;
+mod sync;
 mod tunnel;
 mod update;
 mod version;
@@ -42,6 +44,16 @@ pub struct Cli {
           value_parser = ["chacha20poly1305", "aes256gcm"])]
     pub cipher: Option<String>,
 
+    /// Enable FIPS-140 compliant mode (also: SEAM_FIPS_MODE=1 or fips_mode=true in config).
+    ///
+    /// Forces AES-256-GCM cipher (FIPS 197). Rejects ChaCha20-Poly1305 with an error.
+    /// Uses SHA-256 (FIPS 180-4) instead of BLAKE3 for file integrity checksums.
+    /// Prints compliance algorithm banner on startup.
+    ///
+    /// Required for: NIST FIPS 140-3, NSA CNSA 2.0, DoD IL2+ deployments.
+    #[arg(long, global = true)]
+    pub fips_mode: bool,
+
     #[command(subcommand)]
     command: Option<Commands>,
 }
@@ -55,6 +67,14 @@ enum Commands {
     /// Bidirectional pipe (like netcat, but post-quantum encrypted)
     #[command(name = "pipe")]
     Pipe(pipe::PipeArgs),
+
+    /// Forward a local TCP port through a post-quantum Seam tunnel to a remote destination
+    #[command(name = "forward")]
+    Forward(forward::ForwardArgs),
+
+    /// Sync a local directory to/from a remote host over post-quantum Seam
+    #[command(name = "sync")]
+    Sync(sync::SyncArgs),
 
     /// Forward a TCP port over a post-quantum tunnel (like ssh -L)
     #[command(name = "tunnel")]
@@ -109,6 +129,10 @@ enum Commands {
     Completions(completions::CompletionsArgs),
 
     // Hidden internal subcommands — started by SSH bootstrap, not for direct use
+    #[command(name = "_forward-recv", hide = true)]
+    ForwardRecv(forward::ForwardRecvArgs),
+    #[command(name = "_sync-recv", hide = true)]
+    SyncRecv(sync::SyncRecvArgs),
     #[command(name = "_shell-recv", hide = true)]
     ShellRecv(shell::ShellRecvArgs),
     #[command(name = "recv", hide = true)]
@@ -141,8 +165,10 @@ fn print_splash() {
     eprintln!();
     eprintln!("  Commands");
     eprintln!("    cp       Copy files               seam cp ./file user@host:/path");
+    eprintln!("    sync     Directory sync            seam sync ./dir user@host:/path");
+    eprintln!("    forward  TCP port forward          seam forward 8080:localhost:80 user@host");
     eprintln!("    pipe     Bidirectional pipe        seam pipe user@host -- bash");
-    eprintln!("    tunnel   TCP port forward          seam tunnel 8080:user@host:3000");
+    eprintln!("    tunnel   TCP port forward (legacy) seam tunnel 8080:user@host:3000");
     eprintln!("    fwd      Reverse port forward      seam fwd user@host:3000 8080");
     eprintln!("    shell    Run remote command         seam shell user@host -- ls -la");
     eprintln!("    bench    Measure throughput        seam bench user@host");
@@ -172,12 +198,29 @@ async fn main() -> Result<()> {
         .finish();
     let _ = tracing::subscriber::set_global_default(subscriber);
 
+    // ── Resolve FIPS mode (CLI > env > config) ────────────────────────────────
+    let cfg_fips = config::Config::load().ok().map(|c| c.fips_mode).unwrap_or(false);
+    let fips_active = config::Config::effective_fips_mode(cfg_fips, cli.fips_mode);
+
+    if fips_active {
+        eprintln!("FIPS mode active: {}", config::Config::fips_banner());
+        // Enforce AES-256-GCM: reject explicit chacha20poly1305 flag in FIPS mode.
+        if cli.cipher.as_deref() == Some("chacha20poly1305") {
+            anyhow::bail!(
+                "FIPS mode is active: ChaCha20-Poly1305 is not FIPS-approved.\n\
+                 Use --cipher aes256gcm or remove --cipher to use the FIPS-required AES-256-GCM."
+            );
+        }
+    }
+
     match cli.command {
         None => {
             print_splash();
             Ok(())
         }
-        Some(Commands::Copy(args)) => copy::run(args).await,
+        Some(Commands::Forward(args)) => forward::run(args, fips_active).await,
+        Some(Commands::Sync(args)) => sync::run(args, fips_active).await,
+        Some(Commands::Copy(args)) => copy::run(args, fips_active).await,
         Some(Commands::Pipe(args)) => pipe::run(args).await,
         Some(Commands::Tunnel(args)) => tunnel::run(args).await,
         Some(Commands::Fwd(args)) => fwd::run(args).await,
@@ -192,6 +235,8 @@ async fn main() -> Result<()> {
         Some(Commands::Doctor(args)) => doctor::run(args),
         Some(Commands::Version(args)) => version::run(args),
         Some(Commands::Completions(args)) => completions::run(args),
+        Some(Commands::ForwardRecv(args)) => forward::run_recv(args).await,
+        Some(Commands::SyncRecv(args)) => sync::run_recv(args, fips_active).await,
         Some(Commands::ShellRecv(args)) => shell::run_recv(args).await,
         Some(Commands::Recv(args)) => recv::run(args).await,
         Some(Commands::Send(args)) => send::run(args).await,

@@ -1,6 +1,7 @@
 use anyhow::{Result, bail};
 use clap::Args;
 use indicatif::{ProgressBar, ProgressStyle};
+use sha2::Digest as _;
 use std::path::{Path, PathBuf};
 
 use crate::{
@@ -32,14 +33,16 @@ pub struct CopyArgs {
     pub direct: Option<String>,
 }
 
-pub async fn run(args: CopyArgs) -> Result<()> {
+pub async fn run(args: CopyArgs, fips_mode: bool) -> Result<()> {
     let cfg = super::config::Config::load().ok().unwrap_or_default();
     let compress = if args.no_compress {
         false
     } else {
         cfg.compress
     };
-    let cipher = seam_protocol::crypto::CipherSuite::parse(&cfg.cipher).unwrap_or_default();
+    // In FIPS mode, always use AES-256-GCM regardless of config.
+    let cipher_str = if fips_mode { "aes256gcm" } else { &cfg.cipher };
+    let cipher = seam_protocol::crypto::CipherSuite::parse(cipher_str).unwrap_or_default();
 
     // ── Resolve direction and connection info ─────────────────────────────────
 
@@ -104,7 +107,12 @@ pub async fn run(args: CopyArgs) -> Result<()> {
                     }
                 };
                 eprintln!("starting receiver on {}:{}", remote.target(), remote_path);
-                let (line, child) = remote.start_receiver(&seam_bin, &remote_path)?;
+                let recv_subcmd = format!(
+                    "recv {} --port 0 --once{}",
+                    connect::shell_quote(&remote_path),
+                    if fips_mode { " --fips-mode" } else { "" }
+                );
+                let (line, child) = remote.start_remote_seam(&seam_bin, &recv_subcmd)?;
                 let h = remote.host.clone();
                 (false, line, h, PathBuf::from(remote_path), Some(child))
             }
@@ -158,6 +166,7 @@ pub async fn run(args: CopyArgs) -> Result<()> {
                         &mut buf,
                         &pb,
                         args.resume,
+                        fips_mode,
                     )
                     .await?;
                     bytes_received += pb.position() - before;
@@ -219,6 +228,7 @@ pub async fn run(args: CopyArgs) -> Result<()> {
                 &pb,
                 args.resume,
                 &mut buf,
+                fips_mode,
             )
             .await?;
         }
@@ -263,6 +273,36 @@ pub fn collect_files(src: &Path) -> Result<Vec<(String, std::fs::Metadata)>> {
     Ok(out)
 }
 
+/// Stateful hasher wrapper to allow incremental hashing with either algorithm.
+pub enum IncrementalHasher {
+    Blake3(blake3::Hasher),
+    Sha256(sha2::Sha256),
+}
+
+impl IncrementalHasher {
+    pub fn new(fips_mode: bool) -> Self {
+        if fips_mode {
+            Self::Sha256(sha2::Sha256::new())
+        } else {
+            Self::Blake3(blake3::Hasher::new())
+        }
+    }
+
+    pub fn update(&mut self, data: &[u8]) {
+        match self {
+            Self::Blake3(h) => { h.update(data); }
+            Self::Sha256(h) => { sha2::Digest::update(h, data); }
+        }
+    }
+
+    pub fn finalize(self) -> [u8; 32] {
+        match self {
+            Self::Blake3(h) => *h.finalize().as_bytes(),
+            Self::Sha256(h) => sha2::Digest::finalize(h).into(),
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub async fn send_file(
     conn: &mut seam_protocol::api::SeamConn,
@@ -273,6 +313,7 @@ pub async fn send_file(
     pb: &ProgressBar,
     resume: bool,
     buf: &mut Vec<u8>,
+    fips_mode: bool,
 ) -> Result<()> {
     use std::io::{Read, Seek, SeekFrom};
 
@@ -309,7 +350,7 @@ pub async fn send_file(
         }
     }
 
-    let mut hasher = blake3::Hasher::new();
+    let mut hasher = IncrementalHasher::new(fips_mode);
     let mut chunk = vec![0u8; CHUNK];
     while sent < size {
         let n = file.read(&mut chunk)?;
@@ -333,17 +374,18 @@ pub async fn send_file(
         let _ = conn.tick().await;
     }
 
-    // Send BLAKE3 checksum so the receiver can verify end-to-end integrity.
+    // Send checksum (SHA-256 in FIPS mode, BLAKE3 otherwise) for end-to-end integrity.
     let digest = hasher.finalize();
     let mut cksum_frame = Vec::with_capacity(1 + 32);
     cksum_frame.push(proto::CHECKSUM);
-    cksum_frame.extend_from_slice(digest.as_bytes());
+    cksum_frame.extend_from_slice(&digest);
     send_frame(conn, ctrl_sid, &cksum_frame).await?;
 
     // Wait for receiver ACK / error.
     let reply = read_frame(conn, ctrl_sid, buf).await?;
     if reply.is_empty() || reply[0] != proto::ACK {
-        bail!("integrity check failed for {rel}: receiver reported hash mismatch");
+        let algo = if fips_mode { "SHA-256" } else { "BLAKE3" };
+        bail!("integrity check failed for {rel}: receiver reported {algo} hash mismatch");
     }
 
     Ok(())
@@ -359,6 +401,7 @@ pub async fn receive_file(
     buf: &mut Vec<u8>,
     pb: &ProgressBar,
     resume: bool,
+    fips_mode: bool,
 ) -> Result<()> {
     use std::io::{Seek, SeekFrom, Write};
 
@@ -404,7 +447,8 @@ pub async fn receive_file(
 
     pb.set_message(format!("receiving {name}"));
 
-    let mut hasher = blake3::Hasher::new();
+    let mut hasher = IncrementalHasher::new(fips_mode);
+    let algo_name = if fips_mode { "SHA-256" } else { "BLAKE3" };
     let mut received: u64 = resume_from;
     while received < size {
         let data_frame = read_frame(conn, ctrl_sid, buf).await?;
@@ -430,19 +474,19 @@ pub async fn receive_file(
         let _ = conn.tick().await;
     }
 
-    // Verify BLAKE3 checksum sent by the sender.
+    // Verify checksum sent by the sender (SHA-256 in FIPS mode, BLAKE3 otherwise).
     let cksum_frame = read_frame(conn, ctrl_sid, buf).await?;
     if cksum_frame.len() == 33 && cksum_frame[0] == proto::CHECKSUM {
         let expected = &cksum_frame[1..33];
         let actual = hasher.finalize();
-        if actual.as_bytes() == expected {
+        if actual == expected {
             send_frame(conn, ctrl_sid, &[proto::ACK]).await?;
-            eprintln!("received: {name} ({size} bytes) [BLAKE3 OK: {}]",
+            eprintln!("received: {name} ({size} bytes) [{algo_name} OK: {}]",
                 hex::encode(&expected[..8]));
         } else {
-            bail!("BLAKE3 integrity check FAILED for {name}: expected {} got {}",
+            bail!("{algo_name} integrity check FAILED for {name}: expected {} got {}",
                 hex::encode(expected),
-                hex::encode(actual.as_bytes()));
+                hex::encode(actual));
         }
     } else {
         // Older peer without checksum support — still accept the file.

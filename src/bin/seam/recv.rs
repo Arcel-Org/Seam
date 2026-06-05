@@ -27,7 +27,10 @@ pub async fn run(args: RecvArgs) -> Result<()> {
     let kem_hex = hex::encode(pk_to_bytes(&id.kem_pk));
 
     let cfg = super::config::Config::load().ok().unwrap_or_default();
-    let cipher = seam_protocol::crypto::CipherSuite::parse(&cfg.cipher).unwrap_or_default();
+    // Check FIPS mode from env/config (CLI flag is inherited via global flag)
+    let fips_mode = super::config::Config::effective_fips_mode(cfg.fips_mode, false);
+    let cipher_str = if fips_mode { "aes256gcm" } else { &cfg.cipher };
+    let cipher = seam_protocol::crypto::CipherSuite::parse(cipher_str).unwrap_or_default();
     let addr: std::net::SocketAddr = format!("0.0.0.0:{}", args.port).parse()?;
     let mut server = Server::bind_with_cipher(addr, id, cipher)
         .await
@@ -43,12 +46,12 @@ pub async fn run(args: RecvArgs) -> Result<()> {
         .ok_or_else(|| anyhow::anyhow!("no connection"))?;
 
     std::fs::create_dir_all(&args.dest)?;
-    receive_transfer(&mut conn, &args.dest).await?;
+    receive_transfer(&mut conn, &args.dest, fips_mode).await?;
     conn.close().await;
     Ok(())
 }
 
-async fn receive_transfer(conn: &mut SeamConn, dest: &std::path::Path) -> Result<()> {
+async fn receive_transfer(conn: &mut SeamConn, dest: &std::path::Path, fips_mode: bool) -> Result<()> {
     let mut buf: Vec<u8> = Vec::new();
 
     let ctrl_sid = wait_for_stream(conn).await?;
@@ -80,7 +83,7 @@ async fn receive_transfer(conn: &mut SeamConn, dest: &std::path::Path) -> Result
         }
         match frame[0] {
             proto::FILE_INFO => {
-                receive_file(conn, ctrl_sid, &frame, dest, compress, &mut buf).await?;
+                receive_file(conn, ctrl_sid, &frame, dest, compress, &mut buf, fips_mode).await?;
             }
             proto::DONE => break,
             t => bail!("unexpected frame type 0x{:02x}", t),
@@ -96,6 +99,7 @@ async fn receive_file(
     dest: &std::path::Path,
     compress: bool,
     buf: &mut Vec<u8>,
+    fips_mode: bool,
 ) -> Result<()> {
     use std::io::{Seek, SeekFrom, Write};
 
@@ -140,7 +144,9 @@ async fn receive_file(
         file.seek(SeekFrom::Start(resume_from))?;
     }
 
-    let mut hasher = blake3::Hasher::new();
+    use crate::copy::IncrementalHasher;
+    let mut hasher = IncrementalHasher::new(fips_mode);
+    let algo_name = if fips_mode { "SHA-256" } else { "BLAKE3" };
     let mut received: u64 = resume_from;
     while received < size {
         let data_frame = read_frame(conn, ctrl_sid, buf).await?;
@@ -162,19 +168,19 @@ async fn receive_file(
         }
     }
 
-    // Verify BLAKE3 checksum sent by the sender.
+    // Verify checksum sent by the sender (SHA-256 in FIPS mode, BLAKE3 otherwise).
     let cksum_frame = read_frame(conn, ctrl_sid, buf).await?;
     if cksum_frame.len() == 33 && cksum_frame[0] == proto::CHECKSUM {
         let expected = &cksum_frame[1..33];
         let actual = hasher.finalize();
-        if actual.as_bytes() == expected {
+        if actual == expected {
             send_frame(conn, ctrl_sid, &[proto::ACK]).await?;
-            eprintln!("received: {name} ({size} bytes) [BLAKE3 OK: {}]",
+            eprintln!("received: {name} ({size} bytes) [{algo_name} OK: {}]",
                 hex::encode(&expected[..8]));
         } else {
-            bail!("BLAKE3 integrity check FAILED for {name}: expected {} got {}",
+            bail!("{algo_name} integrity check FAILED for {name}: expected {} got {}",
                 hex::encode(expected),
-                hex::encode(actual.as_bytes()));
+                hex::encode(actual));
         }
     } else {
         // Older peer without checksum support — still accept the file.

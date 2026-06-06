@@ -91,7 +91,6 @@ impl PacketEncoder {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::crypto::{CipherSuite, keys::PacketKeys};
     use std::collections::HashSet;
 

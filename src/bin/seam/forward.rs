@@ -245,7 +245,7 @@ pub async fn run(args: ForwardArgs, fips_mode: bool) -> Result<()> {
             ssh_port: args.port,
         };
 
-        let subcmd = format!("_forward-recv --port 0");
+        let subcmd = "_forward-recv --port 0".to_string();
         let (conn, _child) =
             connect::bootstrap_and_connect(&remote, &host, &subcmd, cipher).await?;
         let mux = SeamMux::new(conn);
@@ -355,7 +355,7 @@ pub async fn run_recv(args: ForwardRecvArgs) -> Result<()> {
                 return;
             }
             let header_len = u32::from_be_bytes(len_buf) as usize;
-            if header_len < 4 || header_len > 4096 {
+            if !(4..=4096).contains(&header_len) {
                 eprintln!("forward-recv: invalid header length {header_len}");
                 return;
             }
@@ -477,7 +477,7 @@ pub async fn run_hop_recv(args: ForwardHopRecvArgs) -> Result<()> {
                 return;
             }
             let header_len = u32::from_be_bytes(len_buf) as usize;
-            if header_len < 4 || header_len > 4096 {
+            if !(4..=4096).contains(&header_len) {
                 eprintln!("hop-recv: invalid header length {header_len}");
                 return;
             }

@@ -93,7 +93,7 @@ fn show_key(id_path: &std::path::Path, format: &str) -> Result<()> {
     let x25519 = hex::encode(id.x25519_public.as_bytes());
     let kem = hex::encode(pk_to_bytes(&id.kem_pk));
     let mldsa_pk_bytes: [u8; MLDSA_PK_LEN] = id.mldsa_pk.clone().into_bytes();
-    let mldsa_pk_hex = hex::encode(&mldsa_pk_bytes);
+    let mldsa_pk_hex = hex::encode(mldsa_pk_bytes);
     let mldsa_fp = id.mldsa_fingerprint();
 
     match format {
@@ -208,7 +208,7 @@ fn rotate_key(id_path: &std::path::Path, format: &str) -> Result<()> {
             println!("    \"ml_kem_768\": \"{new_kem}\",");
             println!(
                 "    \"ml_dsa_65\": \"{}\",",
-                hex::encode(&new_mldsa_pk_bytes)
+                hex::encode(new_mldsa_pk_bytes)
             );
             println!("    \"ml_dsa_65_fingerprint\": \"SHA256:{new_mldsa_fp}\"");
             println!("  }},");
@@ -286,5 +286,5 @@ fn fmt_timestamp_utc(secs: u64) -> String {
 }
 
 fn is_leap(year: u32) -> bool {
-    (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0)
+    (year.is_multiple_of(4) && !year.is_multiple_of(100)) || year.is_multiple_of(400)
 }

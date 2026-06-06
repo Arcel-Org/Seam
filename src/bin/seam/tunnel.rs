@@ -151,7 +151,7 @@ fn parse_http_status(buf: &[u8]) -> String {
     std::str::from_utf8(buf)
         .ok()
         .and_then(|s| s.lines().next())
-        .and_then(|l| l.splitn(3, ' ').nth(1))
+        .and_then(|l| l.split(' ').nth(1))
         .unwrap_or("???")
         .to_string()
 }
@@ -186,7 +186,7 @@ pub async fn run(args: TunnelArgs) -> Result<()> {
     let relay_display = {
         let r = &args.remote;
         if let Some(at) = r.find('@') {
-            format!("{}", &r[at + 1..])
+            r[at + 1..].to_string()
         } else {
             r.clone()
         }
@@ -297,6 +297,7 @@ pub async fn run(args: TunnelArgs) -> Result<()> {
 
 // ── Per-port forwarding loop with auto-reconnect ─────────────────────────────
 
+#[allow(clippy::too_many_arguments)]
 async fn run_port_forward(
     local_port: u16,
     remote: &str,

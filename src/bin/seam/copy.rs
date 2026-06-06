@@ -347,6 +347,7 @@ pub fn collect_files(src: &Path) -> Result<Vec<(String, std::fs::Metadata)>> {
 }
 
 /// Stateful hasher wrapper to allow incremental hashing with either algorithm.
+#[allow(clippy::large_enum_variant)]
 pub enum IncrementalHasher {
     Blake3(blake3::Hasher),
     Sha256(sha2::Sha256),

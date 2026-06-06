@@ -290,7 +290,7 @@ pub async fn run_recv(args: ProxyRecvArgs) -> Result<()> {
                 return;
             }
             let header_len = u32::from_be_bytes(len_buf) as usize;
-            if header_len < 4 || header_len > 4096 {
+            if !(4..=4096).contains(&header_len) {
                 eprintln!("proxy-recv: invalid header length {header_len}");
                 return;
             }

@@ -25,6 +25,7 @@ pub fn fingerprint(x25519_pub: &[u8; 32]) -> String {
 
 /// SHA-256 fingerprint of an ML-DSA-65 verify key, returned as lowercase hex.
 /// This is quantum-resistant: a quantum adversary cannot forge it.
+#[allow(dead_code)]
 pub fn mldsa_fingerprint(mldsa_pk: &[u8]) -> String {
     let hash = sha2::Sha256::digest(mldsa_pk);
     hex::encode(hash)

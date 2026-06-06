@@ -368,9 +368,8 @@ async fn run_pipe_mode(mut stream: seam_protocol::tunnel::SeamStream) -> Result<
         let mut buf = Vec::with_capacity(4096);
         exit_code = 'outer: loop {
             let mut byte = [0u8; 1];
-            match stream.read_exact(&mut byte).await {
-                Err(_) => break 0,
-                Ok(_) => {}
+            if stream.read_exact(&mut byte).await.is_err() {
+                break 0;
             }
             match byte[0] {
                 SHELL_EXIT => {
@@ -604,9 +603,7 @@ async fn pty_bridge_loop(
     use std::os::unix::io::FromRawFd;
     let _ = unsafe { libc::fcntl(master_fd, libc::F_SETFL, libc::O_NONBLOCK) };
 
-    let async_master = match tokio::fs::File::from_std(master_file) {
-        f => f,
-    };
+    let async_master = tokio::fs::File::from_std(master_file);
 
     // Split into read/write halves using Arc<Mutex>-like approach.
     // Since tokio::fs::File doesn't implement split directly, use try_clone approach.
@@ -913,11 +910,10 @@ async fn run_recv_plain(
                             child_stdin = None;
                             continue;
                         }
-                        if let Some(ref mut stdin_w) = child_stdin {
-                            if stdin_w.write_all(&data).await.is_err() {
+                        if let Some(ref mut stdin_w) = child_stdin
+                            && stdin_w.write_all(&data).await.is_err() {
                                 child_stdin = None;
                             }
-                        }
                     }
                     Ok(SHELL_STDIN_EOF) | Ok(_) => {
                         child_stdin = None;

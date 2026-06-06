@@ -91,7 +91,7 @@ impl IdentityKeypair {
     /// deterministically from the X25519 secret so that it is stable across upgrades,
     /// and returns the upgraded struct (caller should persist to disk).
     pub fn from_bytes(bytes: &[u8]) -> Option<Self> {
-        if bytes.len() < 1 {
+        if bytes.is_empty() {
             return None;
         }
         match bytes[0] {
@@ -264,7 +264,7 @@ impl IdentityKeypair {
     pub fn mldsa_fingerprint(&self) -> String {
         use sha2::Digest as _;
         let pk_bytes: [u8; MLDSA_PK_LEN] = self.mldsa_pk.clone().into_bytes();
-        let hash = sha2::Sha256::digest(&pk_bytes);
+        let hash = sha2::Sha256::digest(pk_bytes);
         hex::encode(hash)
     }
 }

@@ -337,7 +337,7 @@ impl TarState {
     }
 
     /// Apply header obfuscation to `packet` (XOR first 8 bytes) if enabled.
-    pub fn maybe_obfuscate(&self, packet: &mut Vec<u8>) {
+    pub fn maybe_obfuscate(&self, packet: &mut [u8]) {
         if let Some(ref secret) = self.obfuscation_secret {
             obfuscate_header(packet, secret);
         }

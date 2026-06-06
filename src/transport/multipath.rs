@@ -48,9 +48,10 @@ const DEDUP_WINDOW: usize = 64;
 // ── PathScheduler ─────────────────────────────────────────────────────────────
 
 /// Packet scheduling strategy across multiple paths.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum PathScheduler {
     /// Rotate through active paths in order (default). Distributes load evenly.
+    #[default]
     RoundRobin,
     /// Always send on the path with the lowest RTT estimate.
     MinLatency,
@@ -83,12 +84,6 @@ impl PathScheduler {
             Self::Redundant => "redundant",
             Self::Weighted => "weighted",
         }
-    }
-}
-
-impl Default for PathScheduler {
-    fn default() -> Self {
-        Self::RoundRobin
     }
 }
 

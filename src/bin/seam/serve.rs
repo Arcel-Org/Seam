@@ -751,9 +751,8 @@ async fn serve_shell_plain(
                         let n = u16::from_be_bytes(len_buf) as usize;
                         let mut data = vec![0u8; n];
                         if stream.read_exact(&mut data).await.is_err() { child_stdin = None; continue; }
-                        if let Some(ref mut w) = child_stdin {
-                            if w.write_all(&data).await.is_err() { child_stdin = None; }
-                        }
+                        if let Some(ref mut w) = child_stdin
+                            && w.write_all(&data).await.is_err() { child_stdin = None; }
                     }
                     Ok(SHELL_STDIN_EOF) | Ok(_) => { child_stdin = None; }
                 }
@@ -783,7 +782,7 @@ async fn serve_forward(
         .await
         .map_err(|e| anyhow!("forward header from {peer}: {e}"))?;
     let header_len = u32::from_be_bytes(len_buf) as usize;
-    if header_len < 4 || header_len > 4096 {
+    if !(4..=4096).contains(&header_len) {
         return Err(anyhow!(
             "invalid forward header length {header_len} from {peer}"
         ));

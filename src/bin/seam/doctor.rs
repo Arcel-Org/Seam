@@ -269,7 +269,7 @@ pub fn run(_args: DoctorArgs) -> Result<()> {
 
                 // Validate FEC parameters
                 match (cfg.fec_k, cfg.fec_r) {
-                    (Some(k), Some(r)) if k == 0 => {
+                    (Some(0), Some(r)) => {
                         eprintln!("  ✓  FEC: disabled (pure ARQ)");
                         let _ = r; // r is ignored when k=0
                     }

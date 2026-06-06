@@ -108,11 +108,7 @@ fn show(
     // RFC3339 timestamps sort lexicographically, so prefix comparison works.
     let since_prefix = since.map(|s| {
         // Accept YYYY-MM-DD (10 chars) or full RFC3339. Normalize to at least YYYY-MM-DD.
-        if s.len() == 10 && s.chars().nth(4) == Some('-') {
-            s.to_string()
-        } else {
-            s.to_string()
-        }
+        s.to_string()
     });
 
     // Collect all matching records. We load all lines and filter, then take last N.
@@ -128,17 +124,18 @@ fn show(
         };
 
         // Apply --since filter
-        if let Some(ref prefix) = since_prefix {
-            if !rec.ts.starts_with(prefix.as_str()) && rec.ts.as_str() < prefix.as_str() {
-                continue;
-            }
+        if let Some(ref prefix) = since_prefix
+            && !rec.ts.starts_with(prefix.as_str())
+            && rec.ts.as_str() < prefix.as_str()
+        {
+            continue;
         }
 
         // Apply --host filter (substring match on remote field)
-        if let Some(hf) = host_filter {
-            if !rec.remote.contains(hf) {
-                continue;
-            }
+        if let Some(hf) = host_filter
+            && !rec.remote.contains(hf)
+        {
+            continue;
         }
 
         records.push((line.to_string(), rec));
@@ -166,8 +163,8 @@ fn show(
 
     // Formatted table output.
     println!(
-        "{:<25} {:<10} {:<28} {:<6} {:<10} {}",
-        "timestamp", "command", "remote", "exit", "bytes_tx", "fips"
+        "{:<25} {:<10} {:<28} {:<6} {:<10} fips",
+        "timestamp", "command", "remote", "exit", "bytes_tx"
     );
     println!("{}", "-".repeat(90));
     for (_, rec) in records {

@@ -79,10 +79,10 @@ pub fn parse_targets(target: &str) -> Vec<IpAddr> {
     }
     // Try DNS resolution
     use std::net::ToSocketAddrs;
-    if let Ok(mut addrs) = (target, 0u16).to_socket_addrs() {
-        if let Some(addr) = addrs.next() {
-            return vec![addr.ip()];
-        }
+    if let Ok(mut addrs) = (target, 0u16).to_socket_addrs()
+        && let Some(addr) = addrs.next()
+    {
+        return vec![addr.ip()];
     }
     vec![]
 }
@@ -173,10 +173,7 @@ pub async fn run_scan(args: ScanArgs) -> Result<()> {
             if ports.len() == 1 { "" } else { "s" },
             total_probes
         );
-        eprintln!(
-            "{:<20} {:<8} {:<12} {}",
-            "HOST", "PORT", "LATENCY", "BANNER"
-        );
+        eprintln!("{:<20} {:<8} {:<12} BANNER", "HOST", "PORT", "LATENCY");
         eprintln!("{}", "-".repeat(60));
     }
 
@@ -190,7 +187,6 @@ pub async fn run_scan(args: ScanArgs) -> Result<()> {
         for &port in &ports {
             let ip = *ip;
             let sem = Arc::clone(&sem);
-            let timeout = timeout;
             tasks.push(tokio::spawn(async move {
                 let _permit = sem.acquire().await.unwrap();
                 let (open, latency_ms, banner) = probe_port(ip, port, timeout).await;

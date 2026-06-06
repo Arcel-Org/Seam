@@ -563,20 +563,20 @@ pub async fn run(args: SyncArgs, fips_mode: bool) -> Result<()> {
     // If we have a cached remote manifest from a previous sync, show the user
     // an estimated diff count before the network round-trip. This is purely
     // informational; the authoritative manifest always comes from the remote.
-    if !args.no_cache {
-        if let Some(cached) = load_manifest_cache(&remote.host, &remote_dir) {
-            let cached_entries = cached_to_manifest(&cached);
-            let cached_age_secs = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs()
-                .saturating_sub(cached.cached_at);
-            eprintln!(
-                "manifest cache: {} files from {} ago — estimating diff…",
-                cached_entries.len(),
-                format_duration(cached_age_secs)
-            );
-        }
+    if !args.no_cache
+        && let Some(cached) = load_manifest_cache(&remote.host, &remote_dir)
+    {
+        let cached_entries = cached_to_manifest(&cached);
+        let cached_age_secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs()
+            .saturating_sub(cached.cached_at);
+        eprintln!(
+            "manifest cache: {} files from {} ago — estimating diff…",
+            cached_entries.len(),
+            format_duration(cached_age_secs)
+        );
     }
 
     let (line, _child) = remote.start_remote_seam(&seam_bin, &subcmd)?;
@@ -606,11 +606,11 @@ pub async fn run(args: SyncArgs, fips_mode: bool) -> Result<()> {
         let remote_manifest = decode_manifest(&remote_manifest_frame)?;
 
         // Update the manifest cache with the freshly-received remote manifest.
-        if !args.no_cache {
-            if let Err(e) = save_manifest_cache(&remote.host, &remote_dir, &remote_manifest) {
-                // Non-fatal: cache write failures don't affect correctness.
-                eprintln!("sync: warning: could not update manifest cache: {e}");
-            }
+        if !args.no_cache
+            && let Err(e) = save_manifest_cache(&remote.host, &remote_dir, &remote_manifest)
+        {
+            // Non-fatal: cache write failures don't affect correctness.
+            eprintln!("sync: warning: could not update manifest cache: {e}");
         }
 
         eprintln!("remote manifest: {} files", remote_manifest.len());
@@ -701,10 +701,10 @@ pub async fn run(args: SyncArgs, fips_mode: bool) -> Result<()> {
         let remote_manifest = decode_manifest(&remote_manifest_frame)?;
 
         // Cache the remote manifest for future use.
-        if !args.no_cache {
-            if let Err(e) = save_manifest_cache(&remote.host, &remote_dir, &remote_manifest) {
-                eprintln!("sync: warning: could not update manifest cache: {e}");
-            }
+        if !args.no_cache
+            && let Err(e) = save_manifest_cache(&remote.host, &remote_dir, &remote_manifest)
+        {
+            eprintln!("sync: warning: could not update manifest cache: {e}");
         }
 
         hash_pb.set_message(format!("building local manifest ({algo_name})…"));

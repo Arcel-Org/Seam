@@ -48,6 +48,30 @@ The FEC arbiter adapts in real time: on high-latency links (RTT > 100 ms) seam p
 
 ---
 
+## How Seam compares
+
+| Feature | Seam | WireGuard | SSH | QuSecure QuProtect |
+|---|---|---|---|---|
+| Post-quantum KEM | ✅ ML-KEM-768 (FIPS 203) | ❌ | ❌ | ✅ |
+| PQ identity signing | ✅ ML-DSA-65 (FIPS 204) | ❌ | ❌ | Unknown |
+| Transport protocol | UDP (custom) | UDP | TCP | Varies |
+| Head-of-line blocking | None (FEC) | None | Yes | Unknown |
+| Forward secrecy | ✅ Double ratchet | ✅ per-session | ✅ per-session | Unknown |
+| Traffic analysis resistance | ✅ padding + chaff + jitter | ❌ | ❌ | ❌ |
+| Multi-path anti-jamming | ✅ PathScheduler | ❌ | ❌ | ❌ |
+| Session resumption | ✅ zero-RTT | ❌ | ❌ | Unknown |
+| FIPS mode | ✅ --fips-mode | ❌ | Partial | ✅ |
+| Audit logging (SP 800-53) | ✅ | ❌ | Partial | Unknown |
+| Open source | ✅ AGPL-3.0 | ✅ MIT | ✅ | ❌ closed |
+| Air-gap traversal | ✅ --via relay | ❌ | ❌ | ❌ |
+| File transfer built-in | ✅ seam cp/sync | ❌ | ✅ scp | ❌ |
+| Port scanner built-in | ✅ seam scan | ❌ | ❌ | ❌ |
+| Proxy (SOCKS5) built-in | ✅ seam proxy | ❌ | ✅ | ❌ |
+
+WireGuard and SSH rely on classical elliptic-curve cryptography and will be vulnerable to harvest-now-decrypt-later attacks once cryptographically-relevant quantum computers exist. QuSecure QuProtect addresses the quantum risk but is closed-source and targets enterprise licensing. Seam is the only open-source protocol combining FIPS 203/204 post-quantum cryptography with traffic analysis resistance and multi-path anti-jamming.
+
+---
+
 ## Install
 
 ```sh

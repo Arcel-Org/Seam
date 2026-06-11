@@ -489,7 +489,7 @@ async fn serve_shell_pty(
     // Allocate PTY.
     let mut master: i32 = -1;
     let mut slave: i32 = -1;
-    let ws = libc::winsize {
+    let mut ws = libc::winsize {
         ws_col: initial_cols,
         ws_row: initial_rows,
         ws_xpixel: 0,
@@ -500,8 +500,8 @@ async fn serve_shell_pty(
             &mut master,
             &mut slave,
             std::ptr::null_mut(),
-            std::ptr::null(),
-            &ws,
+            std::ptr::null_mut(),
+            &mut ws,
         )
     };
     if ret != 0 {

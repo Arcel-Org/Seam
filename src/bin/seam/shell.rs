@@ -737,7 +737,7 @@ async fn stream_send_exit(_code: u8) {
 fn open_pty(cols: u16, rows: u16) -> Result<(i32, i32)> {
     let mut master: i32 = -1;
     let mut slave: i32 = -1;
-    let ws = libc::winsize {
+    let mut ws = libc::winsize {
         ws_col: cols,
         ws_row: rows,
         ws_xpixel: 0,
@@ -748,8 +748,8 @@ fn open_pty(cols: u16, rows: u16) -> Result<(i32, i32)> {
             &mut master,
             &mut slave,
             std::ptr::null_mut(),
-            std::ptr::null(),
-            &ws,
+            std::ptr::null_mut(),
+            &mut ws,
         )
     };
     if ret != 0 {

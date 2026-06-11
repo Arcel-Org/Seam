@@ -3,7 +3,7 @@ exclude = ["fuzz"]
 
 [package]
 name = "seam-protocol"
-version = "0.1.35"
+version = "0.1.36"
 edition = "2024"
 license = "AGPL-3.0-only"
 

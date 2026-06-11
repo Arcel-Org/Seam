@@ -55,8 +55,14 @@ main() {
 
     echo "downloading seam ${LATEST} for ${TARGET}…"
     # Force progress output to /dev/tty so it's visible even when piped through sh
-    curl -fL --progress-bar "$DOWNLOAD_URL" -o "${TMPDIR}/${ASSET}" 2>/dev/tty || \
-      curl -fL "$DOWNLOAD_URL" -o "${TMPDIR}/${ASSET}"
+    if ! curl -fL --progress-bar "$DOWNLOAD_URL" -o "${TMPDIR}/${ASSET}" 2>/dev/tty && \
+       ! curl -fL "$DOWNLOAD_URL" -o "${TMPDIR}/${ASSET}"; then
+        echo "error: could not download ${ASSET}" >&2
+        echo "  tried: ${DOWNLOAD_URL}" >&2
+        echo "  the release may not have a pre-built binary for your platform." >&2
+        echo "  build from source: cargo install --git https://github.com/${REPO} seam" >&2
+        exit 1
+    fi
     curl -fsSL "$CHECKSUM_URL" -o "${TMPDIR}/checksums.sha256"
 
     # Verify checksum

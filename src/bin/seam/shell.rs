@@ -440,7 +440,7 @@ async fn send_resize(
 #[cfg(unix)]
 fn get_terminal_size(fd: i32) -> Option<(u16, u16)> {
     let mut ws: libc::winsize = unsafe { std::mem::zeroed() };
-    let ret = unsafe { libc::ioctl(fd, libc::TIOCGWINSZ, &mut ws) };
+    let ret = unsafe { libc::ioctl(fd, libc::TIOCGWINSZ as _, &mut ws) };
     if ret == 0 && ws.ws_col > 0 && ws.ws_row > 0 {
         Some((ws.ws_col, ws.ws_row))
     } else {
@@ -767,7 +767,7 @@ fn set_pty_size(master_fd: i32, cols: u16, rows: u16) {
         ws_xpixel: 0,
         ws_ypixel: 0,
     };
-    unsafe { libc::ioctl(master_fd, libc::TIOCSWINSZ, &ws) };
+    unsafe { libc::ioctl(master_fd, libc::TIOCSWINSZ as _, &ws) };
 }
 
 /// Spawn a child process with the slave PTY as its controlling terminal.
@@ -784,7 +784,7 @@ fn spawn_with_pty(command: &[String], slave_fd: i32, term: &str) -> Result<libc:
         // Child process.
         // Create a new session and set the slave as the controlling terminal.
         unsafe { libc::setsid() };
-        let ret = unsafe { libc::ioctl(slave_fd, libc::TIOCSCTTY, 0) };
+        let ret = unsafe { libc::ioctl(slave_fd, libc::TIOCSCTTY as _, 0) };
         if ret != 0 {
             unsafe { libc::_exit(1) };
         }

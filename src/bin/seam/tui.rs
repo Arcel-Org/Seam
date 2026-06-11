@@ -310,7 +310,11 @@ impl App {
         let prev_sel = self.recent_state.selected().unwrap_or(0);
         self.recent = new_recent;
         if !self.recent.is_empty() {
-            let sel = if had_recent { prev_sel.min(self.recent.len() - 1) } else { 0 };
+            let sel = if had_recent {
+                prev_sel.min(self.recent.len() - 1)
+            } else {
+                0
+            };
             self.recent_state.select(Some(sel));
         }
     }
@@ -697,7 +701,11 @@ fn draw(f: &mut Frame, app: &mut App) {
         let mut action_state = ListState::default();
         action_state.select(Some(app.action_idx));
 
-        let hl_bg = if focused { Color::Cyan } else { Color::DarkGray };
+        let hl_bg = if focused {
+            Color::Cyan
+        } else {
+            Color::DarkGray
+        };
         let list = List::new(items)
             .block(
                 Block::default()
@@ -746,7 +754,10 @@ fn draw(f: &mut Frame, app: &mut App) {
         f.render_widget(
             Paragraph::new(Line::from(vec![
                 Span::styled(icon, Style::default().fg(color)),
-                Span::styled(cmd.clone(), Style::default().fg(color).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    cmd.clone(),
+                    Style::default().fg(color).add_modifier(Modifier::BOLD),
+                ),
                 Span::styled(suffix, Style::default().fg(Color::DarkGray)),
             ])),
             rows[5],
@@ -763,7 +774,12 @@ fn draw(f: &mut Frame, app: &mut App) {
         } else if app.ready() {
             let cmd = app.preview_command();
             Line::from(vec![
-                Span::styled("  ", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    "  ",
+                    Style::default()
+                        .fg(Color::Green)
+                        .add_modifier(Modifier::BOLD),
+                ),
                 Span::styled(cmd, Style::default().fg(Color::Green)),
             ])
         } else if app.host.trim().is_empty() {

@@ -603,6 +603,9 @@ mod tests {
             ep.send(payload).await.unwrap();
         }
 
+        // Allow the OS to deliver the UDP packets before nonblocking reads.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
         // Each receiver should get at least 1 packet (not necessarily exactly 2
         // due to cursor starting position, but both must receive at least once).
         r0.set_nonblocking(true).unwrap();

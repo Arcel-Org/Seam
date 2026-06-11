@@ -3,7 +3,7 @@ exclude = ["fuzz"]
 
 [package]
 name = "seam-protocol"
-version = "0.1.38"
+version = "0.1.39"
 edition = "2024"
 license = "AGPL-3.0-only"
 
@@ -45,7 +45,7 @@ ml-kem = { version = "0.3", features = ["getrandom", "zeroize"] }
 ctrlc = { version = "3", features = ["termination"] }
 libc = "0.2"
 fips204 = { version = "0.4", features = ["ml-dsa-65", "default-rng"] }
-ratatui = "0.29"
+ratatui = "0.30"
 crossterm = "0.28"
 
 [dev-dependencies]

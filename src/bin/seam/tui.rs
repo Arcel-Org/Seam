@@ -126,7 +126,6 @@ impl Action {
                 a
             }
             Action::Fwd => {
-                // param = "remote_port:local_port", e.g. "3000:8080"
                 let parts: Vec<&str> = param.splitn(2, ':').collect();
                 let (remote_port, local_port) = if parts.len() == 2 {
                     (parts[0], parts[1].parse::<u16>().unwrap_or(8080))
@@ -140,7 +139,6 @@ impl Action {
                 ]
             }
             Action::Copy => {
-                // Push to remote by default; if param looks remote, pull
                 if param.contains('@') || param.starts_with('/') && host.contains(':') {
                     vec!["cp".into(), param, host]
                 } else {
@@ -198,7 +196,6 @@ fn load_recent() -> Vec<Recent> {
                 continue;
             }
             let subcommand = v["subcommand"].as_str().unwrap_or("").to_string();
-            // Skip internal recv subcommands
             if subcommand.starts_with('_') || subcommand == "recv" || subcommand == "serve" {
                 continue;
             }
@@ -220,7 +217,6 @@ fn load_recent() -> Vec<Recent> {
 }
 
 fn format_ts(ts: &str) -> String {
-    // RFC3339 "2026-06-11T12:34:56Z" → "06-11 12:34"
     if ts.len() >= 16 {
         format!("{} {}", &ts[5..10], &ts[11..16])
     } else {
@@ -249,7 +245,10 @@ struct App {
     param_cursor: usize,
     recent: Vec<Recent>,
     recent_state: ListState,
-    status: Option<String>,
+    // Result of the last command run (command string, exit code)
+    last_run: Option<(String, i32)>,
+    // Validation message to show in preview bar
+    validation: Option<String>,
 }
 
 impl App {
@@ -268,7 +267,8 @@ impl App {
             param_cursor: 0,
             recent,
             recent_state,
-            status: None,
+            last_run: None,
+            validation: None,
         }
     }
 
@@ -286,7 +286,6 @@ impl App {
             return false;
         }
         match self.action() {
-            // These have defaults for the param
             Action::Proxy | Action::Scan => true,
             a if a.needs_param() => !self.param.trim().is_empty(),
             _ => true,
@@ -295,6 +294,25 @@ impl App {
 
     fn build_args(&self) -> Vec<String> {
         self.action().to_args(self.host.trim(), self.param.trim())
+    }
+
+    fn preview_command(&self) -> String {
+        let args = self.build_args();
+        format!("seam {}", args.join(" "))
+    }
+
+    fn on_command_return(&mut self, cmd: String, exit_code: i32) {
+        self.last_run = Some((cmd, exit_code));
+        self.validation = None;
+        // Reload recent — audit log has the new entry now
+        let new_recent = load_recent();
+        let had_recent = !self.recent.is_empty();
+        let prev_sel = self.recent_state.selected().unwrap_or(0);
+        self.recent = new_recent;
+        if !self.recent.is_empty() {
+            let sel = if had_recent { prev_sel.min(self.recent.len() - 1) } else { 0 };
+            self.recent_state.select(Some(sel));
+        }
     }
 
     // ── Text editing ─────────────────────────────────────────────────────────
@@ -418,7 +436,7 @@ impl App {
             self.host = r.remote.clone();
             self.host_cursor = self.host.len();
             self.focus = Focus::Actions;
-            self.status = None;
+            self.validation = None;
         }
     }
 
@@ -550,7 +568,6 @@ fn render_input<'a>(
 fn draw(f: &mut Frame, app: &mut App) {
     let full = f.area();
 
-    // Root block
     let title_left = Line::from(vec![Span::styled(
         "  seam  ",
         Style::default()
@@ -612,25 +629,25 @@ fn draw(f: &mut Frame, app: &mut App) {
         f.render_stateful_widget(list, hcols[0], &mut app.recent_state);
     }
 
-    // ── Form (right column) — always hcols[1]; hcols[0] is zero-width when ───
-    // ── there are no recent entries, so using hcols[0] would render nothing. ─
+    // ── Form (right column) — always hcols[1] ────────────────────────────────
     let form = hcols[1];
 
     let needs_param = app.needs_param();
     let param_h: u16 = if needs_param { 3 } else { 0 };
     let action_h: u16 = Action::ALL.len() as u16 + 2;
-    let status_h: u16 = if app.status.is_some() { 1 } else { 0 };
+    let last_run_h: u16 = if app.last_run.is_some() { 1 } else { 0 };
 
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3),        // host input
-            Constraint::Length(1),        // spacer
-            Constraint::Length(action_h), // action list
-            Constraint::Length(param_h),  // param input
-            Constraint::Min(0),           // flex spacer
-            Constraint::Length(status_h), // status/error
-            Constraint::Length(1),        // hint bar
+            Constraint::Length(3),          // host input
+            Constraint::Length(1),          // spacer
+            Constraint::Length(action_h),   // action list
+            Constraint::Length(param_h),    // param input (0 if not needed)
+            Constraint::Min(0),             // flex spacer
+            Constraint::Length(last_run_h), // last run result
+            Constraint::Length(1),          // command preview
+            Constraint::Length(1),          // hint bar
         ])
         .split(form);
 
@@ -680,11 +697,7 @@ fn draw(f: &mut Frame, app: &mut App) {
         let mut action_state = ListState::default();
         action_state.select(Some(app.action_idx));
 
-        let hl_bg = if focused {
-            Color::Cyan
-        } else {
-            Color::DarkGray
-        };
+        let hl_bg = if focused { Color::Cyan } else { Color::DarkGray };
         let list = List::new(items)
             .block(
                 Block::default()
@@ -716,40 +729,69 @@ fn draw(f: &mut Frame, app: &mut App) {
         f.render_widget(w, rows[3]);
     }
 
-    // Status / error
-    if let Some(ref msg) = app.status
+    // Last run result
+    if let Some((ref cmd, code)) = app.last_run
         && rows[5].height > 0
     {
+        let (icon, color) = if code == 0 {
+            ("  ", Color::Green)
+        } else {
+            ("  ", Color::Red)
+        };
+        let suffix = if code == 0 {
+            String::new()
+        } else {
+            format!("  (exit {code})")
+        };
         f.render_widget(
-            Paragraph::new(Span::styled(
-                format!(" ⚠  {msg}"),
-                Style::default().fg(Color::Yellow),
-            )),
+            Paragraph::new(Line::from(vec![
+                Span::styled(icon, Style::default().fg(color)),
+                Span::styled(cmd.clone(), Style::default().fg(color).add_modifier(Modifier::BOLD)),
+                Span::styled(suffix, Style::default().fg(Color::DarkGray)),
+            ])),
             rows[5],
         );
     }
 
+    // Command preview / validation
+    if rows[6].height > 0 {
+        let line = if let Some(ref msg) = app.validation {
+            Line::from(Span::styled(
+                format!("  {msg}"),
+                Style::default().fg(Color::Yellow),
+            ))
+        } else if app.ready() {
+            let cmd = app.preview_command();
+            Line::from(vec![
+                Span::styled("  ", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+                Span::styled(cmd, Style::default().fg(Color::Green)),
+            ])
+        } else if app.host.trim().is_empty() {
+            Line::from(Span::styled(
+                "  type a host above  (user@hostname)",
+                Style::default().fg(Color::DarkGray),
+            ))
+        } else if app.needs_param() && app.param.trim().is_empty() {
+            let placeholder = app.action().param_placeholder();
+            Line::from(Span::styled(
+                format!("  enter {placeholder} above to continue"),
+                Style::default().fg(Color::DarkGray),
+            ))
+        } else {
+            Line::from(Span::raw(""))
+        };
+        f.render_widget(Paragraph::new(line), rows[6]);
+    }
+
     // Hint bar
-    {
-        let ready = app.ready();
-        let hint_parts: Vec<Span> = vec![
+    if rows[7].height > 0 {
+        let hints = Line::from(vec![
             Span::styled(" ↑↓ navigate", Style::default().fg(Color::DarkGray)),
-            Span::styled("  Tab switch", Style::default().fg(Color::DarkGray)),
-            if ready {
-                Span::styled(
-                    "  Enter launch",
-                    Style::default()
-                        .fg(Color::Green)
-                        .add_modifier(Modifier::BOLD),
-                )
-            } else {
-                Span::styled("  Enter launch", Style::default().fg(Color::DarkGray))
-            },
+            Span::styled("  Tab switch panel", Style::default().fg(Color::DarkGray)),
+            Span::styled("  Enter run", Style::default().fg(Color::DarkGray)),
             Span::styled("  q quit", Style::default().fg(Color::DarkGray)),
-        ];
-        if rows[6].height > 0 {
-            f.render_widget(Paragraph::new(Line::from(hint_parts)), rows[6]);
-        }
+        ]);
+        f.render_widget(Paragraph::new(hints), rows[7]);
     }
 }
 
@@ -777,6 +819,19 @@ fn teardown(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result<()>
     Ok(())
 }
 
+// ── Run a seam subcommand and return to the TUI ───────────────────────────────
+
+fn run_command(args: &[String]) -> i32 {
+    let Ok(exe) = std::env::current_exe() else {
+        return 1;
+    };
+    std::process::Command::new(exe)
+        .args(args)
+        .status()
+        .map(|s| s.code().unwrap_or(1))
+        .unwrap_or(1)
+}
+
 // ── Entry point ───────────────────────────────────────────────────────────────
 
 pub fn run() -> Result<()> {
@@ -797,12 +852,10 @@ pub fn run() -> Result<()> {
 
         let in_text = matches!(app.focus, Focus::Host | Focus::Param);
 
-        // Ctrl-C: always quit
         if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
             break;
         }
 
-        // Ctrl-W: delete word in text fields
         if key.code == KeyCode::Char('w')
             && key.modifiers.contains(KeyModifiers::CONTROL)
             && in_text
@@ -812,11 +865,9 @@ pub fn run() -> Result<()> {
         }
 
         match key.code {
-            // ── Quit ──────────────────────────────────────────────────────────
             KeyCode::Esc => break,
             KeyCode::Char('q') if !in_text => break,
 
-            // ── Focus cycling ─────────────────────────────────────────────────
             KeyCode::Tab => {
                 if key.modifiers.contains(KeyModifiers::SHIFT) {
                     app.tab_prev();
@@ -825,7 +876,6 @@ pub fn run() -> Result<()> {
                 }
             }
 
-            // ── Navigation keys ───────────────────────────────────────────────
             KeyCode::Up => match app.focus {
                 Focus::Actions => app.action_up(),
                 Focus::Recent => app.recent_up(),
@@ -841,7 +891,6 @@ pub fn run() -> Result<()> {
             KeyCode::Home => app.cursor_home(),
             KeyCode::End => app.cursor_end(),
 
-            // j/k navigation when not in text fields
             KeyCode::Char('j') if !in_text => match app.focus {
                 Focus::Actions => app.action_down(),
                 Focus::Recent => app.recent_down(),
@@ -853,31 +902,34 @@ pub fn run() -> Result<()> {
                 _ => {}
             },
 
-            // ── Editing ───────────────────────────────────────────────────────
             KeyCode::Backspace => {
                 app.backspace();
-                app.status = None;
+                app.validation = None;
             }
             KeyCode::Delete => {
-                // Forward delete: swap cursor one right then backspace
                 app.cursor_right();
                 app.backspace();
             }
 
-            // ── Enter ─────────────────────────────────────────────────────────
             KeyCode::Enter => match app.focus {
                 Focus::Recent => app.select_recent(),
                 _ => {
                     if app.ready() {
                         let args = app.build_args();
+                        let cmd_str = app.preview_command();
+                        // Leave alternate screen so the command gets a normal terminal
                         teardown(&mut terminal)?;
-                        return launch(args);
+                        let exit_code = run_command(&args);
+                        // Re-enter TUI
+                        terminal = setup()?;
+                        terminal.clear()?;
+                        app.on_command_return(cmd_str, exit_code);
                     } else if app.host.trim().is_empty() {
-                        app.status = Some("Enter a host  (user@hostname)".into());
+                        app.validation = Some("Enter a host first  (user@hostname)".into());
                         app.focus = Focus::Host;
                     } else if app.needs_param() && app.param.trim().is_empty() {
                         let label = app.action().param_label().unwrap_or("param");
-                        app.status = Some(format!(
+                        app.validation = Some(format!(
                             "Enter {label}  (e.g. {})",
                             app.action().param_placeholder()
                         ));
@@ -886,9 +938,8 @@ pub fn run() -> Result<()> {
                 }
             },
 
-            // ── Regular typing ────────────────────────────────────────────────
             KeyCode::Char(c) if in_text => {
-                app.status = None;
+                app.validation = None;
                 app.insert_char(c);
             }
 
@@ -898,25 +949,4 @@ pub fn run() -> Result<()> {
 
     teardown(&mut terminal)?;
     Ok(())
-}
-
-// ── Process exec ──────────────────────────────────────────────────────────────
-
-fn launch(args: Vec<String>) -> Result<()> {
-    let exe = std::env::current_exe()?;
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        // exec() replaces this process — seam shell / tunnel / etc. takes over the terminal.
-        // Only returns on error.
-        let err = std::process::Command::new(&exe).args(&args).exec();
-        anyhow::bail!("exec failed: {err}");
-    }
-
-    #[cfg(not(unix))]
-    {
-        let status = std::process::Command::new(&exe).args(&args).status()?;
-        std::process::exit(status.code().unwrap_or(1));
-    }
 }

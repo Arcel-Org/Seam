@@ -1,7 +1,6 @@
 mod audit;
 mod bench;
 mod completions;
-mod tui;
 mod config;
 mod connect;
 mod copy;
@@ -25,13 +24,13 @@ mod shell;
 mod ssh;
 mod stats;
 mod sync;
+mod tui;
 mod tunnel;
 mod update;
 mod version;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-
 
 #[derive(Parser)]
 #[command(name = "seam", version, about, long_about = None, disable_help_subcommand = true)]
@@ -206,7 +205,6 @@ enum Commands {
     #[command(name = "_proxy-recv", hide = true)]
     ProxyRecv(proxy::ProxyRecvArgs),
 }
-
 
 #[tokio::main]
 async fn main() -> Result<()> {

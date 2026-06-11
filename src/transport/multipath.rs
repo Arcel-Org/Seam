@@ -689,6 +689,9 @@ mod tests {
             ep.send(payload).await.unwrap();
         }
 
+        // Allow the OS to deliver UDP packets before nonblocking reads (macOS timing).
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
         r0.set_nonblocking(true).unwrap();
         r1.set_nonblocking(true).unwrap();
 

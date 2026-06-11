@@ -11,15 +11,15 @@ use anyhow::Result;
 use crossterm::{
     event::{self, Event, KeyCode, KeyModifiers},
     execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use ratatui::{
+    Frame, Terminal,
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
-    Frame, Terminal,
 };
 use std::io;
 use std::path::PathBuf;
@@ -205,7 +205,11 @@ fn load_recent() -> Vec<Recent> {
             let ts = v["ts"].as_str().unwrap_or("").to_string();
             let key = format!("{remote}:{subcommand}");
             if seen.insert(key) {
-                out.push(Recent { remote, subcommand, ts });
+                out.push(Recent {
+                    remote,
+                    subcommand,
+                    ts,
+                });
                 if out.len() >= 8 {
                     break;
                 }
@@ -494,7 +498,8 @@ fn delete_word_back(s: &mut String, cursor: &mut usize) {
         return;
     }
     let slice = &s[..*cursor];
-    let new_end = slice.trim_end_matches(|c: char| c != ' ' && c != '/')
+    let new_end = slice
+        .trim_end_matches(|c: char| c != ' ' && c != '/')
         .trim_end_matches([' ', '/'])
         .len();
     s.drain(new_end..*cursor);
@@ -511,10 +516,19 @@ fn dim(focused: bool) -> Style {
     }
 }
 
-fn render_input<'a>(text: &'a str, cursor: usize, focused: bool, placeholder: &'a str) -> Paragraph<'a> {
+fn render_input<'a>(
+    text: &'a str,
+    cursor: usize,
+    focused: bool,
+    placeholder: &'a str,
+) -> Paragraph<'a> {
     let line = if focused {
         let before = &text[..cursor];
-        let ch = text[cursor..].chars().next().map(|c| c.to_string()).unwrap_or_else(|| " ".into());
+        let ch = text[cursor..]
+            .chars()
+            .next()
+            .map(|c| c.to_string())
+            .unwrap_or_else(|| " ".into());
         let after: String = text[cursor..].chars().skip(1).collect();
         Line::from(vec![
             Span::raw(" "),
@@ -537,9 +551,12 @@ fn draw(f: &mut Frame, app: &mut App) {
     let full = f.area();
 
     // Root block
-    let title_left = Line::from(vec![
-        Span::styled("  seam  ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-    ]);
+    let title_left = Line::from(vec![Span::styled(
+        "  seam  ",
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD),
+    )]);
     let title_right = Span::styled(
         format!(" v{VERSION}  "),
         Style::default().fg(Color::DarkGray),
@@ -557,25 +574,26 @@ fn draw(f: &mut Frame, app: &mut App) {
     let recent_w = if has_recent { 30u16 } else { 0 };
     let hcols = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Length(recent_w),
-            Constraint::Min(0),
-        ])
+        .constraints([Constraint::Length(recent_w), Constraint::Min(0)])
         .split(inner);
 
     // ── Recent panel ─────────────────────────────────────────────────────────
     if has_recent {
         let focused = app.focus == Focus::Recent;
-        let items: Vec<ListItem> = app.recent.iter().map(|r| {
-            let host = truncate(&r.remote, 18);
-            let cmd = format!(" {:6} ", r.subcommand);
-            let ts = format_ts(&r.ts);
-            ListItem::new(Line::from(vec![
-                Span::styled(host, Style::default().fg(Color::White)),
-                Span::styled(cmd, Style::default().fg(Color::Blue)),
-                Span::styled(ts, Style::default().fg(Color::DarkGray)),
-            ]))
-        }).collect();
+        let items: Vec<ListItem> = app
+            .recent
+            .iter()
+            .map(|r| {
+                let host = truncate(&r.remote, 18);
+                let cmd = format!(" {:6} ", r.subcommand);
+                let ts = format_ts(&r.ts);
+                ListItem::new(Line::from(vec![
+                    Span::styled(host, Style::default().fg(Color::White)),
+                    Span::styled(cmd, Style::default().fg(Color::Blue)),
+                    Span::styled(ts, Style::default().fg(Color::DarkGray)),
+                ]))
+            })
+            .collect();
 
         let list = List::new(items)
             .block(
@@ -584,7 +602,11 @@ fn draw(f: &mut Frame, app: &mut App) {
                     .borders(Borders::ALL)
                     .border_style(dim(focused)),
             )
-            .highlight_style(Style::default().bg(Color::DarkGray).add_modifier(Modifier::BOLD))
+            .highlight_style(
+                Style::default()
+                    .bg(Color::DarkGray)
+                    .add_modifier(Modifier::BOLD),
+            )
             .highlight_symbol("▶ ");
 
         f.render_stateful_widget(list, hcols[0], &mut app.recent_state);
@@ -602,58 +624,67 @@ fn draw(f: &mut Frame, app: &mut App) {
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3),           // host input
-            Constraint::Length(1),           // spacer
-            Constraint::Length(action_h),    // action list
-            Constraint::Length(param_h),     // param input
-            Constraint::Min(0),              // flex spacer
-            Constraint::Length(status_h),    // status/error
-            Constraint::Length(1),           // hint bar
+            Constraint::Length(3),        // host input
+            Constraint::Length(1),        // spacer
+            Constraint::Length(action_h), // action list
+            Constraint::Length(param_h),  // param input
+            Constraint::Min(0),           // flex spacer
+            Constraint::Length(status_h), // status/error
+            Constraint::Length(1),        // hint bar
         ])
         .split(form);
 
     // Host input
     {
         let focused = app.focus == Focus::Host;
-        let w = render_input(&app.host, app.host_cursor, focused, "user@hostname")
-            .block(
-                Block::default()
-                    .title(" Host ")
-                    .borders(Borders::ALL)
-                    .border_style(dim(focused)),
-            );
+        let w = render_input(&app.host, app.host_cursor, focused, "user@hostname").block(
+            Block::default()
+                .title(" Host ")
+                .borders(Borders::ALL)
+                .border_style(dim(focused)),
+        );
         f.render_widget(w, rows[0]);
     }
 
     // Action list
     {
         let focused = app.focus == Focus::Actions;
-        let items: Vec<ListItem> = Action::ALL.iter().enumerate().map(|(i, a)| {
-            let name = format!(" {:<10}", a.name());
-            let desc = a.desc();
-            let selected = i == app.action_idx;
-            let name_style = if selected && focused {
-                Style::default().fg(Color::Black)
-            } else if selected {
-                Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(Color::Gray)
-            };
-            let desc_style = if selected && focused {
-                Style::default().fg(Color::Black)
-            } else {
-                Style::default().fg(Color::DarkGray)
-            };
-            ListItem::new(Line::from(vec![
-                Span::styled(name, name_style),
-                Span::styled(desc, desc_style),
-            ]))
-        }).collect();
+        let items: Vec<ListItem> = Action::ALL
+            .iter()
+            .enumerate()
+            .map(|(i, a)| {
+                let name = format!(" {:<10}", a.name());
+                let desc = a.desc();
+                let selected = i == app.action_idx;
+                let name_style = if selected && focused {
+                    Style::default().fg(Color::Black)
+                } else if selected {
+                    Style::default()
+                        .fg(Color::White)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(Color::Gray)
+                };
+                let desc_style = if selected && focused {
+                    Style::default().fg(Color::Black)
+                } else {
+                    Style::default().fg(Color::DarkGray)
+                };
+                ListItem::new(Line::from(vec![
+                    Span::styled(name, name_style),
+                    Span::styled(desc, desc_style),
+                ]))
+            })
+            .collect();
 
         let mut action_state = ListState::default();
         action_state.select(Some(app.action_idx));
 
-        let hl_bg = if focused { Color::Cyan } else { Color::DarkGray };
+        let hl_bg = if focused {
+            Color::Cyan
+        } else {
+            Color::DarkGray
+        };
         let list = List::new(items)
             .block(
                 Block::default()
@@ -661,7 +692,12 @@ fn draw(f: &mut Frame, app: &mut App) {
                     .borders(Borders::ALL)
                     .border_style(dim(focused)),
             )
-            .highlight_style(Style::default().bg(hl_bg).fg(Color::Black).add_modifier(Modifier::BOLD));
+            .highlight_style(
+                Style::default()
+                    .bg(hl_bg)
+                    .fg(Color::Black)
+                    .add_modifier(Modifier::BOLD),
+            );
 
         f.render_stateful_widget(list, rows[2], &mut action_state);
     }
@@ -671,13 +707,12 @@ fn draw(f: &mut Frame, app: &mut App) {
         let focused = app.focus == Focus::Param;
         let label = app.action().param_label().unwrap_or("Param");
         let placeholder = app.action().param_placeholder();
-        let w = render_input(&app.param, app.param_cursor, focused, placeholder)
-            .block(
-                Block::default()
-                    .title(format!(" {label} "))
-                    .borders(Borders::ALL)
-                    .border_style(dim(focused)),
-            );
+        let w = render_input(&app.param, app.param_cursor, focused, placeholder).block(
+            Block::default()
+                .title(format!(" {label} "))
+                .borders(Borders::ALL)
+                .border_style(dim(focused)),
+        );
         f.render_widget(w, rows[3]);
     }
 
@@ -701,7 +736,12 @@ fn draw(f: &mut Frame, app: &mut App) {
             Span::styled(" ↑↓ navigate", Style::default().fg(Color::DarkGray)),
             Span::styled("  Tab switch", Style::default().fg(Color::DarkGray)),
             if ready {
-                Span::styled("  Enter launch", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD))
+                Span::styled(
+                    "  Enter launch",
+                    Style::default()
+                        .fg(Color::Green)
+                        .add_modifier(Modifier::BOLD),
+                )
             } else {
                 Span::styled("  Enter launch", Style::default().fg(Color::DarkGray))
             },
@@ -763,7 +803,10 @@ pub fn run() -> Result<()> {
         }
 
         // Ctrl-W: delete word in text fields
-        if key.code == KeyCode::Char('w') && key.modifiers.contains(KeyModifiers::CONTROL) && in_text {
+        if key.code == KeyCode::Char('w')
+            && key.modifiers.contains(KeyModifiers::CONTROL)
+            && in_text
+        {
             app.delete_word();
             continue;
         }
@@ -834,7 +877,10 @@ pub fn run() -> Result<()> {
                         app.focus = Focus::Host;
                     } else if app.needs_param() && app.param.trim().is_empty() {
                         let label = app.action().param_label().unwrap_or("param");
-                        app.status = Some(format!("Enter {label}  (e.g. {})", app.action().param_placeholder()));
+                        app.status = Some(format!(
+                            "Enter {label}  (e.g. {})",
+                            app.action().param_placeholder()
+                        ));
                         app.focus = Focus::Param;
                     }
                 }

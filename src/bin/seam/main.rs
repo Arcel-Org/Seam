@@ -1,6 +1,7 @@
 mod audit;
 mod bench;
 mod completions;
+mod tui;
 mod config;
 mod connect;
 mod copy;
@@ -31,7 +32,6 @@ mod version;
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
-const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[derive(Parser)]
 #[command(name = "seam", version, about, long_about = None, disable_help_subcommand = true)]
@@ -207,40 +207,6 @@ enum Commands {
     ProxyRecv(proxy::ProxyRecvArgs),
 }
 
-fn print_splash() {
-    eprintln!();
-    eprintln!("  ┌──────────────────────────────────────────────────────────┐");
-    eprintln!("  │  seam v{VERSION:<51}│");
-    eprintln!("  │  post-quantum encrypted communications over UDP          │");
-    eprintln!("  │  Noise_XX + ML-KEM-768 · ChaCha20-Poly1305 · ARQ + FEC  │");
-    eprintln!("  └──────────────────────────────────────────────────────────┘");
-    eprintln!();
-    eprintln!("  Commands");
-    eprintln!("    cp       Copy files               seam cp ./file user@host:/path");
-    eprintln!("    sync     Directory sync            seam sync ./dir user@host:/path");
-    eprintln!("    forward  TCP port forward          seam forward 8080:localhost:80 user@host");
-    eprintln!("    pipe     Bidirectional pipe        seam pipe user@host -- bash");
-    eprintln!("    tunnel   TCP port forward (legacy) seam tunnel 8080:user@host:3000");
-    eprintln!("    fwd      Reverse port forward      seam fwd user@host:3000 8080");
-    eprintln!("    shell    Interactive/remote shell    seam shell user@host");
-    eprintln!("    serve    Standalone server daemon    seam serve --port 2222");
-    eprintln!("    health   Health-check seam serve      seam health user@host");
-    eprintln!("    bench    Measure throughput        seam bench user@host");
-    eprintln!("    perf     Crypto performance self-test  seam perf");
-    eprintln!("    scan     Port scanner (PQ-encrypted)  seam scan 10.0.0.0/24 --ports 22,80,443");
-    eprintln!("    proxy    SOCKS5 proxy                seam proxy user@host --port 1080");
-    eprintln!("    ping     Latency measurement        seam ping user@host");
-    eprintln!("    key      Show identity public key    seam key");
-    eprintln!("    stats    Connection statistics     seam stats user@host");
-    eprintln!("    ls       List remote files         seam ls user@host:/path");
-    eprintln!("    doctor   System readiness check    seam doctor");
-    eprintln!("    audit    View/query audit log       seam audit show");
-    eprintln!("    version  Version & cipher info      seam version");
-    eprintln!("    update   Self-update               seam update");
-    eprintln!();
-    eprintln!("  Run  seam <command> --help  for flags and options.");
-    eprintln!();
-}
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -308,10 +274,7 @@ async fn main() -> Result<()> {
     }
 
     match cli.command {
-        None => {
-            print_splash();
-            Ok(())
-        }
+        None => tui::run(),
         Some(Commands::Forward(args)) => {
             let remote = args.remote.clone();
             audited!(

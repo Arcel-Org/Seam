@@ -619,7 +619,7 @@ async fn run_pty_bridge(
                                 ws_row: u16::from_be_bytes([dim[2], dim[3]]),
                                 ws_xpixel: 0, ws_ypixel: 0,
                             };
-                            unsafe { libc::ioctl(master_fd, libc::TIOCSWINSZ, &ws) };
+                            unsafe { libc::ioctl(master_fd, libc::TIOCSWINSZ as _, &ws) };
                         }
                     }
                     Ok(_) => {}
@@ -653,7 +653,7 @@ fn fork_exec_pty(command: &[String], slave_fd: i32, term: &str) -> Result<libc::
     if pid == 0 {
         unsafe {
             libc::setsid();
-            libc::ioctl(slave_fd, libc::TIOCSCTTY, 0);
+            libc::ioctl(slave_fd, libc::TIOCSCTTY as _, 0);
             libc::dup2(slave_fd, 0);
             libc::dup2(slave_fd, 1);
             libc::dup2(slave_fd, 2);

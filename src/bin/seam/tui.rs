@@ -590,8 +590,9 @@ fn draw(f: &mut Frame, app: &mut App) {
         f.render_stateful_widget(list, hcols[0], &mut app.recent_state);
     }
 
-    // ── Form (right column) ───────────────────────────────────────────────────
-    let form = if has_recent { hcols[1] } else { hcols[0] };
+    // ── Form (right column) — always hcols[1]; hcols[0] is zero-width when ───
+    // ── there are no recent entries, so using hcols[0] would render nothing. ─
+    let form = hcols[1];
 
     let needs_param = app.needs_param();
     let param_h: u16 = if needs_param { 3 } else { 0 };
@@ -740,6 +741,7 @@ fn teardown(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result<()>
 
 pub fn run() -> Result<()> {
     let mut terminal = setup()?;
+    terminal.clear()?;
     let mut app = App::new();
 
     loop {

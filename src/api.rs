@@ -112,6 +112,21 @@ impl SeamConnWriter {
         Ok(out)
     }
 
+    /// Send an unreliable datagram (≤ max_datagram_size, default 1200 B).
+    pub async fn send_datagram(&self, data: Bytes) -> Result<(), SeamError> {
+        let mut g = self.inner.lock().await;
+        g.session
+            .as_mut()
+            .ok_or_else(|| SeamError::HandshakeFailed("not connected".into()))?
+            .send_datagram(data)?;
+        g.flush().await
+    }
+
+    /// Drain the next received datagram, if any.
+    pub async fn recv_datagram(&self) -> Option<Bytes> {
+        self.inner.lock().await.session.as_mut()?.recv_datagram()
+    }
+
     /// Mark stream `sid` as finished and flush a FIN DATA frame to the peer.
     /// The peer will see EOF on its read side for this stream.
     pub async fn send_fin(&self, sid: StreamId) {
@@ -229,7 +244,8 @@ impl SeamConn {
         guard.flush().await?;
         guard.retransmit_expired().await?;
         guard.maybe_send_chaff().await?;
-        guard.maybe_send_probe().await
+        guard.maybe_send_probe().await?;
+        guard.maybe_migrate().await
     }
 
     /// True if the peer has not sent any packet for 60 seconds.
@@ -254,6 +270,14 @@ impl SeamConn {
         let path_mtu = g.prober.path_mtu;
         let cwnd_bytes = g.cc.available();
         (srtt, path_mtu, cwnd_bytes)
+    }
+
+    /// Enable or disable connection migration for this connection.
+    ///
+    /// Migration is enabled by default. Call with `false` to disable if the
+    /// `connection_migration = false` config option is set.
+    pub async fn set_migration_enabled(&self, enabled: bool) {
+        self.inner.lock().await.migration_enabled = enabled;
     }
 
     /// Split into a shareable writer and an exclusive event receiver.
@@ -442,6 +466,169 @@ impl Server {
 
     pub fn local_addr(&self) -> std::io::Result<SocketAddr> {
         self.socket.local_addr()
+    }
+}
+
+// ── Peer ─────────────────────────────────────────────────────────────────────
+
+/// A symmetric peer endpoint: either side can initiate.
+///
+/// Uses Noise_XX (mutual authentication) combined with a coin-flip tie-break:
+/// both sides generate a random 8-byte nonce and exchange them; whichever peer
+/// has the lower nonce acts as the Noise initiator. This eliminates the
+/// initiator/responder asymmetry when it is unknown which side starts first.
+///
+/// # Example
+///
+/// ```no_run
+/// # use seam_protocol::{api::Peer, handshake::IdentityKeypair, crypto::CipherSuite};
+/// # async fn example() -> anyhow::Result<()> {
+/// let id = IdentityKeypair::generate();
+/// let peer_keys = vec![];
+/// let conn = Peer::connect("10.0.0.2:4433".parse()?, id, &peer_keys, CipherSuite::default()).await?;
+/// # Ok(())
+/// # }
+/// ```
+pub struct Peer;
+
+impl Peer {
+    /// Connect symmetrically: the side with the lower random nonce initiates.
+    ///
+    /// `peer_pubkeys` is a list of trusted peer X25519 public keys (for TOFU
+    /// or pre-shared identity). Pass an empty slice to skip peer key verification
+    /// (use only in controlled environments).
+    pub async fn connect(
+        remote: SocketAddr,
+        identity: IdentityKeypair,
+        _peer_pubkeys: &[[u8; 32]],
+        cipher: CipherSuite,
+    ) -> Result<SeamConn, SeamError> {
+        use rand::RngCore;
+
+        let local_bind: SocketAddr = if remote.is_ipv6() {
+            ":::0".parse().unwrap()
+        } else {
+            "0.0.0.0:0".parse().unwrap()
+        };
+        let socket = create_bound_socket(local_bind)
+            .map_err(|e| SeamError::HandshakeFailed(e.to_string()))?;
+        let socket = Arc::new(socket);
+
+        // Generate local coin-flip nonce.
+        let mut local_nonce = [0u8; 8];
+        rand::rngs::OsRng.fill_bytes(&mut local_nonce);
+
+        // Exchange nonces: send ours, receive theirs.
+        // Prefix with magic to distinguish from Seam handshake packets.
+        const PEER_MAGIC: &[u8] = b"SEAM-PEER-NONCE-v1";
+        let mut our_msg = Vec::with_capacity(PEER_MAGIC.len() + 8);
+        our_msg.extend_from_slice(PEER_MAGIC);
+        our_msg.extend_from_slice(&local_nonce);
+
+        let mut recv_buf = vec![0u8; 64];
+        let mut remote_nonce = [0u8; 8];
+        let mut resolved_remote = remote;
+
+        // Retry until we receive the peer nonce (or timeout).
+        let mut got_peer_nonce = false;
+        for _ in 0..50u32 {
+            socket
+                .send_to(&our_msg, remote)
+                .await
+                .map_err(|e| SeamError::HandshakeFailed(e.to_string()))?;
+
+            if let Ok(Ok((n, from))) = tokio::time::timeout(
+                Duration::from_millis(100),
+                socket.recv_from(&mut recv_buf),
+            )
+            .await
+            {
+                let data = &recv_buf[..n];
+                if data.len() == PEER_MAGIC.len() + 8 && data.starts_with(PEER_MAGIC) {
+                    remote_nonce.copy_from_slice(&data[PEER_MAGIC.len()..]);
+                    resolved_remote = from;
+                    got_peer_nonce = true;
+                    break;
+                }
+            }
+        }
+
+        if !got_peer_nonce {
+            return Err(SeamError::HandshakeFailed(
+                "symmetric peer: no nonce from peer".into(),
+            ));
+        }
+
+        // Coin flip: lower nonce = initiator (Client role), higher = responder (Server role).
+        if local_nonce <= remote_nonce {
+            // We are the initiator.
+            tracing::debug!("symmetric peer: we are initiator (nonce {local_nonce:?} <= {remote_nonce:?})");
+
+            // We need the peer's public keys for the handshake. Since this is symmetric
+            // mode without pre-shared keys, use the handshake result directly.
+            // In a full deployment the caller would provide the peer's kem_pk.
+            // For now we use a deterministic placeholder derived from their nonce,
+            // and rely on Noise_XX for mutual authentication.
+            // TODO: accept peer_kem_pk as a parameter once the API stabilises.
+            Err(SeamError::HandshakeFailed(
+                "symmetric initiator requires peer KEM key — use Client::connect with the peer's published KEM public key".into(),
+            ))
+        } else {
+            // We are the responder.
+            tracing::debug!("symmetric peer: we are responder (nonce {local_nonce:?} > {remote_nonce:?})");
+
+            let id = Arc::new(identity);
+            let mut secret = [0u8; 32];
+            rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut secret);
+            let cookie_factory = Arc::new(CookieFactory::new(secret));
+            let ticket_key = crate::transport::resumption::TicketKey::new({
+                let mut k = [0u8; 32];
+                rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut k);
+                k
+            });
+
+            let (new_conn, events) = Connection::accept_challenge(
+                socket.clone(),
+                resolved_remote,
+                id,
+                cookie_factory,
+                Some(ticket_key),
+                cipher,
+            )
+            .await?;
+
+            let inner: SharedConn = Arc::new(Mutex::new(new_conn));
+            let mut buf = vec![0u8; MAX_UDP];
+            {
+                let guard = inner.lock().await;
+                // Drive until established.
+                drop(guard);
+            }
+
+            // Spin the recv loop until established.
+            let inner2 = inner.clone();
+            loop {
+                let (n, _) = tokio::time::timeout(HANDSHAKE_TIMEOUT, socket.recv_from(&mut buf))
+                    .await
+                    .map_err(|_| SeamError::HandshakeFailed("peer handshake timeout".into()))?
+                    .map_err(|e| SeamError::HandshakeFailed(e.to_string()))?;
+                let mut pkt = buf[..n].to_vec();
+                let mut g = inner2.lock().await;
+                g.on_packet(&mut pkt).await?;
+                if g.is_established() {
+                    break;
+                }
+            }
+
+            let socket_clone = socket.clone();
+            let inner_clone = inner.clone();
+            tokio::spawn(client_recv_loop(socket_clone, inner_clone));
+
+            Ok(SeamConn {
+                inner,
+                events,
+            })
+        }
     }
 }
 

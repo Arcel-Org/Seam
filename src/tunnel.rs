@@ -33,6 +33,7 @@ pub struct SeamMux {
     writer: Arc<SeamConnWriter>,
     state: Arc<Mutex<MuxState>>,
     pending_sem: Arc<Semaphore>,
+    datagram_rx: tokio::sync::Mutex<mpsc::UnboundedReceiver<Bytes>>,
 }
 
 impl SeamMux {
@@ -45,15 +46,28 @@ impl SeamMux {
             pending_streams: VecDeque::new(),
         }));
         let pending_sem = Arc::new(Semaphore::new(0));
+        let (datagram_tx, datagram_rx) = mpsc::unbounded_channel::<Bytes>();
 
         let mux = Arc::new(Self {
             writer: writer.clone(),
             state: state.clone(),
             pending_sem: pending_sem.clone(),
+            datagram_rx: tokio::sync::Mutex::new(datagram_rx),
         });
 
-        tokio::spawn(event_loop(events, writer, state, pending_sem));
+        tokio::spawn(event_loop(events, writer, state, pending_sem, datagram_tx));
         mux
+    }
+
+    /// Send an unreliable datagram to the peer (≤ 1200 B payload).
+    pub async fn send_datagram(&self, data: Bytes) -> Result<(), crate::error::SeamError> {
+        self.writer.send_datagram(data).await
+    }
+
+    /// Wait for the next datagram pushed by the peer.
+    /// Returns `None` when the connection is closed.
+    pub async fn recv_datagram(&self) -> Option<Bytes> {
+        self.datagram_rx.lock().await.recv().await
     }
 
     /// Open a locally-initiated stream.
@@ -102,6 +116,7 @@ async fn event_loop(
     writer: Arc<SeamConnWriter>,
     state: Arc<Mutex<MuxState>>,
     pending_sem: Arc<Semaphore>,
+    datagram_tx: mpsc::UnboundedSender<Bytes>,
 ) {
     while let Some(event) = events.recv().await {
         match event {
@@ -134,8 +149,17 @@ async fn event_loop(
                 pending_sem.close();
                 break;
             }
-            SessionEvent::DatagramReceived => {}
+            SessionEvent::DatagramReceived => {
+                while let Some(dg) = writer.recv_datagram().await {
+                    if datagram_tx.send(dg).is_err() {
+                        break;
+                    }
+                }
+            }
             SessionEvent::SessionTicket(_) => {}
+            SessionEvent::PathChallengeReceived(_) | SessionEvent::PathResponseReceived(_) => {
+                // Handled at the Connection layer before events reach the mux.
+            }
         }
     }
 }

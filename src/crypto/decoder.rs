@@ -40,14 +40,26 @@ impl PacketDecoder {
         // Remove header protection using first 16 bytes of ciphertext
         let ciphertext_start = HEADER_LEN;
         let sample: &[u8] = &buf[ciphertext_start..ciphertext_start + 16];
-        let sample_arr: [u8; 16] = sample.try_into().unwrap();
-        let mut header_arr: [u8; HEADER_LEN] = buf[..HEADER_LEN].try_into().unwrap();
+        let sample_arr: [u8; 16] = sample.try_into().map_err(|_| SeamError::BufferTooSmall {
+            need: ciphertext_start + 16,
+            have: buf.len(),
+        })?;
+        let mut header_arr: [u8; HEADER_LEN] = buf[..HEADER_LEN].try_into().map_err(|_| {
+            SeamError::BufferTooSmall {
+                need: HEADER_LEN,
+                have: buf.len(),
+            }
+        })?;
         apply_header_protection(&self.keys.hp_key, &mut header_arr, &sample_arr);
         buf[..HEADER_LEN].copy_from_slice(&header_arr);
 
         // Parse header
         let pkt_type = PktType::try_from(buf[1])?;
-        let pkt_num = u64::from_le_bytes(buf[16..24].try_into().unwrap());
+        let pkt_num = u64::from_le_bytes(
+            buf[16..24]
+                .try_into()
+                .map_err(|_| SeamError::BufferTooSmall { need: 24, have: buf.len() })?,
+        );
 
         // Replay check before decryption
         self.replay.check_and_insert(pkt_num)?;

@@ -5,6 +5,7 @@
 ///   2. ServerWaitMsg1    — client echoes valid cookie; server reads Noise msg1
 ///   3. ServerWaitMsg3    — server sends msg2; awaits msg3
 ///   4. Established
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -108,6 +109,11 @@ pub struct Connection {
 
     /// Traffic analysis resistance state (padding, cover traffic, jitter, obfuscation).
     pub tar: TarState,
+
+    /// Whether connection migration is enabled (from config).
+    pub migration_enabled: bool,
+    /// Pending PATH_CHALLENGE probes keyed by nonce: socket bound on new local addr.
+    migration_sockets: HashMap<u64, Arc<UdpSocket>>,
 }
 
 impl Connection {
@@ -226,6 +232,8 @@ impl Connection {
             ticket_key: None,
             peer_static_pubkey: None,
             tar: TarState::new(tar_config),
+            migration_enabled: true,
+            migration_sockets: HashMap::new(),
         }
     }
 
@@ -295,7 +303,7 @@ impl Connection {
                 "expected cookie challenge".into(),
             ));
         }
-        let cookie: [u8; 32] = buf[1..33].try_into().unwrap();
+        let cookie: [u8; 32] = buf[1..33].try_into().expect("verified: buf.len() >= 33");
 
         let hs = self
             .client_hs
@@ -330,7 +338,7 @@ impl Connection {
             .ok_or_else(|| SeamError::HandshakeFailed("no client hs".into()))?;
         let (server_kem_pk, agreed_cipher) = hs.read_msg2(payload)?;
 
-        let hs = self.client_hs.take().unwrap();
+        let hs = self.client_hs.take().expect("client_hs verified Some above");
         let mut msg3 = Vec::new();
         let result = hs.write_msg3_and_finish(&server_kem_pk, agreed_cipher, &mut msg3)?;
 
@@ -349,7 +357,7 @@ impl Connection {
         if buf.len() < 1 + 32 + 2 || buf[0] != PKT_COOKIE_ECHO {
             return Err(SeamError::HandshakeFailed("expected cookie echo".into()));
         }
-        let cookie: &[u8; 32] = buf[1..33].try_into().unwrap();
+        let cookie: &[u8; 32] = buf[1..33].try_into().expect("verified: buf.len() >= 33");
         let addr_bytes = self.remote.to_string();
 
         let factory = self
@@ -413,8 +421,24 @@ impl Connection {
             .session
             .as_mut()
             .ok_or_else(|| SeamError::HandshakeFailed("no session".into()))?;
+
+        // Peek at the packet type before full decode for migration handling.
+        // PathChallenge and PathResponse are decoded normally by the session but
+        // then handled here so the main match arm below can just ignore them.
         let events = session.receive_packet(buf)?;
+
+        // Check whether the session surfaced PathChallenge/PathResponse events.
+        // (These are encoded as regular encrypted packets by the peer, decoded by
+        // the session layer, and forwarded as raw payload events.)
         for ev in events {
+            if let crate::session::SessionEvent::PathChallengeReceived(nonce) = ev {
+                self.send_path_response(nonce).await?;
+                continue;
+            }
+            if let crate::session::SessionEvent::PathResponseReceived(nonce) = ev {
+                self.on_path_response(nonce).await;
+                continue;
+            }
             let _ = self.event_tx.send(ev);
         }
         // Feed ACK feedback into both controllers.
@@ -614,6 +638,109 @@ impl Connection {
         Ok(())
     }
 
+    /// Attempt connection migration when the current path appears dead.
+    ///
+    /// Enumerates local network interfaces, binds a temporary socket on each,
+    /// sends an encrypted PATH_CHALLENGE to the peer's remote address, and waits
+    /// for a PATH_RESPONSE.  When `on_path_response` is called and a match is found
+    /// the session's active socket is replaced with the new one.
+    ///
+    /// Only called when `migration_enabled` is true and `prober.should_migrate()`.
+    pub async fn maybe_migrate(&mut self) -> Result<(), SeamError> {
+        if !self.migration_enabled || self.phase != ConnPhase::Established {
+            return Ok(());
+        }
+        if !self.prober.should_migrate() {
+            return Ok(());
+        }
+        if !self.migration_sockets.is_empty() {
+            // Already have outstanding challenges — don't stack more until they resolve.
+            return Ok(());
+        }
+
+        let local_ips = enumerate_local_ips();
+        if local_ips.is_empty() {
+            return Ok(());
+        }
+
+        tracing::info!(
+            remote = %self.remote,
+            timeouts = self.prober.consecutive_timeouts,
+            "migration: current path appears dead — probing {} alternate local address(es)",
+            local_ips.len()
+        );
+
+        for local_ip in local_ips {
+            let bind_addr: SocketAddr = SocketAddr::new(local_ip, 0);
+            let sock = match UdpSocket::bind(bind_addr).await {
+                Ok(s) => Arc::new(s),
+                Err(_) => continue,
+            };
+
+            let nonce: u64 = {
+                use rand::RngCore;
+                rand::rngs::OsRng.next_u64()
+            };
+
+            // Build and send an encrypted PATH_CHALLENGE from this new socket.
+            if let Some(session) = self.session.as_ref() {
+                let payload = nonce.to_le_bytes();
+                let mut out = vec![0u8; 32 + payload.len() + 16];
+                if let Ok(n) = session.encode_raw(PktType::PathChallenge, &payload, &mut out) {
+                    out.truncate(n);
+                    let _ = sock.send_to(&out, self.remote).await;
+                    tracing::debug!(
+                        local = %sock.local_addr().unwrap_or(bind_addr),
+                        remote = %self.remote,
+                        nonce,
+                        "migration: sent PATH_CHALLENGE"
+                    );
+                    self.migration_sockets.insert(nonce, sock);
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Send a PATH_RESPONSE echoing the peer's challenge nonce back on the current socket.
+    async fn send_path_response(&mut self, nonce: u64) -> Result<(), SeamError> {
+        if let Some(session) = self.session.as_ref() {
+            let payload = nonce.to_le_bytes();
+            let mut out = vec![0u8; 32 + payload.len() + 16];
+            if let Ok(n) = session.encode_raw(PktType::PathResponse, &payload, &mut out) {
+                out.truncate(n);
+                let _ = self
+                    .socket
+                    .send_to(&out, self.remote)
+                    .await
+                    .map_err(|e| SeamError::HandshakeFailed(e.to_string()))?;
+                tracing::debug!(remote = %self.remote, nonce, "migration: sent PATH_RESPONSE");
+            }
+        }
+        Ok(())
+    }
+
+    /// Called when a PATH_RESPONSE arrives on the current socket.
+    /// If the nonce matches one of our pending challenges, adopt the corresponding
+    /// new local socket as the active transport socket.
+    async fn on_path_response(&mut self, nonce: u64) {
+        if let Some(new_sock) = self.migration_sockets.remove(&nonce) {
+            let new_local = new_sock.local_addr().ok();
+            let old_local = self.socket.local_addr().ok();
+            self.socket = new_sock;
+            // Clear remaining outstanding challenges — migration succeeded.
+            self.migration_sockets.clear();
+            self.prober.reset_migration_state();
+            tracing::info!(
+                old_local = ?old_local,
+                new_local = ?new_local,
+                remote = %self.remote,
+                "migration: path migrated successfully"
+            );
+        }
+    }
+
     pub async fn retransmit_expired(&mut self) -> Result<(), SeamError> {
         let session = match self.session.as_mut() {
             Some(s) => s,
@@ -749,4 +876,63 @@ fn strip_type(buf: &[u8], expected: u8) -> Result<&[u8], SeamError> {
         )));
     }
     Ok(&buf[1..])
+}
+
+/// Enumerate routable local IP addresses using the `libc` getifaddrs interface.
+///
+/// Returns only unicast addresses (IPv4 and IPv6, excluding loopback and link-local).
+/// Falls back to an empty list on platforms where getifaddrs is unavailable.
+fn enumerate_local_ips() -> Vec<std::net::IpAddr> {
+    #[cfg(unix)]
+    {
+        use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+        let mut addrs = Vec::new();
+        unsafe {
+            let mut ifap: *mut libc::ifaddrs = std::ptr::null_mut();
+            if libc::getifaddrs(&mut ifap) != 0 {
+                return addrs;
+            }
+            let mut ifa = ifap;
+            while !ifa.is_null() {
+                let ifa_ref = &*ifa;
+                if ifa_ref.ifa_addr.is_null() {
+                    ifa = ifa_ref.ifa_next;
+                    continue;
+                }
+                let sa_family = (*ifa_ref.ifa_addr).sa_family as i32;
+                let flags = ifa_ref.ifa_flags as i32;
+                // Skip loopback and interfaces that are not up.
+                if flags & libc::IFF_LOOPBACK != 0 || flags & libc::IFF_UP == 0 {
+                    ifa = ifa_ref.ifa_next;
+                    continue;
+                }
+                match sa_family {
+                    libc::AF_INET => {
+                        let sin = &*(ifa_ref.ifa_addr as *const libc::sockaddr_in);
+                        let ip = Ipv4Addr::from(u32::from_be(sin.sin_addr.s_addr));
+                        if !ip.is_loopback() && !ip.is_link_local() {
+                            addrs.push(IpAddr::V4(ip));
+                        }
+                    }
+                    libc::AF_INET6 => {
+                        let sin6 = &*(ifa_ref.ifa_addr as *const libc::sockaddr_in6);
+                        let ip = Ipv6Addr::from(sin6.sin6_addr.s6_addr);
+                        // Skip loopback (::1) and link-local (fe80::/10).
+                        let is_link_local = ip.octets()[0] == 0xfe && (ip.octets()[1] & 0xc0 == 0x80);
+                        if !(ip.is_loopback() || is_link_local) {
+                            addrs.push(IpAddr::V6(ip));
+                        }
+                    }
+                    _ => {}
+                }
+                ifa = ifa_ref.ifa_next;
+            }
+            libc::freeifaddrs(ifap);
+        }
+        addrs
+    }
+    #[cfg(not(unix))]
+    {
+        Vec::new()
+    }
 }

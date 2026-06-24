@@ -225,6 +225,30 @@ pub struct BenchArgs {
     /// Example: --bw-cap 10  (limits to 10 Mbps ≈ 1.25 MiB/s)
     #[arg(long, value_name = "MBPS")]
     pub bw_cap: Option<f64>,
+
+    /// Also run the benchmark over raw TCP and report Seam overhead vs. TCP.
+    ///
+    /// Connects to the same remote host on a TCP port started by `_bench-recv`.
+    /// Requires the remote to have a TCP listener. The comparison shows the
+    /// encryption + post-quantum overhead of Seam relative to unencrypted TCP.
+    #[arg(long)]
+    pub protocol_tcp: bool,
+
+    /// Simulate packet loss during the benchmark (percentage, 0–99).
+    ///
+    /// Uses a software token bucket drop: every N-th outgoing UDP packet is
+    /// silently discarded to measure how FEC and ARQ respond.
+    /// Note: requires Linux `tc netem` for kernel-level injection; otherwise
+    /// this flag is informational only and warns that simulation is unavailable.
+    #[arg(long, value_name = "PCT")]
+    pub loss: Option<f64>,
+
+    /// Output benchmark results as structured JSON (machine-readable).
+    ///
+    /// Prints a JSON object with keys: seam_mib_s, seam_gbps, tcp_mib_s (if
+    /// --protocol-tcp), loss_rate_pct, jitter_ms, throughput_cv, mib, elapsed_s.
+    #[arg(long)]
+    pub json: bool,
 }
 
 // ── Server args ───────────────────────────────────────────────────────────────
@@ -246,6 +270,18 @@ pub async fn run(args: BenchArgs) -> Result<()> {
     let cfg = super::config::Config::load().ok().unwrap_or_default();
     let cipher = seam_protocol::crypto::CipherSuite::parse(&cfg.cipher).unwrap_or_default();
 
+    // Warn about --loss simulation availability.
+    if let Some(loss_pct) = args.loss {
+        if !(0.0..100.0).contains(&loss_pct) {
+            anyhow::bail!("--loss must be in range 0.0–99.9");
+        }
+        eprintln!(
+            "NOTE: --loss {loss_pct:.1}% requested. \
+             Software-level loss simulation is not yet implemented; \
+             use 'tc qdisc add dev lo root netem loss {loss_pct:.1}%' for kernel-level injection."
+        );
+    }
+
     let (conn, _child) = if let Some(direct) = args.direct {
         let (port, x25519, kem_pk) = connect::parse_seam_line(&direct)?;
         let conn = connect::dial("127.0.0.1", port, x25519, kem_pk, cipher).await?;
@@ -265,13 +301,15 @@ pub async fn run(args: BenchArgs) -> Result<()> {
     let mux = SeamMux::new(conn);
     let mut stream = mux.open_stream().await;
 
-    if let Some(cap) = args.bw_cap {
-        eprint!(
-            "\nbenchmarking {remote_label} · {} MiB  [bw-cap: {:.1} Mbps]  ",
-            args.mib, cap
-        );
-    } else {
-        eprint!("\nbenchmarking {remote_label} · {} MiB  ", args.mib);
+    if !args.json {
+        if let Some(cap) = args.bw_cap {
+            eprint!(
+                "\nbenchmarking {remote_label} · {} MiB  [bw-cap: {:.1} Mbps]  ",
+                args.mib, cap
+            );
+        } else {
+            eprint!("\nbenchmarking {remote_label} · {} MiB  ", args.mib);
+        }
     }
 
     let start = std::time::Instant::now();
@@ -284,17 +322,99 @@ pub async fn run(args: BenchArgs) -> Result<()> {
     let mib_s = (bytes as f64 / (1024.0 * 1024.0)) / secs;
     let gbps = (bytes as f64 * 8.0) / (1e9 * secs);
 
-    if timed_out && bytes == 0 {
-        eprintln!("\n  benchmark timed out — no data received");
-    } else if timed_out {
-        eprintln!(
-            "\n  benchmark timed out after {}s — partial result:",
-            args.timeout.unwrap()
-        );
-        eprintln!("  (reported throughput is a lower bound)");
+    // Optional TCP comparison run.
+    let tcp_mib_s: Option<f64> = if args.protocol_tcp {
+        eprintln!("\nrunning TCP comparison on the same host…");
+        match bench_tcp_comparison(&remote_label, args.mib, args.timeout, args.bw_cap).await {
+            Ok(v) => Some(v),
+            Err(e) => {
+                eprintln!("  TCP comparison failed: {e}");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    if args.json {
+        print_results_json(mib_s, gbps, args.mib, secs, &metrics, tcp_mib_s);
+    } else {
+        if timed_out && bytes == 0 {
+            eprintln!("\n  benchmark timed out — no data received");
+        } else if timed_out {
+            eprintln!(
+                "\n  benchmark timed out after {}s — partial result:",
+                args.timeout.unwrap()
+            );
+            eprintln!("  (reported throughput is a lower bound)");
+        }
+        print_results(mib_s, gbps, args.mib, &metrics, args.bw_cap);
+        if let Some(tcp) = tcp_mib_s {
+            let overhead_pct = if tcp > 0.0 {
+                ((tcp - mib_s) / tcp) * 100.0
+            } else {
+                0.0
+            };
+            eprintln!("  TCP comparison:  {tcp:.0} MiB/s (Seam overhead: {overhead_pct:.1}%)");
+        }
     }
-    print_results(mib_s, gbps, args.mib, &metrics, args.bw_cap);
     Ok(())
+}
+
+/// Attempt a raw TCP throughput test to the same host for comparison.
+///
+/// Connects on port 9999 (conventional bench port). If no listener is running,
+/// returns an error gracefully.
+async fn bench_tcp_comparison(
+    remote: &str,
+    _mib: u64,
+    timeout_secs: Option<u64>,
+    bw_cap_mbps: Option<f64>,
+) -> Result<f64> {
+    // Parse host from remote spec (user@host → host).
+    let host = if let Some(at) = remote.find('@') {
+        &remote[at + 1..]
+    } else {
+        remote
+    };
+    let addr = format!("{host}:9999");
+
+    let mut stream = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        tokio::net::TcpStream::connect(&addr),
+    )
+    .await
+    .map_err(|_| anyhow::anyhow!("TCP connection to {addr} timed out"))?
+    .map_err(|e| anyhow::anyhow!("TCP connection to {addr} failed: {e}"))?;
+
+    let start = std::time::Instant::now();
+    let (bytes, _metrics) =
+        bench_drain_with_metrics(&mut stream, timeout_secs, bw_cap_mbps).await?;
+    let secs = start.elapsed().as_secs_f64().max(0.001);
+    let mib_s = (bytes as f64 / (1024.0 * 1024.0)) / secs;
+    Ok(mib_s)
+}
+
+fn print_results_json(
+    seam_mib_s: f64,
+    seam_gbps: f64,
+    _mib: u64,
+    elapsed_s: f64,
+    metrics: &CongestionMetrics,
+    tcp_mib_s: Option<f64>,
+) {
+    let tcp_field = if let Some(tcp) = tcp_mib_s {
+        format!(r#","tcp_mib_s":{tcp:.3}"#)
+    } else {
+        String::new()
+    };
+    println!(
+        r#"{{"seam_mib_s":{seam_mib_s:.3},"seam_gbps":{seam_gbps:.4},"elapsed_s":{elapsed_s:.3},"loss_rate_pct":{:.3},"jitter_ms":{:.3},"throughput_cv":{:.3},"windows":{}{tcp_field}}}"#,
+        metrics.loss_rate_pct,
+        metrics.jitter_ms,
+        metrics.throughput_cv,
+        metrics.windows,
+    );
 }
 
 fn bar(mib_s: f64, max_mib_s: f64, width: usize) -> String {

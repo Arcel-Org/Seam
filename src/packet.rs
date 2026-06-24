@@ -49,6 +49,10 @@ pub enum PktType {
     SvcResume = 0x0E,
     /// Server → client: resumption accepted. Payload: session_id(8).
     SvcResumeOk = 0x0F,
+    /// Connection migration: challenge from new local address. Payload: nonce(8).
+    PathChallenge = 0x10,
+    /// Connection migration: response echoing the challenge nonce. Payload: nonce(8).
+    PathResponse = 0x11,
 }
 
 impl TryFrom<u8> for PktType {
@@ -71,6 +75,8 @@ impl TryFrom<u8> for PktType {
             0x0D => Ok(Self::SessionTicket),
             0x0E => Ok(Self::SvcResume),
             0x0F => Ok(Self::SvcResumeOk),
+            0x10 => Ok(Self::PathChallenge),
+            0x11 => Ok(Self::PathResponse),
             other => Err(SeamError::InvalidPktType(other)),
         }
     }
@@ -105,6 +111,8 @@ mod tests {
             (0x0D, PktType::SessionTicket),
             (0x0E, PktType::SvcResume),
             (0x0F, PktType::SvcResumeOk),
+            (0x10, PktType::PathChallenge),
+            (0x11, PktType::PathResponse),
         ];
         for (raw, expected) in cases {
             assert_eq!(PktType::try_from(raw).unwrap(), expected);

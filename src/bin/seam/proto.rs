@@ -15,6 +15,15 @@ pub const ENTRY: u8 = 0x08;
 /// to verify end-to-end integrity. Receiver replies with ACK on match, or
 /// returns an error if the hash does not match.
 pub const CHECKSUM: u8 = 0x09;
+/// PARALLEL_INIT frame: [type(1)][n_chunks(1)]
+/// Sent by the sender on the control stream to announce a parallel multi-stream transfer.
+/// The sender opens n_chunks additional streams and sends one chunk per stream.
+/// Each chunk stream carries: [FILE_INFO frame][DATA frames...][CHECKSUM frame]
+/// After all chunks are confirmed, the sender sends DONE on the control stream.
+pub const PARALLEL_INIT: u8 = 0x0a;
+/// CHUNK_INFO frame: [type(1)][chunk_index(1)][n_chunks(1)][offset(8)][chunk_size(8)][name_len(2)][name]
+/// Sent on each chunk stream to identify which byte range to write.
+pub const CHUNK_INFO: u8 = 0x0b;
 
 pub const COMPRESS_NONE: u8 = 0;
 pub const COMPRESS_ZSTD: u8 = 1;

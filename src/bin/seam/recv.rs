@@ -89,10 +89,151 @@ async fn receive_transfer(
             proto::FILE_INFO => {
                 receive_file(conn, ctrl_sid, &frame, dest, compress, &mut buf, fips_mode).await?;
             }
+            proto::PARALLEL_INIT => {
+                if frame.len() < 2 {
+                    bail!("PARALLEL_INIT frame too short");
+                }
+                let n_chunks = frame[1] as usize;
+                receive_parallel(conn, ctrl_sid, n_chunks, dest, compress, &mut buf, fips_mode)
+                    .await?;
+            }
             proto::DONE => break,
             t => bail!("unexpected frame type 0x{:02x}", t),
         }
     }
+    Ok(())
+}
+
+/// Receive a file split across N parallel chunk streams.
+///
+/// The sender has already sent PARALLEL_INIT on ctrl_sid. We now accept N
+/// chunk streams (via wait_for_stream), parse their CHUNK_INFO headers, write
+/// each byte range directly to the output file at the correct offset, verify
+/// per-chunk checksums, and send ACK on each chunk stream.
+async fn receive_parallel(
+    conn: &mut SeamConn,
+    _ctrl_sid: StreamId,
+    n_chunks: usize,
+    dest: &std::path::Path,
+    compress: bool,
+    _buf: &mut Vec<u8>,
+    fips_mode: bool,
+) -> Result<()> {
+    use std::io::{Seek, SeekFrom, Write};
+
+    // Accept the N chunk streams. They arrive in the order the sender opened them.
+    let mut chunk_sids = Vec::with_capacity(n_chunks);
+    for _ in 0..n_chunks {
+        let sid = wait_for_stream(conn).await?;
+        chunk_sids.push(sid);
+    }
+
+    // First pass: read all CHUNK_INFO headers to learn the file name and total size.
+    // We need to create the output file before writing chunks.
+    let mut chunk_infos: Vec<(u8, u64, u64, String)> = Vec::with_capacity(n_chunks); // (index, offset, chunk_size, name)
+    let mut chunk_bufs: Vec<Vec<u8>> = vec![Vec::new(); n_chunks];
+
+    for (i, &sid) in chunk_sids.iter().enumerate() {
+        let info_frame = read_frame(conn, sid, &mut chunk_bufs[i]).await?;
+        if info_frame.len() < 21 || info_frame[0] != proto::CHUNK_INFO {
+            bail!("expected CHUNK_INFO on chunk stream {i}");
+        }
+        let chunk_index = info_frame[1];
+        let offset = u64::from_be_bytes(info_frame[3..11].try_into()?);
+        let chunk_size = u64::from_be_bytes(info_frame[11..19].try_into()?);
+        let name_len = u16::from_be_bytes(info_frame[19..21].try_into()?) as usize;
+        if info_frame.len() < 21 + name_len {
+            bail!("CHUNK_INFO name truncated on chunk stream {i}");
+        }
+        let name = String::from_utf8(info_frame[21..21 + name_len].to_vec())?;
+        if name.contains("..") || std::path::Path::new(&name).is_absolute() {
+            bail!("refusing dangerous filename in parallel chunk: {name}");
+        }
+        chunk_infos.push((chunk_index, offset, chunk_size, name));
+    }
+
+    // Derive output path from chunk 0.
+    let name = &chunk_infos[0].3;
+    let out_path = dest.join(name);
+    if let Some(parent) = out_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    // Compute total size from chunk offsets.
+    let total_size: u64 = chunk_infos.iter().map(|(_, o, s, _)| o + s).max().unwrap_or(0);
+
+    // Pre-allocate the output file.
+    {
+        let f = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&out_path)?;
+        f.set_len(total_size)?;
+    }
+
+    use crate::copy::IncrementalHasher;
+    let algo_name = if fips_mode { "SHA-256" } else { "BLAKE3" };
+
+    // Receive each chunk and write at its offset.
+    for (i, &sid) in chunk_sids.iter().enumerate() {
+        let (_, offset, chunk_size, _) = &chunk_infos[i];
+        let offset = *offset;
+        let chunk_size = *chunk_size;
+
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&out_path)?;
+        file.seek(SeekFrom::Start(offset))?;
+
+        let mut hasher = IncrementalHasher::new(fips_mode);
+        let mut received: u64 = 0;
+        while received < chunk_size {
+            let data_frame = read_frame(conn, sid, &mut chunk_bufs[i]).await?;
+            if data_frame.is_empty() || data_frame[0] != proto::DATA {
+                bail!("expected DATA frame in chunk stream {i}");
+            }
+            let raw = &data_frame[1..];
+            if compress {
+                let decoded = zstd::decode_all(raw)?;
+                hasher.update(&decoded);
+                file.write_all(&decoded)?;
+                received += decoded.len() as u64;
+            } else {
+                hasher.update(raw);
+                file.write_all(raw)?;
+                received += raw.len() as u64;
+            }
+        }
+        file.flush()?;
+        drop(file);
+
+        // Verify per-chunk checksum.
+        let cksum_frame = read_frame(conn, sid, &mut chunk_bufs[i]).await?;
+        if cksum_frame.len() == 33 && cksum_frame[0] == proto::CHECKSUM {
+            let expected = &cksum_frame[1..33];
+            let actual = hasher.finalize();
+            if actual == expected {
+                send_frame(conn, sid, &[proto::ACK]).await?;
+                eprintln!(
+                    "chunk {i}: {chunk_size} bytes [{algo_name} OK: {}]",
+                    hex::encode(&expected[..8])
+                );
+            } else {
+                bail!(
+                    "chunk {i} {algo_name} mismatch: expected {} got {}",
+                    hex::encode(expected),
+                    hex::encode(actual)
+                );
+            }
+        } else {
+            bail!("missing CHECKSUM frame from chunk stream {i}");
+        }
+    }
+
+    eprintln!(
+        "received: {name} ({total_size} bytes) [parallel {n_chunks} streams, {algo_name} OK]"
+    );
     Ok(())
 }
 

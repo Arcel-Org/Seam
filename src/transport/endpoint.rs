@@ -37,12 +37,16 @@ pub struct EndpointConfig {
     /// New connections are silently dropped once this limit is reached.
     /// Default: [`DEFAULT_MAX_CONNECTIONS`].
     pub max_connections: usize,
+    /// Maximum new connections per second from a single IP (token-bucket rate limiter).
+    /// Default: 10.
+    pub max_new_conns_per_sec_per_ip: u32,
 }
 
 impl Default for EndpointConfig {
     fn default() -> Self {
         Self {
             max_connections: DEFAULT_MAX_CONNECTIONS,
+            max_new_conns_per_sec_per_ip: 10,
         }
     }
 }
@@ -96,6 +100,7 @@ impl Endpoint {
             conns.clone(),
             accept_tx,
             config.max_connections,
+            config.max_new_conns_per_sec_per_ip,
         ));
 
         Ok(Self {
@@ -143,8 +148,12 @@ async fn recv_loop(
     conns: Arc<Mutex<HashMap<SocketAddr, SharedConn>>>,
     accept_tx: mpsc::UnboundedSender<SharedConn>,
     max_connections: usize,
+    max_new_conns_per_sec_per_ip: u32,
 ) {
     let mut buf = vec![0u8; MAX_UDP];
+    // Per-IP token-bucket rate limiter state: ip → (tokens, last_refill).
+    let mut ip_rate: HashMap<std::net::IpAddr, (f64, std::time::Instant)> = HashMap::new();
+    let mut last_cleanup = std::time::Instant::now();
     loop {
         let (n, remote) = match socket.recv_from(&mut buf).await {
             Ok(v) => v,
@@ -168,6 +177,30 @@ async fn recv_loop(
                         "connection limit reached — dropping new connection"
                     );
                     continue;
+                }
+
+                // Per-IP rate limiting: token bucket — max N new connections per second.
+                {
+                    let ip = remote.ip();
+                    let now = std::time::Instant::now();
+                    // Periodic cleanup of stale entries (every 60 s).
+                    if now.duration_since(last_cleanup).as_secs() >= 60 {
+                        ip_rate.retain(|_, (_, t)| now.duration_since(*t).as_secs() < 120);
+                        last_cleanup = now;
+                    }
+                    let rate = max_new_conns_per_sec_per_ip as f64;
+                    let entry = ip_rate.entry(ip).or_insert((rate, now));
+                    let elapsed = now.duration_since(entry.1).as_secs_f64();
+                    entry.0 = (entry.0 + elapsed * rate).min(rate);
+                    entry.1 = now;
+                    if entry.0 < 1.0 {
+                        tracing::warn!(
+                            remote = %remote,
+                            "per-IP rate limit exceeded — dropping"
+                        );
+                        continue;
+                    }
+                    entry.0 -= 1.0;
                 }
 
                 // Unknown remote → issue stateless cookie challenge (no state allocated yet)

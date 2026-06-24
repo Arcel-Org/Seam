@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 pub mod api;
+pub mod bufpool;
 pub mod crypto;
 pub mod error;
 pub mod fec;

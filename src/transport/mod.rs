@@ -1,5 +1,6 @@
 pub mod bandwidth;
 pub mod bbr;
+pub mod nat;
 pub mod cc;
 pub mod chaff;
 pub mod congestion;

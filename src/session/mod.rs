@@ -41,6 +41,10 @@ pub enum SessionEvent {
     /// Encrypted session ticket received from the server (for 0-RTT resumption).
     SessionTicket(Vec<u8>),
     Closed,
+    /// PATH_CHALLENGE received: connection layer should echo nonce back as PATH_RESPONSE.
+    PathChallengeReceived(u64),
+    /// PATH_RESPONSE received: connection layer should check nonce against pending challenges.
+    PathResponseReceived(u64),
 }
 
 /// Which side of the connection this session represents. Controls stream-id
@@ -414,10 +418,16 @@ impl Session {
 
         // An "ack-eliciting" packet triggers an ACK to the peer. ACK frames
         // themselves are NOT ack-eliciting (prevents infinite ACK chatter).
-        // Pong is also non-ack-eliciting so a Ping/Pong pair doesn't spiral.
+        // Pong, PathProbe, PathChallenge and PathResponse are non-ack-eliciting.
         let ack_eliciting = !matches!(
             pkt_type,
-            PktType::Ack | PktType::Chaff | PktType::PathProbe | PktType::MaxData | PktType::Pong
+            PktType::Ack
+                | PktType::Chaff
+                | PktType::PathProbe
+                | PktType::PathChallenge
+                | PktType::PathResponse
+                | PktType::MaxData
+                | PktType::Pong
         );
         self.ack_ranges.on_received(pkt_num, ack_eliciting);
 
@@ -449,6 +459,14 @@ impl Session {
             PktType::Datagram => {
                 self.datagrams.receive(Bytes::copy_from_slice(payload));
                 events.push(SessionEvent::DatagramReceived);
+            }
+            PktType::PathChallenge if payload.len() >= 8 => {
+                let nonce = u64::from_le_bytes(payload[..8].try_into().unwrap());
+                events.push(SessionEvent::PathChallengeReceived(nonce));
+            }
+            PktType::PathResponse if payload.len() >= 8 => {
+                let nonce = u64::from_le_bytes(payload[..8].try_into().unwrap());
+                events.push(SessionEvent::PathResponseReceived(nonce));
             }
             _ => {}
         }

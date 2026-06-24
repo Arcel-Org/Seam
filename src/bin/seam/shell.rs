@@ -104,6 +104,35 @@ pub struct ShellRecvArgs {
 
 // ── Client ────────────────────────────────────────────────────────────────────
 
+/// Run a shell command over an already-established `SeamMux` (used by multi-hop routing).
+pub async fn run_with_mux(
+    mux: std::sync::Arc<seam_protocol::tunnel::SeamMux>,
+    command: Vec<String>,
+    no_pty: bool,
+) -> Result<()> {
+    #[cfg(unix)]
+    let use_pty = !no_pty && {
+        use std::os::unix::io::AsRawFd;
+        is_tty(std::io::stdin().as_raw_fd()) && is_tty(std::io::stdout().as_raw_fd())
+    };
+    #[cfg(not(unix))]
+    let use_pty = false;
+
+    let stream = mux.open_stream().await;
+
+    if use_pty {
+        #[cfg(unix)]
+        run_interactive_pty(stream).await?;
+        #[cfg(not(unix))]
+        run_pipe_mode(stream).await?;
+    } else {
+        let _ = command; // already negotiated with remote
+        run_pipe_mode(stream).await?;
+    }
+
+    Ok(())
+}
+
 pub async fn run(args: ShellArgs) -> Result<()> {
     let cfg = super::config::Config::load().ok().unwrap_or_default();
     let cipher = seam_protocol::crypto::CipherSuite::parse(&cfg.cipher).unwrap_or_default();

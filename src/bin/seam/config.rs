@@ -164,6 +164,25 @@ pub struct Config {
     /// Lower values reduce the window of exposure if a session key is compromised.
     #[serde(default = "default_ratchet_epoch_seconds")]
     pub ratchet_epoch_seconds: u64,
+
+    /// STUN server for NAT traversal and UDP hole punching.
+    ///
+    /// Used by `seam punch` and the NAT traversal module.
+    /// Default: stun.l.google.com:19302
+    #[serde(default)]
+    pub stun_server: Option<String>,
+
+    /// Enable connection migration (keep sessions alive across network switches).
+    ///
+    /// When true, Seam probes new local addresses on path failure and migrates
+    /// the session without dropping streams. Default: true.
+    #[serde(default = "default_true")]
+    pub connection_migration: bool,
+
+    /// Maximum transfer bandwidth. Human-readable: "10MB/s", "1Gb/s", "500KB/s".
+    /// Applies to seam cp and seam sync when not overridden by --max-rate.
+    #[serde(default)]
+    pub max_bandwidth: Option<String>,
 }
 
 fn default_multipath_mode() -> String {
@@ -210,6 +229,9 @@ impl Default for Config {
             multipath_mode: default_multipath_mode(),
             ratchet_epoch_packets: default_ratchet_epoch_packets(),
             ratchet_epoch_seconds: default_ratchet_epoch_seconds(),
+            stun_server: None,
+            connection_migration: true,
+            max_bandwidth: None,
         }
     }
 }

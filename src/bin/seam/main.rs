@@ -1,5 +1,6 @@
 mod audit;
 mod bench;
+mod daemon;
 mod completions;
 mod config;
 mod connect;
@@ -11,15 +12,20 @@ mod health;
 mod key;
 mod known_hosts;
 mod ls;
+mod mount;
 mod perf;
 mod ping;
 mod pipe;
 mod proto;
 mod proxy;
+mod punch;
 mod recv;
+mod route;
+mod russh_client;
 mod scan;
 mod send;
 mod serve;
+mod share;
 mod shell;
 mod ssh;
 mod stats;
@@ -28,6 +34,7 @@ mod tui;
 mod tunnel;
 mod update;
 mod version;
+mod watch;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -175,6 +182,30 @@ enum Commands {
     #[command(name = "scan")]
     Scan(scan::ScanArgs),
 
+    /// Discover external IP:port via STUN and optionally hole-punch to a peer
+    #[command(name = "punch")]
+    Punch(punch::PunchArgs),
+
+    /// Share a file or directory via a one-time post-quantum download link
+    #[command(name = "share")]
+    Share(share::ShareArgs),
+
+    /// Watch a local directory and sync changes to a remote host in real-time
+    #[command(name = "watch")]
+    Watch(watch::WatchArgs),
+
+    /// Route a connection through intermediate Seam relay nodes (multi-hop)
+    #[command(name = "route")]
+    Route(route::RouteArgs),
+
+    /// Mount a remote Seam filesystem via FUSE (requires --features fuse)
+    #[command(name = "mount")]
+    Mount(mount::MountArgs),
+
+    /// Manage the background Seam connection daemon
+    #[command(name = "daemon")]
+    Daemon(daemon::DaemonArgs),
+
     // Hidden internal subcommands — started by SSH bootstrap, not for direct use
     #[command(name = "_forward-recv", hide = true)]
     ForwardRecv(forward::ForwardRecvArgs),
@@ -204,6 +235,8 @@ enum Commands {
     PingRecv(ping::PingRecvArgs),
     #[command(name = "_proxy-recv", hide = true)]
     ProxyRecv(proxy::ProxyRecvArgs),
+    #[command(name = "_route-hop-recv", hide = true)]
+    RouteHopRecv(route::RouteHopRecvArgs),
 }
 
 #[tokio::main]
@@ -369,6 +402,24 @@ async fn main() -> Result<()> {
             let target = args.target.clone();
             audited!("scan", &target, vec![], scan::run_scan(args).await)
         }
+        Some(Commands::Punch(args)) => audited!("punch", "", vec![], punch::run(args).await),
+        Some(Commands::Share(args)) => {
+            let path = args.path.clone();
+            audited!("share", &path, vec![], share::run(args, fips_active).await)
+        }
+        Some(Commands::Watch(args)) => {
+            let remote = args.remote.clone();
+            audited!("watch", &remote, vec![], watch::run(args, fips_active).await)
+        }
+        Some(Commands::Route(args)) => {
+            let dest = args.dest.clone();
+            audited!("route", &dest, vec![], route::run(args, fips_active).await)
+        }
+        Some(Commands::Mount(args)) => {
+            let remote = args.remote.clone();
+            audited!("mount", &remote, vec![], mount::run(args).await)
+        }
+        Some(Commands::Daemon(args)) => daemon::run(args).await,
         // Hidden internal subcommands — not audited (remote side, not client-initiated)
         Some(Commands::ForwardRecv(args)) => forward::run_recv(args).await,
         Some(Commands::ForwardHopRecv(args)) => forward::run_hop_recv(args).await,
@@ -384,5 +435,6 @@ async fn main() -> Result<()> {
         Some(Commands::StatsRecv(args)) => stats::run_recv(args).await,
         Some(Commands::PingRecv(args)) => ping::run_recv(args).await,
         Some(Commands::ProxyRecv(args)) => proxy::run_recv(args).await,
+        Some(Commands::RouteHopRecv(args)) => route::run_hop_recv(args).await,
     }
 }

@@ -89,6 +89,17 @@ pub struct PipeRecvArgs {
 
 // ── Client ────────────────────────────────────────────────────────────────────
 
+/// Run a pipe over an already-established `SeamMux` (used by multi-hop routing).
+pub async fn run_with_mux(
+    mux: std::sync::Arc<SeamMux>,
+    _command: Vec<String>,
+) -> Result<()> {
+    let mut stream = mux.open_stream().await;
+    let mut stdio = Stdio::new();
+    tokio::io::copy_bidirectional(&mut stream, &mut stdio).await?;
+    Ok(())
+}
+
 pub async fn run(args: PipeArgs) -> Result<()> {
     let cfg = super::config::Config::load().ok().unwrap_or_default();
     let cipher = seam_protocol::crypto::CipherSuite::parse(&cfg.cipher).unwrap_or_default();

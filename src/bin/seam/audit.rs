@@ -56,6 +56,8 @@ pub enum AuditCmd {
         #[arg(long)]
         yes: bool,
     },
+    /// Verify the integrity chain of the audit log
+    Verify,
 }
 
 /// A deserialized audit entry for querying.
@@ -74,6 +76,10 @@ struct AuditRecord {
     #[serde(default)]
     #[allow(dead_code)]
     pid: u32,
+    /// BLAKE3 chain hash (hex). Present on all entries written after chain support was added.
+    #[serde(default)]
+    #[allow(dead_code)]
+    hash: Option<String>,
 }
 
 pub fn run(args: AuditArgs) -> Result<()> {
@@ -85,6 +91,7 @@ pub fn run(args: AuditArgs) -> Result<()> {
             json,
         } => show(lines, since.as_deref(), host.as_deref(), json),
         AuditCmd::Clear { yes } => clear(yes),
+        AuditCmd::Verify => run_verify(),
     }
 }
 
@@ -309,7 +316,40 @@ fn append_entry(entry: &AuditEntry<'_>) -> anyhow::Result<()> {
         std::fs::create_dir_all(parent)?;
     }
 
-    let mut line = serde_json::to_string(entry)?;
+    // Serialize entry (without hash field) to JSON.
+    let entry_json = serde_json::to_string(entry)?;
+
+    // Compute prev_hash from the last line in the log (if any).
+    let prev_hash: [u8; 32] = if path.exists() {
+        read_last_line(&path)
+            .and_then(|last| {
+                // Extract "hash":"<hex>" from the last line.
+                let rec: serde_json::Value = serde_json::from_str(&last).ok()?;
+                let h = rec.get("hash")?.as_str()?;
+                let bytes = hex::decode(h).ok()?;
+                bytes.try_into().ok()
+            })
+            .unwrap_or([0u8; 32])
+    } else {
+        [0u8; 32]
+    };
+
+    // Chain hash: BLAKE3(prev_hash || entry_json_bytes).
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(&prev_hash);
+    hasher.update(entry_json.as_bytes());
+    let hash_bytes = hasher.finalize();
+    let hash_hex = hex::encode(hash_bytes.as_bytes());
+
+    // Inject "hash" field: strip trailing '}' and append ,"hash":"<hex>"}.
+    let mut line = entry_json;
+    // entry_json is a valid JSON object — strip the closing brace.
+    if line.ends_with('}') {
+        line.pop();
+        line.push_str(",\"hash\":\"");
+        line.push_str(&hash_hex);
+        line.push_str("\"}");
+    }
     line.push('\n');
 
     // O_APPEND ensures atomic writes ≤ PIPE_BUF on POSIX.
@@ -319,6 +359,100 @@ fn append_entry(entry: &AuditEntry<'_>) -> anyhow::Result<()> {
         .open(&path)?;
 
     file.write_all(line.as_bytes())?;
+    Ok(())
+}
+
+/// Verify the BLAKE3 chain integrity of the audit log.
+///
+/// Each entry's `hash` field must equal BLAKE3(prev_hash || entry_json_without_hash).
+/// Entries that pre-date chain support (no `hash` field) are reported as warnings, not errors.
+fn run_verify() -> Result<()> {
+    let path = audit_log_path();
+    if !path.exists() {
+        println!("Audit log not found: {}", path.display());
+        return Ok(());
+    }
+
+    let text = std::fs::read_to_string(&path)
+        .map_err(|e| anyhow::anyhow!("cannot read audit log: {e}"))?;
+
+    let mut prev_hash = [0u8; 32];
+    let mut total = 0usize;
+    let mut ok = 0usize;
+    let mut skipped = 0usize;
+    let mut failed = 0usize;
+
+    for (lineno, raw) in text.lines().enumerate() {
+        let raw = raw.trim();
+        if raw.is_empty() {
+            continue;
+        }
+        total += 1;
+
+        // Parse as generic JSON value to extract and strip the hash field.
+        let mut val: serde_json::Value = match serde_json::from_str(raw) {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!("line {}: malformed JSON — {e}", lineno + 1);
+                failed += 1;
+                continue;
+            }
+        };
+
+        let stored_hash_hex = match val.get("hash").and_then(|h| h.as_str()) {
+            Some(h) => h.to_string(),
+            None => {
+                // Entry predates chain support.
+                eprintln!(
+                    "line {}: no hash field — skipping (pre-chain entry)",
+                    lineno + 1
+                );
+                skipped += 1;
+                // Reset prev_hash to zero so the next chained entry anchors correctly
+                // (we can't verify continuity across a gap).
+                prev_hash = [0u8; 32];
+                continue;
+            }
+        };
+
+        // Remove "hash" field to reconstruct the entry_json that was hashed.
+        if let Some(obj) = val.as_object_mut() {
+            obj.remove("hash");
+        }
+        let entry_json = serde_json::to_string(&val)?;
+
+        // Recompute expected hash.
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(&prev_hash);
+        hasher.update(entry_json.as_bytes());
+        let expected = hasher.finalize();
+        let expected_hex = hex::encode(expected.as_bytes());
+
+        if expected_hex == stored_hash_hex {
+            ok += 1;
+            prev_hash = *expected.as_bytes();
+        } else {
+            eprintln!(
+                "line {}: CHAIN BROKEN — expected {expected_hex}, got {stored_hash_hex}",
+                lineno + 1
+            );
+            failed += 1;
+            // Update prev_hash to stored value so we can detect further breaks independently.
+            if let Ok(bytes) = hex::decode(&stored_hash_hex)
+                && let Ok(arr) = bytes.try_into()
+            {
+                prev_hash = arr;
+            }
+        }
+    }
+
+    println!("Audit log: {}", path.display());
+    println!(
+        "Entries: {total} total, {ok} verified OK, {skipped} pre-chain (skipped), {failed} FAILED"
+    );
+    if failed > 0 {
+        anyhow::bail!("{failed} chain integrity failure(s) detected");
+    }
     Ok(())
 }
 

@@ -2,6 +2,9 @@
 ///
 /// Sends PathProbe packets at regular intervals and measures one-way RTT
 /// from the echo. MTU probing uses binary search between MIN_MTU and MAX_MTU.
+///
+/// Also tracks consecutive probe timeouts to signal when connection migration
+/// should be attempted (see `consecutive_timeouts` and `MIGRATION_THRESHOLD`).
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
@@ -10,6 +13,9 @@ pub const MAX_MTU: usize = 1500;
 
 const PROBE_INTERVAL: Duration = Duration::from_secs(5);
 const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// Number of consecutive probe timeouts that triggers connection migration.
+pub const MIGRATION_THRESHOLD: u32 = 3;
 
 /// PathProbe payload wire format: probe_id(8) + timestamp_us(8) + padding_to(MTU)
 pub const PROBE_HDR: usize = 16;
@@ -22,6 +28,8 @@ pub struct PathProber {
     mtu_lo: usize,
     mtu_hi: usize,
     probing_mtu: bool,
+    /// Number of consecutive keepalive probe timeouts (resets on any echo received).
+    pub consecutive_timeouts: u32,
 }
 
 struct PendingProbe {
@@ -39,6 +47,7 @@ impl PathProber {
             mtu_lo: MIN_MTU,
             mtu_hi: MAX_MTU,
             probing_mtu: true,
+            consecutive_timeouts: 0,
         }
     }
 
@@ -94,6 +103,9 @@ impl PathProber {
         let probe = self.pending.remove(&id)?;
         let rtt = probe.sent_at.elapsed();
 
+        // Any successful echo resets the consecutive-timeout counter.
+        self.consecutive_timeouts = 0;
+
         // MTU probe succeeded: this size is reachable
         if self.probing_mtu {
             self.mtu_lo = probe.probe_size;
@@ -108,24 +120,41 @@ impl PathProber {
     }
 
     /// Expire timed-out probes. Returns true if any MTU probe expired (path smaller than tried).
+    /// Also increments `consecutive_timeouts` for keepalive probes that expire.
     pub fn expire_timeouts(&mut self) -> bool {
         let now = Instant::now();
         let mut mtu_loss = false;
+        let mut keepalive_loss = false;
         self.pending.retain(|_, p| {
             if now.duration_since(p.sent_at) >= PROBE_TIMEOUT {
                 if p.probe_size > PROBE_HDR {
                     mtu_loss = true;
+                } else {
+                    keepalive_loss = true;
                 }
                 false
             } else {
                 true
             }
         });
+        if keepalive_loss {
+            self.consecutive_timeouts = self.consecutive_timeouts.saturating_add(1);
+        }
         if mtu_loss && self.probing_mtu {
             // Probe at this size failed: search lower half
             self.mtu_hi = (self.mtu_lo + self.mtu_hi) / 2;
         }
         mtu_loss
+    }
+
+    /// Returns true if enough consecutive probes have timed out to warrant migration.
+    pub fn should_migrate(&self) -> bool {
+        self.consecutive_timeouts >= MIGRATION_THRESHOLD
+    }
+
+    /// Reset the consecutive timeout counter (called after a successful migration).
+    pub fn reset_migration_state(&mut self) {
+        self.consecutive_timeouts = 0;
     }
 }
 

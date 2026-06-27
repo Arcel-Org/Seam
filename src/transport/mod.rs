@@ -1,12 +1,12 @@
 pub mod bandwidth;
 pub mod bbr;
-pub mod nat;
 pub mod cc;
 pub mod chaff;
 pub mod congestion;
 pub mod connection;
 pub mod endpoint;
 pub mod multipath;
+pub mod nat;
 pub mod pacer;
 pub mod pool;
 pub mod probe;

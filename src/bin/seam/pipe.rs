@@ -90,10 +90,7 @@ pub struct PipeRecvArgs {
 // ── Client ────────────────────────────────────────────────────────────────────
 
 /// Run a pipe over an already-established `SeamMux` (used by multi-hop routing).
-pub async fn run_with_mux(
-    mux: std::sync::Arc<SeamMux>,
-    _command: Vec<String>,
-) -> Result<()> {
+pub async fn run_with_mux(mux: std::sync::Arc<SeamMux>, _command: Vec<String>) -> Result<()> {
     let mut stream = mux.open_stream().await;
     let mut stdio = Stdio::new();
     tokio::io::copy_bidirectional(&mut stream, &mut stdio).await?;

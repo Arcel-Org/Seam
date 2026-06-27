@@ -410,10 +410,7 @@ fn print_results_json(
     };
     println!(
         r#"{{"seam_mib_s":{seam_mib_s:.3},"seam_gbps":{seam_gbps:.4},"elapsed_s":{elapsed_s:.3},"loss_rate_pct":{:.3},"jitter_ms":{:.3},"throughput_cv":{:.3},"windows":{}{tcp_field}}}"#,
-        metrics.loss_rate_pct,
-        metrics.jitter_ms,
-        metrics.throughput_cv,
-        metrics.windows,
+        metrics.loss_rate_pct, metrics.jitter_ms, metrics.throughput_cv, metrics.windows,
     );
 }
 

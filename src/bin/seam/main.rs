@@ -1,10 +1,10 @@
 mod audit;
 mod bench;
-mod daemon;
 mod completions;
 mod config;
 mod connect;
 mod copy;
+mod daemon;
 mod doctor;
 mod forward;
 mod fwd;
@@ -409,7 +409,12 @@ async fn main() -> Result<()> {
         }
         Some(Commands::Watch(args)) => {
             let remote = args.remote.clone();
-            audited!("watch", &remote, vec![], watch::run(args, fips_active).await)
+            audited!(
+                "watch",
+                &remote,
+                vec![],
+                watch::run(args, fips_active).await
+            )
         }
         Some(Commands::Route(args)) => {
             let dest = args.dest.clone();

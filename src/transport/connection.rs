@@ -338,7 +338,10 @@ impl Connection {
             .ok_or_else(|| SeamError::HandshakeFailed("no client hs".into()))?;
         let (server_kem_pk, agreed_cipher) = hs.read_msg2(payload)?;
 
-        let hs = self.client_hs.take().expect("client_hs verified Some above");
+        let hs = self
+            .client_hs
+            .take()
+            .expect("client_hs verified Some above");
         let mut msg3 = Vec::new();
         let result = hs.write_msg3_and_finish(&server_kem_pk, agreed_cipher, &mut msg3)?;
 
@@ -918,7 +921,8 @@ fn enumerate_local_ips() -> Vec<std::net::IpAddr> {
                         let sin6 = &*(ifa_ref.ifa_addr as *const libc::sockaddr_in6);
                         let ip = Ipv6Addr::from(sin6.sin6_addr.s6_addr);
                         // Skip loopback (::1) and link-local (fe80::/10).
-                        let is_link_local = ip.octets()[0] == 0xfe && (ip.octets()[1] & 0xc0 == 0x80);
+                        let is_link_local =
+                            ip.octets()[0] == 0xfe && (ip.octets()[1] & 0xc0 == 0x80);
                         if !(ip.is_loopback() || is_link_local) {
                             addrs.push(IpAddr::V6(ip));
                         }

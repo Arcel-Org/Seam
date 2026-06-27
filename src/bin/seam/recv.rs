@@ -94,8 +94,10 @@ async fn receive_transfer(
                     bail!("PARALLEL_INIT frame too short");
                 }
                 let n_chunks = frame[1] as usize;
-                receive_parallel(conn, ctrl_sid, n_chunks, dest, compress, &mut buf, fips_mode)
-                    .await?;
+                receive_parallel(
+                    conn, ctrl_sid, n_chunks, dest, compress, &mut buf, fips_mode,
+                )
+                .await?;
             }
             proto::DONE => break,
             t => bail!("unexpected frame type 0x{:02x}", t),
@@ -160,7 +162,11 @@ async fn receive_parallel(
     }
 
     // Compute total size from chunk offsets.
-    let total_size: u64 = chunk_infos.iter().map(|(_, o, s, _)| o + s).max().unwrap_or(0);
+    let total_size: u64 = chunk_infos
+        .iter()
+        .map(|(_, o, s, _)| o + s)
+        .max()
+        .unwrap_or(0);
 
     // Pre-allocate the output file.
     {
@@ -181,9 +187,7 @@ async fn receive_parallel(
         let offset = *offset;
         let chunk_size = *chunk_size;
 
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .open(&out_path)?;
+        let mut file = std::fs::OpenOptions::new().write(true).open(&out_path)?;
         file.seek(SeekFrom::Start(offset))?;
 
         let mut hasher = IncrementalHasher::new(fips_mode);

@@ -537,11 +537,9 @@ impl Peer {
                 .await
                 .map_err(|e| SeamError::HandshakeFailed(e.to_string()))?;
 
-            if let Ok(Ok((n, from))) = tokio::time::timeout(
-                Duration::from_millis(100),
-                socket.recv_from(&mut recv_buf),
-            )
-            .await
+            if let Ok(Ok((n, from))) =
+                tokio::time::timeout(Duration::from_millis(100), socket.recv_from(&mut recv_buf))
+                    .await
             {
                 let data = &recv_buf[..n];
                 if data.len() == PEER_MAGIC.len() + 8 && data.starts_with(PEER_MAGIC) {
@@ -562,7 +560,9 @@ impl Peer {
         // Coin flip: lower nonce = initiator (Client role), higher = responder (Server role).
         if local_nonce <= remote_nonce {
             // We are the initiator.
-            tracing::debug!("symmetric peer: we are initiator (nonce {local_nonce:?} <= {remote_nonce:?})");
+            tracing::debug!(
+                "symmetric peer: we are initiator (nonce {local_nonce:?} <= {remote_nonce:?})"
+            );
 
             // We need the peer's public keys for the handshake. Since this is symmetric
             // mode without pre-shared keys, use the handshake result directly.
@@ -575,7 +575,9 @@ impl Peer {
             ))
         } else {
             // We are the responder.
-            tracing::debug!("symmetric peer: we are responder (nonce {local_nonce:?} > {remote_nonce:?})");
+            tracing::debug!(
+                "symmetric peer: we are responder (nonce {local_nonce:?} > {remote_nonce:?})"
+            );
 
             let id = Arc::new(identity);
             let mut secret = [0u8; 32];
@@ -624,10 +626,7 @@ impl Peer {
             let inner_clone = inner.clone();
             tokio::spawn(client_recv_loop(socket_clone, inner_clone));
 
-            Ok(SeamConn {
-                inner,
-                events,
-            })
+            Ok(SeamConn { inner, events })
         }
     }
 }

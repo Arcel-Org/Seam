@@ -3514,7 +3514,7 @@ dependencies = [
 
 [[package]]
 name = "seam-protocol"
-version = "0.1.39"
+version = "1.0.1"
 dependencies = [
  "aes-gcm 0.10.3",
  "anyhow",

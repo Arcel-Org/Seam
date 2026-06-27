@@ -147,7 +147,7 @@ impl Action {
             Action::Fwd => "Reverse",
             Action::Copy => "Copy",
             Action::Sync => "Sync",
-            Action::Ping => "Ping",
+            Action::Ping => "Latency",
             Action::Proxy => "Proxy",
             Action::Scan => "Scan",
             Action::Share => "Share",
@@ -166,7 +166,7 @@ impl Action {
             Action::Fwd => "remote → local  (ssh -R)",
             Action::Copy => "transfer files",
             Action::Sync => "mirror directory",
-            Action::Ping => "measure round-trip latency",
+            Action::Ping => "RTT latency to a Seam peer",
             Action::Proxy => "SOCKS5 proxy via remote host",
             Action::Scan => "TCP port scanner",
             Action::Share => "one-time share link with token",
@@ -391,6 +391,7 @@ struct App {
     last_run: Option<(String, i32)>,
     validation: Option<String>,
     show_help: bool,
+    show_extra: bool,
     identity_fp: String,
 }
 
@@ -413,6 +414,7 @@ impl App {
             last_run: None,
             validation: None,
             show_help: false,
+            show_extra: false,
             identity_fp: load_identity_fp(),
         }
     }
@@ -555,7 +557,12 @@ impl App {
     }
 
     fn action_down(&mut self) {
-        if self.action_idx + 1 < Action::ALL.len() {
+        let max = if self.show_extra {
+            Action::ALL.len()
+        } else {
+            9
+        };
+        if self.action_idx + 1 < max {
             self.action_idx += 1;
             self.param.clear();
             self.param_cursor = 0;
@@ -809,9 +816,9 @@ fn draw(f: &mut Frame, app: &mut App) {
     let form = cols[1];
     let needs_param = app.needs_param();
     let param_h: u16 = if needs_param { 3 } else { 0 };
-    let action_count = Action::ALL.len() as u16;
-    // +1 for visual separator line, +2 for block borders
-    let action_h: u16 = action_count + 3;
+    let visible_count = if app.show_extra { Action::ALL.len() } else { 9 } as u16;
+    // +1 for the More/Less toggle row, +2 for block borders
+    let action_h: u16 = visible_count + 3;
     let last_run_h = if app.last_run.is_some() { 1u16 } else { 0 };
 
     let rows = Layout::default()
@@ -847,17 +854,14 @@ fn draw(f: &mut Frame, app: &mut App) {
     // Action list
     {
         let focused = app.focus == Focus::Actions;
-        let mut items: Vec<ListItem> = Vec::with_capacity(Action::ALL.len() + 1);
+        let visible = if app.show_extra {
+            Action::ALL
+        } else {
+            &Action::ALL[..9]
+        };
+        let mut items: Vec<ListItem> = Vec::with_capacity(visible.len() + 1);
 
-        for (i, a) in Action::ALL.iter().enumerate() {
-            // Visual separator between built-in (0-8) and extra (9+)
-            if i == 9 {
-                items.push(ListItem::new(Line::from(vec![Span::styled(
-                    "  ───────────────────────────────────────",
-                    style_dim(),
-                )])));
-            }
-
+        for (i, a) in visible.iter().enumerate() {
             let selected = i == app.action_idx;
             let (key_style, icon_style, name_style, desc_style) = if selected && focused {
                 (
@@ -891,23 +895,26 @@ fn draw(f: &mut Frame, app: &mut App) {
             items.push(ListItem::new(Line::from(vec![
                 Span::styled(format!(" [{}]", a.shortcut()), key_style),
                 Span::styled(format!(" {} ", a.icon()), icon_style),
-                Span::styled(format!("{:<8}", a.name()), name_style),
-                Span::styled("  ", Style::default()),
+                Span::styled(format!("{:<10}", a.name()), name_style),
                 Span::styled(a.desc(), desc_style),
             ])));
         }
 
-        // offset selection for the separator line
-        let display_sel = if app.action_idx >= 9 {
-            app.action_idx + 1
+        // More / Less toggle row
+        let toggle_label = if app.show_extra {
+            " [Space] Less ▴  share watch punch route mount"
         } else {
-            app.action_idx
+            " [Space] More ▾  share watch punch route mount"
         };
-        let mut action_state = ListState::default();
-        action_state.select(Some(display_sel));
+        items.push(ListItem::new(Line::from(Span::styled(
+            toggle_label,
+            style_dim(),
+        ))));
 
-        let shortcut_hint =
-            Line::from(Span::styled(" [1-9·0·w·p·r·m] ", style_dim())).right_aligned();
+        let mut action_state = ListState::default();
+        action_state.select(Some(app.action_idx));
+
+        let shortcut_hint = Line::from(Span::styled(" [1-9] ", style_dim())).right_aligned();
         let list = List::new(items).block(
             Block::default()
                 .title_top(Line::from(vec![
@@ -1008,6 +1015,8 @@ fn draw(f: &mut Frame, app: &mut App) {
                 Span::styled(" ↑↓/jk", style_dim()),
                 sep.clone(),
                 Span::styled("Tab switch", style_dim()),
+                sep.clone(),
+                Span::styled("Space expand", style_dim()),
                 sep.clone(),
                 Span::styled("Enter run", style_dim()),
                 sep.clone(),
@@ -1142,11 +1151,14 @@ fn run_command(args: &[String]) -> i32 {
     let Ok(exe) = std::env::current_exe() else {
         return 1;
     };
-    std::process::Command::new(exe)
+    let code = std::process::Command::new(exe)
         .args(args)
         .status()
         .map(|s| s.code().unwrap_or(1))
-        .unwrap_or(1)
+        .unwrap_or(1);
+    eprint!("\n\x1b[2m── press Enter to return to seam ──\x1b[0m ");
+    let _ = std::io::stdin().read_line(&mut String::new());
+    code
 }
 
 // ── Entry point ───────────────────────────────────────────────────────────────
@@ -1222,10 +1234,20 @@ pub fn run() -> Result<()> {
             // Action shortcuts — work when not in a text field
             KeyCode::Char(c) if !in_text => {
                 if let Some(idx) = Action::from_shortcut(c) {
+                    // Extra action shortcuts auto-expand the section
+                    if idx >= 9 {
+                        app.show_extra = true;
+                    }
                     app.set_action(idx);
                     continue;
                 }
                 match c {
+                    ' ' if app.focus == Focus::Actions => {
+                        app.show_extra = !app.show_extra;
+                        if !app.show_extra && app.action_idx >= 9 {
+                            app.action_idx = 8;
+                        }
+                    }
                     'j' => match app.focus {
                         Focus::Actions => app.action_down(),
                         Focus::Recent => app.recent_down(),

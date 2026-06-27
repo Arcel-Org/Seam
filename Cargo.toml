@@ -11,7 +11,7 @@ license = "AGPL-3.0-only"
 fuse = ["dep:fuser"]
 
 [dependencies]
-fuser = { version = "0.14", optional = true }
+fuser = { version = "0.17", optional = true }
 chacha20poly1305 = "0.10"
 aes-gcm = "0.10"
 chacha20 = "0.9"
@@ -51,8 +51,7 @@ libc = "0.2"
 fips204 = { version = "0.4", features = ["ml-dsa-65", "default-rng"] }
 ratatui = "0.30"
 crossterm = "0.28"
-russh = "0.46"
-russh-keys = "0.46"
+russh = { version = "0.61", default-features = false, features = ["flate2", "aws-lc-rs"] }
 notify = "6"
 async-trait = "0.1"
 

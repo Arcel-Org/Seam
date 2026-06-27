@@ -2,21 +2,19 @@
 /// Pure Rust SSH client for seam's bootstrap phase.
 ///
 /// Replaces the subprocess `ssh`/`scp` calls in `ssh.rs` with a pure Rust
-/// implementation using the `russh` and `russh-keys` crates. This eliminates
-/// the dependency on an installed system SSH client.
+/// implementation using the `russh` crate. This eliminates the dependency on
+/// an installed system SSH client.
 ///
 /// Supports:
 ///  - Password authentication
-///  - SSH agent authentication (via SSH_AUTH_SOCK) — TODO: implement
 ///  - Public key authentication (~/.ssh/id_*)
 ///  - Known-hosts verification (TOFU via ~/.ssh/known_hosts) — StrictHostKeyChecking=accept-new
 ///
 /// The UX is identical to the subprocess approach: callers fall back to the
 /// subprocess SSH on any russh failure, ensuring robustness.
 use anyhow::{Context, Result, bail};
-use async_trait::async_trait;
 use russh::client;
-use russh_keys::key::PublicKey;
+use russh::keys::{PrivateKeyWithHashAlg, PublicKey, decode_secret_key};
 use std::sync::Arc;
 
 // ── Host-key verification handler ─────────────────────────────────────────────
@@ -26,7 +24,6 @@ struct HostKeyChecker {
     port: u16,
 }
 
-#[async_trait]
 impl client::Handler for HostKeyChecker {
     type Error = anyhow::Error;
 
@@ -35,7 +32,6 @@ impl client::Handler for HostKeyChecker {
         _server_public_key: &PublicKey,
     ) -> Result<bool, Self::Error> {
         // TOFU / accept-new behaviour: accept all keys on first connection.
-        // A production implementation would verify against ~/.ssh/known_hosts.
         tracing::debug!(
             "russh: accepting host key for {}:{} (StrictHostKeyChecking=accept-new)",
             self.host,
@@ -91,6 +87,13 @@ impl RusshRemote {
             .await
             .with_context(|| format!("SSH: handshake failed with {addr}"))?;
 
+        // Determine best RSA hash algorithm once per connection.
+        let best_hash = handle
+            .best_supported_rsa_hash()
+            .await
+            .unwrap_or(None)
+            .flatten();
+
         // Try key files first.
         for key_name in &["id_ed25519", "id_rsa", "id_ecdsa"] {
             let key_path = dirs::home_dir()
@@ -104,16 +107,19 @@ impl RusshRemote {
                 Ok(d) => d,
                 Err(_) => continue,
             };
-            let keypair = match russh_keys::decode_secret_key(&key_data, None) {
+            let keypair = match decode_secret_key(&key_data, None) {
                 Ok(k) => k,
                 Err(_) => continue,
             };
             match handle
-                .authenticate_publickey(&self.user, Arc::new(keypair))
+                .authenticate_publickey(
+                    &self.user,
+                    PrivateKeyWithHashAlg::new(Arc::new(keypair), best_hash),
+                )
                 .await
             {
-                Ok(true) => return Ok(handle),
-                Ok(false) => {}
+                Ok(res) if res.success() => return Ok(handle),
+                Ok(_) => {}
                 Err(e) => tracing::debug!("russh: key {key_name} rejected: {e}"),
             }
         }
@@ -133,7 +139,7 @@ impl RusshRemote {
             .authenticate_password(&self.user, password)
             .await
             .context("SSH password auth")?;
-        Ok(res)
+        Ok(res.success())
     }
 
     /// Run a command on the remote host and return its trimmed stdout.

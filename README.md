@@ -15,11 +15,11 @@
 curl -fsSL https://install.north9.org/seam.sh | sh
 ```
 
-Seam replaces `scp`, `netcat`, and `ssh -L` with a single tool that is faster on real-world links and safe against quantum computers. All traffic uses a hybrid Noise_XX + ML-KEM-768 handshake so session keys cannot be decrypted even if elliptic-curve cryptography is broken in the future.
+Seam replaces `scp`, `netcat`, `ssh -L`, and `rsync` with a single tool that is faster on real-world links and safe against quantum computers. All traffic uses a hybrid Noise_XX + ML-KEM-768 handshake so session keys cannot be decrypted even if elliptic-curve cryptography is broken in the future.
 
 ---
 
-## Why seam
+## Why Seam
 
 TCP was designed in 1974. SSH was bolted on top. The result is a stack that:
 
@@ -44,8 +44,6 @@ Seam fixes all three.
 
 seam transfers the same data in about 30% less wall time than scp on a clean local link. On a WAN path with 100 ms RTT and 0.5% loss the gap widens to 2–4×, because seam's forward error correction absorbs most lost packets without a round-trip retransmit.
 
-The FEC arbiter adapts in real time: on high-latency links (RTT > 100 ms) seam proactively adds light FEC repair symbols even before any loss is observed, trading ~10% overhead for zero ARQ round-trips on those paths.
-
 ---
 
 ## How Seam compares
@@ -64,11 +62,14 @@ The FEC arbiter adapts in real time: on high-latency links (RTT > 100 ms) seam p
 | Audit logging (SP 800-53) | ✅ | ❌ | Partial | Unknown |
 | Open source | ✅ AGPL-3.0 | ✅ MIT | ✅ | ❌ closed |
 | Air-gap traversal | ✅ --via relay | ❌ | ❌ | ❌ |
-| File transfer built-in | ✅ seam cp/sync | ❌ | ✅ scp | ❌ |
+| File transfer built-in | ✅ seam cp/sync/share | ❌ | ✅ scp | ❌ |
+| Live directory sync | ✅ seam watch | ❌ | ❌ | ❌ |
+| Multi-hop routing | ✅ seam route | ❌ | ❌ | ❌ |
+| NAT hole punching | ✅ seam punch | ❌ | ❌ | ❌ |
 | Port scanner built-in | ✅ seam scan | ❌ | ❌ | ❌ |
 | Proxy (SOCKS5) built-in | ✅ seam proxy | ❌ | ✅ | ❌ |
-
-WireGuard and SSH rely on classical elliptic-curve cryptography and will be vulnerable to harvest-now-decrypt-later attacks once cryptographically-relevant quantum computers exist. QuSecure QuProtect addresses the quantum risk but is closed-source and targets enterprise licensing. Seam is the only open-source protocol combining FIPS 203/204 post-quantum cryptography with traffic analysis resistance and multi-path anti-jamming.
+| FUSE filesystem | ✅ seam mount | ❌ | ❌ | ❌ |
+| Interactive TUI | ✅ | ❌ | ❌ | ❌ |
 
 ---
 
@@ -104,6 +105,44 @@ Seam respects your `~/.ssh/config` (Host aliases, User, Port, IdentityFile) and 
 
 ---
 
+## Interactive TUI
+
+Run `seam` with no arguments to launch the interactive terminal UI:
+
+```sh
+seam
+```
+
+```
+╭─ Seam ──────────────────────────── v0.1.39 ─╮  ╭─ Actions ──────────────────╮
+│  Host  alice@server.example.com             │  │  1 ⬆  Copy file/dir        │
+│                                             │  │  2 ⬇  Sync directory       │
+╰─────────────────────────────────────────────╯  │  3 ⧎  Open tunnel          │
+                                                  │  4 ↔  Pipe / remote shell  │
+╭─ Param ─────────────────────────────────────╮  │  5 📊 Stats                │
+│  ./report.pdf → :/home/alice/report.pdf     │  │  6 🔬 Bench                │
+╰─────────────────────────────────────────────╯  │  7 📁 List remote          │
+                                                  │  w 👁 Watch directory      │
+╭─ Recent ────────────────────────────────────╮  │  p 🔌 Proxy (SOCKS5)      │
+│  ✓ cp ./data.tar.gz → alice@server:/backups │  │  r 🛤  Route (multi-hop)   │
+│  ✓ tunnel 5432 → db.internal:5432           │  │  m 🗻 Mount (FUSE)         │
+│  ✗ cp ./large.iso → alice@server:/data      │  ╰────────────────────────────╯
+╰─────────────────────────────────────────────╯
+```
+
+**Keyboard shortcuts:**
+
+| Key | Action |
+|---|---|
+| `1`–`9`, `w`, `p`, `r`, `m` | Jump directly to an action |
+| `Tab` / `Shift-Tab` | Cycle focus: Host → Actions → Param → Recent |
+| `↑↓` / `j k` | Move in action/recent list |
+| `Enter` | Run command or re-run a recent entry |
+| `?` | Toggle help overlay |
+| `Esc` / `q` | Quit |
+
+---
+
 ## Commands
 
 ### `seam cp` — file transfer
@@ -125,7 +164,58 @@ seam cp --resume ./large.iso alice@server:/data/
 seam cp --no-compress ./archive.tar.gz alice@server:/backups/
 ```
 
-seam bootstraps itself on the remote over SSH if it is not already installed — no manual setup on the server side.
+seam bootstraps itself on the remote over SSH if it is not already installed — no manual setup on the server side. The bootstrap uses a pure-Rust SSH implementation with no dependency on a system `ssh` binary.
+
+---
+
+### `seam watch` — live directory sync
+
+Watch a local directory for changes and sync them to a remote host in real time. Debounces rapid edits into batches with a 100 ms window.
+
+```sh
+seam watch ./src alice@server:/app/src
+
+# Adjust debounce window
+seam watch ./config alice@server:/etc/app --debounce-ms 250
+```
+
+Useful for live development against a remote machine — edit locally, code runs remotely.
+
+---
+
+### `seam share` — one-time encrypted file sharing
+
+Start a local seam receiver, generate a one-time auth token, and print a ready-to-run `seam cp` command for the recipient. The server shuts down automatically after the download completes.
+
+```sh
+# Share a single file (auto-expires after 1 download)
+seam share ./report.pdf
+
+# Share a directory, allow 3 downloads, expire after 2 hours
+seam share ./dataset/ --times 3 --expire 2h
+```
+
+Output:
+```
+  seam share  report.pdf  (1 download · expires never)
+  ──────────────────────────────────────────────────────
+  Recipient runs:
+    seam cp --token abc123... 203.0.113.5:59241:/report.pdf ./
+
+  Waiting for connection…
+```
+
+---
+
+### `seam sync` — incremental directory sync
+
+```sh
+# Push local changes to remote (rsync-style)
+seam sync ./dataset/ alice@server:/data/dataset
+
+# Pull remote to local
+seam sync alice@server:/data/dataset ./dataset/
+```
 
 ---
 
@@ -142,9 +232,6 @@ seam pipe alice@server -- journalctl -f
 
 # Pipe data between machines
 tar cf - ./project | seam pipe alice@server -- tar xf - -C /dest
-
-# Remote port scan (pipe through any tool)
-seam pipe alice@server -- nmap -sV 10.0.0.0/24
 ```
 
 ---
@@ -168,7 +255,7 @@ psql -h localhost -p 5432 -U myuser mydb
 
 ### `seam fwd` — reverse port forward
 
-Expose a port from a remote machine back to your local machine. Like `ssh -R` but over seam's UDP transport — works through double-NAT, adapts to lossy paths.
+Expose a port from a remote machine back to your local machine. Like `ssh -R` over seam's UDP transport — works through double-NAT.
 
 ```sh
 # Remote server listens on :3000, forwards connections to local :8080
@@ -176,21 +263,78 @@ seam fwd alice@server:3000 8080
 
 # Expose a local dev service to a remote machine
 seam fwd alice@bastion:9090 8080 --local-host 0.0.0.0
-
-# Custom SSH port
-seam fwd -p 2222 alice@server:5432 5432
 ```
 
-Useful for:
-- Exposing a local dev server to a remote machine for testing
-- Reverse tunneling without a full Seamless relay setup
-- Giving a temporary remote endpoint to your laptop
+---
+
+### `seam route` — multi-hop routing
+
+Build a chain of encrypted hops through intermediate seam relay nodes. Useful for reaching isolated networks or when direct connections are not possible.
+
+```sh
+# Two-hop: local → relay1 → dest
+seam route --via relay1.example.com alice@dest cp ./file :/remote/path
+
+# Three-hop: local → relay1 → relay2 → dest
+seam route --via relay1.example.com --via relay2.example.com alice@dest shell "uptime"
+```
+
+Each intermediate node must have `seam serve` running. The connection is end-to-end post-quantum encrypted — intermediate hops see only ciphertext.
+
+---
+
+### `seam punch` — NAT hole punching
+
+Discover your external address via STUN and optionally punch a UDP hole to a peer behind NAT so a direct seam connection can be established.
+
+```sh
+# Discover external address (STUN lookup only)
+seam punch --stun stun.l.google.com:19302
+
+# Punch a hole to a peer
+seam punch --peer 203.0.113.5:4433 --stun stun.l.google.com:19302
+```
+
+Used as a building block for peer-to-peer seam connections through symmetric NAT.
+
+---
+
+### `seam mount` — FUSE filesystem
+
+Mount a remote directory as a local filesystem. Requires FUSE to be available on the host.
+
+```sh
+seam mount alice@server:/data /mnt/remote
+# Files appear at /mnt/remote, all I/O is post-quantum encrypted
+fusermount -u /mnt/remote
+```
+
+---
+
+### `seam daemon` — background daemon
+
+Run a seam daemon process that manages persistent connections and listens on a local socket.
+
+```sh
+seam daemon start    # start daemon in background
+seam daemon status   # check running state
+seam daemon stop     # stop daemon
+```
+
+---
+
+### `seam proxy` — SOCKS5 proxy
+
+Turn any seam remote into a SOCKS5 proxy. Route browser or app traffic through a remote host over post-quantum encryption.
+
+```sh
+seam proxy alice@server --local-port 1080
+# Configure applications to use SOCKS5 proxy at 127.0.0.1:1080
+```
 
 ---
 
 ### `seam stats` — connection statistics
-
-Measure real-time connection quality to a remote host.
 
 ```sh
 seam stats alice@server          # 5-second measurement window
@@ -210,28 +354,19 @@ seam stats alice@server --duration 10
 
 ### `seam bench` — throughput test
 
-Measure actual seam speed to a host and compare against known baselines.
-
 ```sh
 seam bench alice@server          # 100 MiB test
 seam bench alice@server --mib 1000
-
-# Use BBR congestion control instead of CUBIC
-SEAM_CC=bbr seam bench alice@server
+SEAM_CC=bbr seam bench alice@server   # test with BBR congestion control
 ```
 
-```
-  ────────────────────────────────────────────────────────────────────
-  tool     throughput                            MiB/s   notes
-  ────────────────────────────────────────────────────────────────────
-  seam     █████████████████████████████████       847   0.706 Gbps  ← measured
-  scp      █████████████████░░░░░░░░░░░░░░░░       400   encrypted TCP  (est.)
-  rsync    ████████████████░░░░░░░░░░░░░░░░░       380   encrypted TCP  (est.)
-  netcat   ██████████████████████████████████░     950   unencrypted TCP  (est.)
-  ────────────────────────────────────────────────────────────────────
+---
 
-  seam is 2.1× faster than scp on this path
-  post-quantum safe · UDP · FEC recovery · 247 µs handshake
+### `seam scan` — port scanner
+
+```sh
+seam scan alice@server 10.0.0.0/24    # scan via remote pivot
+seam scan alice@server --ports 22,80,443,8080
 ```
 
 ---
@@ -240,26 +375,18 @@ SEAM_CC=bbr seam bench alice@server
 
 ```sh
 seam ls alice@server:/var/log
-seam ls alice@server:/data  # trailing slash optional
 ```
-
-Lists files with Unix-style permissions, human-readable sizes, and names.
 
 ---
 
 ### `seam config` — persistent settings
 
-Manage defaults so you don't have to pass flags every time.
-
 ```sh
 seam config init                  # create ~/.config/seam/config.toml
 seam config list                  # show all settings
-seam config get cc                # current value
-seam config set cc bbr            # switch default CC to BBR
+seam config set cc bbr            # switch default congestion control
 seam config set compress false    # disable zstd by default
 ```
-
-Config file location: `~/.config/seam/config.toml`.
 
 ---
 
@@ -276,7 +403,7 @@ seam update --check   # just print available version
 
 Every seam command follows the same pattern:
 
-1. **SSH bootstrap** — seam uses your existing SSH config to reach the remote, starts a receiver process, and reads back connection parameters. No new ports need to be opened.
+1. **SSH bootstrap** — seam uses your existing SSH config to reach the remote, starts a receiver process, and reads back connection parameters. No new ports need to be opened. A pure-Rust SSH implementation means no system `ssh` dependency is required.
 2. **Post-quantum handshake** — client and server perform Noise_XX augmented with ML-KEM-768 in ~247 µs. Each side contributes randomness; neither can force a weak key.
 3. **Encrypted UDP transport** — all data flows over a direct UDP path. The transport layer handles loss recovery, ordering, flow control, and multiplexing internally.
 
@@ -287,12 +414,15 @@ Every seam command follows the same pattern:
 | **CUBIC congestion control** | Fills the pipe without overwhelming routers (switch to BBR with `SEAM_CC=bbr`) |
 | **ARQ retransmission** | Resends dropped packets with exponential backoff |
 | **GF(2⁸) Reed-Solomon FEC** | Recovers up to *r* losses per *k*-packet group without a round-trip; adapts overhead dynamically via EWMA loss tracking |
-| **Adaptive FEC arbiter** | Pure ARQ on clean links, hybrid FEC+ARQ at moderate loss, pure FEC above 15% loss; automatically adds light FEC on high-latency paths (RTT > 100 ms) to avoid ARQ round-trips |
+| **Adaptive FEC arbiter** | Pure ARQ on clean links, hybrid FEC+ARQ at moderate loss, pure FEC above 15% loss; automatically adds light FEC on high-latency paths (RTT > 100 ms) |
+| **Buffer pool** | 256-slot RAII pool for 1400 B UDP payload buffers — eliminates per-packet heap allocation on the hot path |
 | **Multi-stream mux** | Tunnel, bench, and pipe share one session; streams are independent |
 | **DDoS-resistant handshake** | BLAKE3 cookie challenge before any per-client state is allocated |
 | **Header protection** | Session ID and packet number encrypted in addition to payload |
-| **Flow control** | Dynamic 16 MiB windows extended via MaxData frames; control packets bypass congestion control |
+| **Flow control** | Dynamic 16 MiB windows extended via MaxData frames |
+| **Connection migration** | PathChallenge/PathResponse for IP/port change without session reset |
 | **Keepalive** | Automatic Ping/Pong every 15 s; idle timeout after 60 s |
+| **Pure-Rust SSH** | Bootstrap SSH with no system `ssh` dependency; falls back to system ssh on failure |
 
 ---
 
@@ -304,21 +434,25 @@ Every byte sent over seam is encrypted with **ChaCha20-Poly1305**, an AEAD ciphe
 
 ### The handshake
 
-Seam uses **Noise_XX** (mutual authentication with forward secrecy) combined with **ML-KEM-768** (CRYSTALS-Kyber, NIST post-quantum standard). The hybrid construction means:
+Seam uses **Noise_XX** (mutual authentication with forward secrecy) combined with **ML-KEM-768** (CRYSTALS-Kyber, NIST FIPS 203 post-quantum standard). The hybrid construction means:
 
 - A classical adversary cannot break the session (x25519 elliptic-curve hardness)
 - A quantum adversary cannot break the session (ML-KEM-768 hardness)
 - Traffic recorded today cannot be decrypted later even if one primitive is broken in the future
 
-Both parties authenticate with long-term identity keypairs and exchange ephemeral keys for forward secrecy.
+Identity keys are signed with **ML-DSA-65** (NIST FIPS 204). Forward secrecy is maintained through a **double ratchet** that rotates keys on every packet.
+
+### Supply chain security
+
+Seam runs `cargo audit` in CI on every push. As of v0.1.39, **zero known vulnerabilities** in the dependency tree.
 
 ### Anti-replay
 
-Each packet carries a 64-bit sequence number. The receiver maintains a sliding bitmap window; duplicate or out-of-window packets are silently dropped. An attacker who captures and replays a packet cannot cause it to be accepted a second time.
+Each packet carries a 64-bit sequence number. The receiver maintains a sliding bitmap window; duplicate or out-of-window packets are silently dropped.
 
 ### DDoS resistance
 
-The server commits no per-client memory until the client echoes a valid BLAKE3 cookie that is tied to its source IP and expires after 30 seconds. This prevents an attacker from exhausting server memory by spoofing connection requests.
+The server commits no per-client memory until the client echoes a valid BLAKE3 cookie that is tied to its source IP and expires after 30 seconds.
 
 ### Honest disclaimer
 
@@ -344,10 +478,11 @@ Seam is pre-1.0 software. The cryptographic design follows well-established patt
 - seam is optimised for lossy / high-latency paths. On pristine LAN, scp may be similar. Use `seam bench` to verify.
 
 ### Verbose logging
-- Add `-v` (info), `-vv` (debug), or `-vvv` (trace) to any command:
-  ```sh
-  seam -vv cp ./data user@host:/dest
-  ```
+```sh
+seam -v cp ./data user@host:/dest    # info
+seam -vv cp ./data user@host:/dest   # debug
+seam -vvv cp ./data user@host:/dest  # trace
+```
 
 ---
 
@@ -358,8 +493,7 @@ Seam is pre-1.0 software. The cryptographic design follows well-established patt
 git clone https://github.com/North9-Labs/Seam
 cd Seam
 cargo build --release --bin seam
-./target/release/seam --version        # Linux / macOS
-# target\release\seam.exe --version    # Windows
+./target/release/seam --version
 ```
 
 Test suite:
@@ -381,6 +515,12 @@ cargo install cargo-fuzz
 cargo fuzz run packet_decode
 ```
 
+FUSE support (Linux only):
+
+```sh
+cargo build --release --features fuse
+```
+
 ---
 
 ## Library Usage
@@ -389,8 +529,6 @@ cargo fuzz run packet_decode
 # Cargo.toml
 seam-protocol = { git = "https://github.com/North9-Labs/Seam" }
 ```
-
-### Client / Server
 
 ```rust
 use seam_protocol::{api::{Client, Server}, handshake::IdentityKeypair};
@@ -406,28 +544,14 @@ let client = Client::bind("0.0.0.0:0".parse()?, id).await?;
 let conn = client.connect(server_addr, &server_x25519, &server_kem_pk).await?;
 ```
 
-### Multiplexed streams
-
-Streams implement `AsyncRead + AsyncWrite + Unpin` and compose directly with tokio I/O utilities.
+Streams implement `AsyncRead + AsyncWrite + Unpin` and compose directly with tokio I/O utilities:
 
 ```rust
 use seam_protocol::tunnel::SeamMux;
 
-let mux = SeamMux::new(conn);  // wraps a SeamConn
-
-// Open a stream from either side
-let mut stream = mux.open_stream().await;           // locally-initiated
-let mut stream = mux.accept_stream().await.unwrap(); // remote-initiated
-
-// Drop in anywhere tokio I/O is expected
+let mux = SeamMux::new(conn);
+let mut stream = mux.open_stream().await;
 tokio::io::copy_bidirectional(&mut stream, &mut tcp_socket).await?;
-```
-
-### Datagrams
-
-```rust
-// Unreliable, unordered — useful for real-time data
-conn.send_datagram(b"ping").await?;
 ```
 
 ---
@@ -457,27 +581,43 @@ conn.send_datagram(b"ping").await?;
 
 ```
 src/
-├── api.rs          # Client, Server, SeamConn
-├── tunnel.rs       # SeamMux + SeamStream (AsyncRead + AsyncWrite)
-├── crypto/         # ChaCha20-Poly1305, header protection, anti-replay
-├── handshake/      # Noise_XX + ML-KEM-768, DDoS-resistant cookie
-├── session/        # Streams, ARQ, flow control, priority scheduling
-├── fec/            # GF(2⁸) arithmetic, systematic RS codec, adaptive FEC/ARQ arbiter
-└── transport/      # Connection, endpoint, CUBIC/BBR CC, pacer, path probing
+├── api.rs              # Client, Server, SeamConn
+├── bufpool.rs          # 256-slot RAII buffer pool (eliminates per-packet allocation)
+├── tunnel.rs           # SeamMux + SeamStream (AsyncRead + AsyncWrite)
+├── crypto/             # ChaCha20-Poly1305, header protection, anti-replay
+├── handshake/          # Noise_XX + ML-KEM-768, DDoS-resistant cookie
+├── session/            # Streams, ARQ, flow control, priority scheduling
+├── fec/                # GF(2⁸) arithmetic, systematic RS codec, adaptive FEC/ARQ arbiter
+└── transport/
+    ├── connection.rs   # Connection state machine, path migration
+    ├── endpoint.rs     # Multi-connection endpoint
+    ├── nat.rs          # STUN client (RFC 5389), UDP hole punching
+    └── ...             # CUBIC/BBR CC, pacer
 
 src/bin/seam/
-├── main.rs         # CLI entry point
-├── copy.rs         # seam cp
-├── pipe.rs         # seam pipe
-├── tunnel.rs       # seam tunnel (local port forward, ssh -L)
-├── fwd.rs          # seam fwd (reverse port forward, ssh -R)
-├── bench.rs        # seam bench
-├── stats.rs        # seam stats (live connection metrics)
-├── ls.rs           # seam ls
-└── config.rs       # seam config
+├── main.rs             # CLI entry point, interactive TUI launcher
+├── tui.rs              # ratatui interactive TUI (keyboard-driven)
+├── copy.rs             # seam cp (with pure-Rust SSH bootstrap)
+├── watch.rs            # seam watch (filesystem event watcher, 100ms debounce)
+├── share.rs            # seam share (one-time file sharing, token auth)
+├── sync.rs             # seam sync (incremental directory sync)
+├── pipe.rs             # seam pipe
+├── tunnel.rs           # seam tunnel (local port forward)
+├── fwd.rs              # seam fwd (reverse port forward)
+├── route.rs            # seam route (multi-hop through relay nodes)
+├── punch.rs            # seam punch (STUN + NAT hole punching)
+├── mount.rs            # seam mount (FUSE filesystem, --features fuse)
+├── daemon.rs           # seam daemon (background process, subprocess-based)
+├── proxy.rs            # seam proxy (SOCKS5)
+├── bench.rs            # seam bench (throughput test)
+├── stats.rs            # seam stats (live connection metrics)
+├── scan.rs             # seam scan (port scanner)
+├── ls.rs               # seam ls (remote file listing)
+├── russh_client.rs     # pure-Rust SSH (russh 0.61, no system ssh required)
+└── config.rs           # seam config
 
-benches/            # Criterion benchmarks
-fuzz/               # cargo-fuzz targets
+benches/                # Criterion benchmarks
+fuzz/                   # cargo-fuzz targets
 ```
 
 ---

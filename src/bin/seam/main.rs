@@ -4,6 +4,7 @@ mod completions;
 mod config;
 mod connect;
 mod copy;
+#[cfg(unix)]
 mod daemon;
 mod doctor;
 mod forward;
@@ -12,6 +13,7 @@ mod health;
 mod key;
 mod known_hosts;
 mod ls;
+#[cfg(unix)]
 mod mount;
 mod perf;
 mod ping;
@@ -199,10 +201,12 @@ enum Commands {
     Route(route::RouteArgs),
 
     /// Mount a remote Seam filesystem via FUSE (requires --features fuse)
+    #[cfg(unix)]
     #[command(name = "mount")]
     Mount(mount::MountArgs),
 
     /// Manage the background Seam connection daemon
+    #[cfg(unix)]
     #[command(name = "daemon")]
     Daemon(daemon::DaemonArgs),
 
@@ -420,10 +424,12 @@ async fn main() -> Result<()> {
             let dest = args.dest.clone();
             audited!("route", &dest, vec![], route::run(args, fips_active).await)
         }
+        #[cfg(unix)]
         Some(Commands::Mount(args)) => {
             let remote = args.remote.clone();
             audited!("mount", &remote, vec![], mount::run(args).await)
         }
+        #[cfg(unix)]
         Some(Commands::Daemon(args)) => daemon::run(args).await,
         // Hidden internal subcommands — not audited (remote side, not client-initiated)
         Some(Commands::ForwardRecv(args)) => forward::run_recv(args).await,

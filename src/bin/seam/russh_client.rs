@@ -149,7 +149,10 @@ impl RusshRemote {
             .channel_open_session()
             .await
             .context("SSH: open session")?;
-        channel.exec(true, cmd.as_bytes()).await.context("SSH: exec")?;
+        channel
+            .exec(true, cmd.as_bytes())
+            .await
+            .context("SSH: exec")?;
 
         let mut output = String::new();
         let mut ch = channel;
@@ -232,8 +235,7 @@ impl RusshRemote {
         local: &std::path::Path,
         remote_path: &str,
     ) -> Result<()> {
-        let data = std::fs::read(local)
-            .with_context(|| format!("read {}", local.display()))?;
+        let data = std::fs::read(local).with_context(|| format!("read {}", local.display()))?;
         let len = data.len();
 
         eprintln!(
@@ -268,13 +270,20 @@ impl RusshRemote {
 
         // Send file header: "C0755 <size> <filename>\n"
         let header = format!("C0755 {len} {remote_file}\n");
-        ch.data(header.as_bytes()).await.context("SCP: send header")?;
+        ch.data(header.as_bytes())
+            .await
+            .context("SCP: send header")?;
         // Wait for server \0 after header.
         loop {
             match ch.wait().await {
                 Some(russh::ChannelMsg::Data { ref data }) => {
-                    if data.first() == Some(&0) { break; }
-                    bail!("SCP header ack error: {}", String::from_utf8_lossy(data).trim());
+                    if data.first() == Some(&0) {
+                        break;
+                    }
+                    bail!(
+                        "SCP header ack error: {}",
+                        String::from_utf8_lossy(data).trim()
+                    );
                 }
                 None | Some(russh::ChannelMsg::Eof) => bail!("SCP: closed after header"),
                 Some(_) => {}
@@ -285,15 +294,24 @@ impl RusshRemote {
         ch.data(data.as_slice()).await.context("SCP: send data")?;
 
         // Send trailing \0.
-        ch.data(b"\0".as_ref()).await.context("SCP: send trailing null")?;
+        ch.data(b"\0".as_ref())
+            .await
+            .context("SCP: send trailing null")?;
         // Wait for final \0 ack.
         loop {
             match ch.wait().await {
                 Some(russh::ChannelMsg::Data { ref data }) => {
-                    if data.first() == Some(&0) { break; }
-                    bail!("SCP data ack error: {}", String::from_utf8_lossy(data).trim());
+                    if data.first() == Some(&0) {
+                        break;
+                    }
+                    bail!(
+                        "SCP data ack error: {}",
+                        String::from_utf8_lossy(data).trim()
+                    );
                 }
-                None | Some(russh::ChannelMsg::Eof) | Some(russh::ChannelMsg::ExitStatus { .. }) => break,
+                None
+                | Some(russh::ChannelMsg::Eof)
+                | Some(russh::ChannelMsg::ExitStatus { .. }) => break,
                 Some(_) => {}
             }
         }

@@ -30,11 +30,7 @@ pub struct PunchArgs {
 
 pub async fn run(args: PunchArgs) -> Result<()> {
     let cfg = super::config::Config::load().ok().unwrap_or_default();
-    let stun_server = cfg
-        .stun_server
-        .as_deref()
-        .unwrap_or(&args.stun)
-        .to_string();
+    let stun_server = cfg.stun_server.as_deref().unwrap_or(&args.stun).to_string();
 
     if args.peer.is_none() {
         // Discover-only mode.
@@ -79,9 +75,7 @@ pub async fn run(args: PunchArgs) -> Result<()> {
             println!("our external: {our_ext}");
             println!("verified peer: {verified_peer}");
             eprintln!("\nDirect UDP path established. You can now use:");
-            eprintln!(
-                "  seam ping <seam-server-at-{verified_peer}> (if remote runs seam serve)"
-            );
+            eprintln!("  seam ping <seam-server-at-{verified_peer}> (if remote runs seam serve)");
         }
         Err(e) => {
             eprintln!("hole punch FAILED: {e}");

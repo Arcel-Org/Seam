@@ -94,8 +94,8 @@ async fn start_daemon() -> Result<()> {
     // Spawn a new detached process rather than fork()-in-async.
     // fork() inside a tokio runtime leaves the child with corrupted
     // thread-pool state; spawning a fresh process avoids that entirely.
-    let exe = std::env::current_exe()
-        .map_err(|e| anyhow!("cannot locate current executable: {e}"))?;
+    let exe =
+        std::env::current_exe().map_err(|e| anyhow!("cannot locate current executable: {e}"))?;
 
     let child = std::process::Command::new(&exe)
         .args(["daemon", "_worker"])
@@ -203,8 +203,8 @@ async fn send_request(req: DaemonRequest) -> Result<()> {
 
     let mut lines = BufReader::new(reader).lines();
     if let Ok(Some(line)) = lines.next_line().await {
-        let resp: DaemonResponse = serde_json::from_str(&line)
-            .map_err(|e| anyhow!("invalid response: {e}"))?;
+        let resp: DaemonResponse =
+            serde_json::from_str(&line).map_err(|e| anyhow!("invalid response: {e}"))?;
         match resp {
             DaemonResponse::Ok { message } => println!("{message}"),
             DaemonResponse::Error { message } => bail!("{message}"),
@@ -230,8 +230,8 @@ async fn status() -> Result<()> {
 
     let mut lines = BufReader::new(reader).lines();
     if let Ok(Some(line)) = lines.next_line().await {
-        let resp: DaemonResponse = serde_json::from_str(&line)
-            .map_err(|e| anyhow!("invalid response: {e}"))?;
+        let resp: DaemonResponse =
+            serde_json::from_str(&line).map_err(|e| anyhow!("invalid response: {e}"))?;
         match resp {
             DaemonResponse::Status { pid, connections } => {
                 println!("seam daemon running (pid {pid})");
@@ -239,7 +239,11 @@ async fn status() -> Result<()> {
                     println!("  no configured connections");
                 } else {
                     for c in &connections {
-                        let status = if c.connected { "connected" } else { "disconnected" };
+                        let status = if c.connected {
+                            "connected"
+                        } else {
+                            "disconnected"
+                        };
                         println!("  {} → {}  [{}]", c.name, c.host, status);
                     }
                 }

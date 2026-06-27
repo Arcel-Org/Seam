@@ -103,7 +103,11 @@ impl StunClient {
             }
         }
 
-        bail!("STUN: no response from {} after {} attempts", self.server, STUN_RETRIES);
+        bail!(
+            "STUN: no response from {} after {} attempts",
+            self.server,
+            STUN_RETRIES
+        );
     }
 }
 
@@ -167,8 +171,7 @@ fn parse_binding_response(data: &[u8], expected_txn: &[u8; 12]) -> Option<Socket
                 mapped = parse_mapped_address(&data[value_start..value_end], false, STUN_MAGIC);
             }
             STUN_ATTR_XOR_MAPPED_ADDRESS => {
-                xor_mapped =
-                    parse_mapped_address(&data[value_start..value_end], true, STUN_MAGIC);
+                xor_mapped = parse_mapped_address(&data[value_start..value_end], true, STUN_MAGIC);
             }
             _ => {}
         }
@@ -301,8 +304,8 @@ impl HolePuncher {
         send_task.abort();
 
         // Unwrap Arc — the send_task is done.
-        let sock = std::sync::Arc::try_unwrap(sock)
-            .map_err(|_| anyhow!("could not unwrap socket Arc"))?;
+        let sock =
+            std::sync::Arc::try_unwrap(sock).map_err(|_| anyhow!("could not unwrap socket Arc"))?;
 
         Ok((sock, our_external, verified_peer))
     }

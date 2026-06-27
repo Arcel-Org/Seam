@@ -69,8 +69,7 @@ pub async fn run(args: WatchArgs, fips_mode: bool) -> Result<()> {
 
     // Shared queue of changed paths (relative to local_path).
     // The watcher thread pushes to this; the sync loop drains it.
-    let pending: Arc<StdMutex<HashMap<PathBuf, Instant>>> =
-        Arc::new(StdMutex::new(HashMap::new()));
+    let pending: Arc<StdMutex<HashMap<PathBuf, Instant>>> = Arc::new(StdMutex::new(HashMap::new()));
     let pending_watcher = pending.clone();
     let local_path_clone = local_path.clone();
 
@@ -141,10 +140,7 @@ pub async fn run(args: WatchArgs, fips_mode: bool) -> Result<()> {
 
         sync_count += 1;
         let n = ready.len();
-        eprintln!(
-            "  [sync #{sync_count}] {} file(s) changed:",
-            n
-        );
+        eprintln!("  [sync #{sync_count}] {} file(s) changed:", n);
         for p in &ready {
             eprintln!("    ~ {}", p.display());
         }

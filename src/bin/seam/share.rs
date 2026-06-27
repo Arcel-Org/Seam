@@ -110,10 +110,11 @@ pub async fn run(args: ShareArgs, fips_mode: bool) -> Result<()> {
     eprintln!();
 
     // Set up expiry timer.
-    let expire_handle: Option<tokio::task::JoinHandle<()>> =
-        expire_secs.map(|secs| tokio::spawn(async move {
+    let expire_handle: Option<tokio::task::JoinHandle<()>> = expire_secs.map(|secs| {
+        tokio::spawn(async move {
             tokio::time::sleep(Duration::from_secs(secs)).await;
-        }));
+        })
+    });
 
     let downloads_allowed = args.times;
 
@@ -144,9 +145,16 @@ pub async fn run(args: ShareArgs, fips_mode: bool) -> Result<()> {
         let dl_allowed = downloads_allowed;
 
         tokio::spawn(async move {
-            if let Err(e) =
-                handle_share_conn(conn, &path, &token_check, compress, fips_mode, &rem, dl_allowed)
-                    .await
+            if let Err(e) = handle_share_conn(
+                conn,
+                &path,
+                &token_check,
+                compress,
+                fips_mode,
+                &rem,
+                dl_allowed,
+            )
+            .await
             {
                 eprintln!("  share: connection error: {e}");
             }
@@ -201,10 +209,7 @@ async fn handle_share_conn(
     }
 
     let left = remaining.load(Ordering::SeqCst);
-    eprintln!(
-        "  serving download ({} remaining)…",
-        left
-    );
+    eprintln!("  serving download ({} remaining)…", left);
 
     // Send HELLO.
     let hello = [
@@ -239,16 +244,7 @@ async fn handle_share_conn(
     for (rel_name, _) in &files {
         pb.set_message(format!("sending {rel_name}"));
         super::copy::send_file(
-            &mut conn,
-            ctrl_sid,
-            path,
-            rel_name,
-            compress,
-            &pb,
-            false,
-            &mut buf,
-            fips_mode,
-            None,
+            &mut conn, ctrl_sid, path, rel_name, compress, &pb, false, &mut buf, fips_mode, None,
         )
         .await?;
     }
@@ -266,7 +262,9 @@ async fn handle_share_conn(
 /// Parse human-readable duration string: "30s", "5m", "2h", "1d".
 fn parse_duration(s: &str) -> Result<u64> {
     if let Some(n) = s.strip_suffix('s') {
-        return n.parse::<u64>().map_err(|_| anyhow!("invalid duration: {s}"));
+        return n
+            .parse::<u64>()
+            .map_err(|_| anyhow!("invalid duration: {s}"));
     }
     if let Some(n) = s.strip_suffix('m') {
         return n

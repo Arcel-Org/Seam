@@ -199,12 +199,8 @@ pub async fn run(args: RouteArgs, fips_mode: bool) -> Result<()> {
     let remaining: Vec<String> = args.subcmd[1..].to_vec();
 
     match subcmd_name {
-        "shell" | "sh" => {
-            super::shell::run_with_mux((*_dest_mux).clone(), remaining, false).await
-        }
-        "pipe" => {
-            super::pipe::run_with_mux((*_dest_mux).clone(), remaining).await
-        }
+        "shell" | "sh" => super::shell::run_with_mux((*_dest_mux).clone(), remaining, false).await,
+        "pipe" => super::pipe::run_with_mux((*_dest_mux).clone(), remaining).await,
         other => {
             bail!(
                 "subcommand '{other}' is not supported through multi-hop routes. \

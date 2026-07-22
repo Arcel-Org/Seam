@@ -4,7 +4,7 @@
 It replaces `scp`, `netcat`, and `ssh -L` with a single binary that is faster
 on real-world links and safe against quantum computers.
 
-Version: **1.0.1** — no third-party security audit yet.
+Version: **1.0.2** — no third-party security audit yet.
 
 ---
 

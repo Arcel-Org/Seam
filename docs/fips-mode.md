@@ -119,7 +119,7 @@ seam serve --fips-mode --port 2222
 Startup output:
 
 ```
-  seam serve — post-quantum Seam daemon  v1.0.1
+  seam serve — post-quantum Seam daemon  v1.0.2
   Listening:   udp://0.0.0.0:2222
   X25519 key:  <hex>
   KEM key:     <hex>…

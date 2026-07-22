@@ -3,8 +3,8 @@
 **Document Classification:** UNCLASSIFIED // FOR OFFICIAL USE ONLY  
 **Version:** 1.0  
 **Date:** 2026-06-05  
-**Prepared by:** North9 Labs  
-**Product:** Seam v0.1.32 — Post-Quantum UDP Transport Protocol  
+**Prepared by:** Arcel  
+**Product:** Seam v1.0.1 — Post-Quantum UDP Transport Protocol  
 **Status:** Pre-audit (third-party security audit not yet completed; see Section 6)
 
 ---
@@ -401,7 +401,7 @@ This section defines each adversary class, their assumed capabilities, and the g
 **Threats:**
 - **SSH host-key impersonation:** If SSH host-key verification is disabled or the SSH known_hosts file is compromised, an adversary controlling the SSH session can substitute a malicious receiver binary, inject false connection parameters, or observe the bootstrap exchange. The Seam session subsequently established would be with the attacker rather than the legitimate server.
 - **SSH credential exposure:** Seam respects `~/.ssh/config` and uses the user's SSH agent or key files. Compromise of SSH private keys or the SSH agent allows the attacker to perform the bootstrap on behalf of the user.
-- **Remote binary execution:** The bootstrap installs a Seam receiver binary on the remote host if one is not already present (downloaded from `https://install.north9.org/seam.sh`). This download is over HTTPS with SHA-256 checksum verification; however, supply-chain compromise of the installer or download server could substitute a malicious binary.
+- **Remote binary execution:** The bootstrap installs a Seam receiver binary on the remote host if one is not already present (downloaded from `https://install.arcel.org/seam.sh`). This download is over HTTPS with SHA-256 checksum verification; however, supply-chain compromise of the installer or download server could substitute a malicious binary.
 
 **Mitigations:** The Seam TOFU pin established after the first successful session mitigates subsequent SSH-MITM attacks — the server's Seam identity must match the stored TOFU pin even if the SSH host key changes. Operators should verify SSH host keys independently and use pre-installed binaries rather than auto-bootstrapping in high-security environments.
 
@@ -493,7 +493,7 @@ The bootstrap phase establishes the initial connection via SSH. The security of 
 
 - If SSH host-key verification is not enforced (e.g., `StrictHostKeyChecking=no` in `~/.ssh/config`), the bootstrap is vulnerable to MITM.
 - If SSH authentication uses password-based credentials, brute-force or phishing attacks against SSH credentials can enable bootstrap-phase MITM.
-- The auto-bootstrap feature downloads a Seam binary from `https://install.north9.org/seam.sh` with SHA-256 checksum verification. A supply-chain compromise of the installer service would compromise the server-side binary.
+- The auto-bootstrap feature downloads a Seam binary from `https://install.arcel.org/seam.sh` with SHA-256 checksum verification. A supply-chain compromise of the installer service would compromise the server-side binary.
 
 **Mitigation:** After the first successful connection with TOFU pinning, subsequent sessions verify the server's Seam identity against the stored pin, regardless of SSH state. However, the very first connection remains dependent on SSH integrity. Operators should pre-install Seam binaries via verified package management rather than relying on auto-bootstrap.
 
@@ -505,7 +505,7 @@ The Seam protocol has not been formally modeled or verified using tools such as 
 
 ### 6.7 No Third-Party Security Audit
 
-As stated in the README: "Seam is pre-1.0 software. The cryptographic design follows well-established patterns and uses audited primitives, but the protocol itself has not undergone a third-party security audit. Do not use it where your threat model requires independently audited software."
+As stated in the README: "Seam is v1.0 software. The cryptographic design follows well-established patterns and uses audited primitives, but the protocol itself has not yet undergone an independent third-party security audit. Do not use it where your threat model requires independently audited software."
 
 **Recommendation for government deployments:** A third-party cryptographic and security protocol audit is strongly recommended before use in environments processing classified information or where loss or compromise of communications would have significant national security impact.
 
@@ -647,4 +647,4 @@ seam audit show --json --since 2026-01-01 > /var/log/seam-export.jsonl
 
 ---
 
-*This document was prepared by North9 Labs for the Seam v0.1.32 release. It reflects the state of the implementation as read from the source tree at the time of writing. Security properties are conditional on correct implementation; evaluators should perform independent code review against the source files cited in Section 5. This document does not constitute a security certification or accreditation.*
+*This document was prepared by Arcel for the Seam v1.0.1 release. It reflects the state of the implementation as read from the source tree at the time of writing. Security properties are conditional on correct implementation; evaluators should perform independent code review against the source files cited in Section 5. This document does not constitute a security certification or accreditation.*

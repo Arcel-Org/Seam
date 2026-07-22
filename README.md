@@ -4,15 +4,15 @@
 
 **Post-quantum encrypted communications over UDP — written in Rust.**
 
-[![CI](https://github.com/North9-Labs/Seam/actions/workflows/ci.yml/badge.svg)](https://github.com/North9-Labs/Seam/actions/workflows/ci.yml)
-[![Security Audit](https://github.com/North9-Labs/Seam/actions/workflows/security.yml/badge.svg)](https://github.com/North9-Labs/Seam/actions/workflows/security.yml)
+[![CI](https://github.com/Arcel-Org/Seam/actions/workflows/ci.yml/badge.svg)](https://github.com/Arcel-Org/Seam/actions/workflows/ci.yml)
+[![Security Audit](https://github.com/Arcel-Org/Seam/actions/workflows/security.yml/badge.svg)](https://github.com/Arcel-Org/Seam/actions/workflows/security.yml)
 [![License: AGPL v3](https://img.shields.io/badge/license-AGPL%20v3-blue.svg)](LICENSE)
 [![Rust 1.88+](https://img.shields.io/badge/rust-1.88+-orange.svg)](#build-from-source)
 
 </div>
 
 ```sh
-curl -fsSL https://install.north9.org/seam.sh | sh
+curl -fsSL https://install.arcel.org/seam.sh | sh
 ```
 
 Seam replaces `scp`, `netcat`, `ssh -L`, and `rsync` with a single tool that is faster on real-world links and safe against quantum computers. All traffic uses a hybrid Noise_XX + ML-KEM-768 handshake so session keys cannot be decrypted even if elliptic-curve cryptography is broken in the future.
@@ -76,13 +76,13 @@ seam transfers the same data in about 30% less wall time than scp on a clean loc
 ## Install
 
 ```sh
-curl -fsSL https://install.north9.org/seam.sh | sh
+curl -fsSL https://install.arcel.org/seam.sh | sh
 ```
 
 Installs to `~/.local/bin/seam`. Override:
 
 ```sh
-SEAM_INSTALL_DIR=/usr/local/bin curl -fsSL https://install.north9.org/seam.sh | sh
+SEAM_INSTALL_DIR=/usr/local/bin curl -fsSL https://install.arcel.org/seam.sh | sh
 ```
 
 The installer verifies a SHA-256 checksum before placing the binary.
@@ -456,7 +456,7 @@ The server commits no per-client memory until the client echoes a valid BLAKE3 c
 
 ### Honest disclaimer
 
-Seam is pre-1.0 software. The cryptographic design follows well-established patterns and uses audited primitives, but the protocol itself has not undergone a third-party security audit. Do not use it where your threat model requires independently audited software.
+Seam is v1.0 software. The cryptographic design follows well-established patterns and uses audited primitives, but the protocol itself has not yet undergone an independent third-party security audit. Do not use it where your threat model requires independently audited software.
 
 ---
 
@@ -490,7 +490,7 @@ seam -vvv cp ./data user@host:/dest  # trace
 
 ```sh
 # Prerequisites: Rust 1.88+
-git clone https://github.com/North9-Labs/Seam
+git clone https://github.com/Arcel-Org/Seam
 cd Seam
 cargo build --release --bin seam
 ./target/release/seam --version
@@ -527,7 +527,7 @@ cargo build --release --features fuse
 
 ```toml
 # Cargo.toml
-seam-protocol = { git = "https://github.com/North9-Labs/Seam" }
+seam-protocol = { git = "https://github.com/Arcel-Org/Seam" }
 ```
 
 ```rust
@@ -627,6 +627,6 @@ fuzz/                   # cargo-fuzz targets
 Seam is dual-licensed:
 
 - **Open source:** [GNU Affero General Public License v3.0](LICENSE) — free for open source projects and personal use
-- **Commercial:** contact [licensing@north9.org](mailto:licensing@north9.org) for proprietary, SaaS, government, or OEM use
+- **Commercial:** contact [licensing@arcel.org](mailto:licensing@arcel.org) for proprietary, SaaS, government, or OEM use
 
 See [LICENSE-COMMERCIAL](LICENSE-COMMERCIAL) for details.

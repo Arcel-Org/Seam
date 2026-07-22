@@ -1,6 +1,6 @@
 # CLI Reference
 
-This document covers every subcommand, flag, and option in the `seam` CLI (version 0.1.32).
+This document covers every subcommand, flag, and option in the `seam` CLI (version 1.0.1).
 
 ---
 
@@ -725,7 +725,7 @@ seam version [flags]
 ### Output (text)
 
 ```
-seam 0.1.32
+seam 1.0.1
 Build date   : 2025-06-01
 Noise pattern: Noise_XX_25519_ChaChaPoly_BLAKE2s
 KEM          : ML-KEM-768 (FIPS 203, CRYSTALS-Kyber)
@@ -921,7 +921,7 @@ seam update [flags]
 
 ### Behavior
 
-1. Fetches the latest release metadata from `https://api.github.com/repos/North9-Labs/Seam/releases/latest`
+1. Fetches the latest release metadata from `https://api.github.com/repos/Arcel-Org/Seam/releases/latest`
 2. If already up to date, prints a message and exits
 3. Downloads the platform-appropriate `.tar.gz` asset
 4. Verifies SHA-256 checksum against the published `checksums.sha256` file — aborts on mismatch

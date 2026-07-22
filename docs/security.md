@@ -6,7 +6,7 @@ This document describes the cryptographic algorithms Seam uses, why each was cho
 
 ## Honest Disclaimer
 
-Seam is pre-1.0 software. The cryptographic design follows well-established patterns and uses audited primitives, but the protocol itself has not undergone a third-party security audit. Do not deploy it where your threat model requires independently audited software.
+Seam is v1.0 software. The cryptographic design follows well-established patterns and uses audited primitives, but the protocol itself has not yet undergone an independent third-party security audit. Do not deploy it where your threat model requires independently audited software.
 
 ---
 

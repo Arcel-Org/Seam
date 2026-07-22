@@ -179,7 +179,7 @@ Create `/etc/systemd/system/seam-serve.service`:
 ```ini
 [Unit]
 Description=Seam post-quantum UDP server
-Documentation=https://github.com/North9-Labs/Seam
+Documentation=https://github.com/Arcel-Org/Seam
 After=network.target network-online.target
 Wants=network-online.target
 
@@ -321,7 +321,7 @@ seam health myserver --direct "SEAM PORT=2222 X25519=<hex> KEM=<hex>" \
   "checks": [
     {"check": "connection", "status": "PASS", "detail": "post-quantum handshake in 12ms"},
     {"check": "key-fingerprint", "status": "PASS", "detail": "X25519: a1b2c3d4e5f6… (known_hosts ok)"},
-    {"check": "version", "status": "PASS", "detail": "server=0.1.32 client=0.1.32"},
+    {"check": "version", "status": "PASS", "detail": "server=1.0.1 client=1.0.1"},
     {"check": "rtt", "status": "PASS", "detail": "min=11.50ms avg=12.30ms max=13.10ms loss=0% (5/5 ok)"}
   ]
 }

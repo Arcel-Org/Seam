@@ -17,7 +17,7 @@ This guide walks through installing seam, verifying the installation, and comple
 ### Prebuilt binary (recommended)
 
 ```sh
-curl -fsSL https://install.north9.org/seam.sh | sh
+curl -fsSL https://install.arcel.org/seam.sh | sh
 ```
 
 Installs to `~/.local/bin/seam`. The script verifies a SHA-256 checksum before placing the binary.
@@ -25,7 +25,7 @@ Installs to `~/.local/bin/seam`. The script verifies a SHA-256 checksum before p
 To install to a different directory:
 
 ```sh
-SEAM_INSTALL_DIR=/usr/local/bin curl -fsSL https://install.north9.org/seam.sh | sh
+SEAM_INSTALL_DIR=/usr/local/bin curl -fsSL https://install.arcel.org/seam.sh | sh
 ```
 
 ### Self-update
@@ -43,7 +43,7 @@ The update command fetches the latest release from GitHub, verifies the SHA-256 
 
 ```sh
 # Prerequisites: Rust 1.88+
-git clone https://github.com/North9-Labs/Seam
+git clone https://github.com/Arcel-Org/Seam
 cd Seam
 cargo build --release --bin seam
 ./target/release/seam --version

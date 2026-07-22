@@ -656,7 +656,7 @@ enum VersionCheckResult {
 /// Fetch the latest GitHub release tag and compare to the running version.
 /// Uses a short 3-second timeout so doctor is not blocked on network issues.
 fn check_latest_version(current: &str) -> VersionCheckResult {
-    const REPO: &str = "North9-Labs/Seam";
+    const REPO: &str = "Arcel-Org/Seam";
     let url = format!("https://api.github.com/repos/{REPO}/releases/latest");
 
     let resp = match ureq::AgentBuilder::new()

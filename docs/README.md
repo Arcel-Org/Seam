@@ -4,7 +4,7 @@
 It replaces `scp`, `netcat`, and `ssh -L` with a single binary that is faster
 on real-world links and safe against quantum computers.
 
-Version: **0.1.32** — pre-1.0, no third-party security audit yet.
+Version: **1.0.1** — no third-party security audit yet.
 
 ---
 
@@ -41,7 +41,7 @@ TCP's head-of-line blocking means one lost packet stalls all subsequent data on 
 
 ```sh
 # Installation
-curl -fsSL https://install.north9.org/seam.sh | sh
+curl -fsSL https://install.arcel.org/seam.sh | sh
 
 # System readiness check
 seam doctor
@@ -70,4 +70,4 @@ seam update
 Seam is dual-licensed:
 
 - **Open source:** GNU Affero General Public License v3.0
-- **Commercial / Government / SaaS:** contact [licensing@north9.org](mailto:licensing@north9.org)
+- **Commercial / Government / SaaS:** contact [licensing@arcel.org](mailto:licensing@arcel.org)

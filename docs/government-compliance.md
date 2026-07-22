@@ -6,7 +6,7 @@ This document covers Seam's alignment with U.S. government security standards: N
 
 ## Important Caveats
 
-- Seam is **pre-1.0 software** and has not undergone a third-party security audit.
+- Seam is **v1.0 software** and has not yet undergone a third-party security audit.
 - Seam has not been submitted for FIPS 140-3 module validation by an accredited laboratory.
 - This document describes Seam's *design intent* and *algorithm choices* as they relate to government standards — it does not constitute a compliance certification.
 - For NSS, DoD IL4+, and classified deployments, obtain independent security review before use.

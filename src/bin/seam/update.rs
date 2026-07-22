@@ -3,7 +3,7 @@ use clap::Args;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
-const REPO: &str = "North9-Labs/Seam";
+const REPO: &str = "Arcel-Org/Seam";
 const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[derive(Args)]

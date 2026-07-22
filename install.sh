@@ -1,7 +1,7 @@
 #!/usr/bin/env sh
 set -eu
 
-REPO="North9-Labs/Seam"
+REPO="Arcel-Org/Seam"
 INSTALL_DIR="${SEAM_INSTALL_DIR:-$HOME/.local/bin}"
 
 detect_target() {

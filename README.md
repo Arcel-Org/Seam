@@ -5,7 +5,7 @@
 **Post-quantum encrypted communications over UDP — written in Rust.**
 
 [![CI](https://github.com/Arcel-Org/Seam/actions/workflows/ci.yml/badge.svg)](https://github.com/Arcel-Org/Seam/actions/workflows/ci.yml)
-[![Security Audit](https://github.com/Arcel-Org/Seam/actions/workflows/security.yml/badge.svg)](https://github.com/Arcel-Org/Seam/actions/workflows/security.yml)
+[![Dependency Audit](https://github.com/Arcel-Org/Seam/actions/workflows/security.yml/badge.svg)](https://github.com/Arcel-Org/Seam/actions/workflows/security.yml)
 [![License: AGPL v3](https://img.shields.io/badge/license-AGPL%20v3-blue.svg)](LICENSE)
 [![Rust 1.88+](https://img.shields.io/badge/rust-1.88+-orange.svg)](#build-from-source)
 
@@ -114,7 +114,7 @@ seam
 ```
 
 ```
-╭─ Seam ──────────────────────────── v0.1.39 ─╮  ╭─ Actions ──────────────────╮
+╭─ Seam ───────────────────────────── v1.0.1 ─╮  ╭─ Actions ──────────────────╮
 │  Host  alice@server.example.com             │  │  1 ⬆  Copy file/dir        │
 │                                             │  │  2 ⬇  Sync directory       │
 ╰─────────────────────────────────────────────╯  │  3 ⧎  Open tunnel          │
@@ -444,7 +444,7 @@ Identity keys are signed with **ML-DSA-65** (NIST FIPS 204). Forward secrecy is 
 
 ### Supply chain security
 
-Seam runs `cargo audit` in CI on every push. As of v0.1.39, **zero known vulnerabilities** in the dependency tree.
+Seam runs `cargo audit` in CI on every push. As of v1.0.1, no unresolved `cargo audit` findings — one transitive dependency (`anyhow`, pulled in via the TUI's terminal backend) carries an allowed advisory with no fix released upstream yet.
 
 ### Anti-replay
 

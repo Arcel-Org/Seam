@@ -358,7 +358,7 @@ impl Drop for DoubleRatchet {
         self.send_chain_key.zeroize();
         self.recv_chain_key.zeroize();
         self.our_ephemeral.zeroize();
-        for (_, entry) in self.skipped.iter_mut() {
+        for entry in self.skipped.values_mut() {
             entry.key.zeroize();
         }
         self.skipped.clear();

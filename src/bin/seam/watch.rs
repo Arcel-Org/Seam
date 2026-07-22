@@ -188,7 +188,8 @@ pub async fn run(args: WatchArgs, fips_mode: bool) -> Result<()> {
 
     // Establish the persistent connection up front so the first sync cycle
     // doesn't pay bootstrap+handshake latency in the middle of a batch.
-    let mut session = Some(PersistentPush::connect(&remote_info, &remote_path, cipher, fips_mode).await?);
+    let mut session =
+        Some(PersistentPush::connect(&remote_info, &remote_path, cipher, fips_mode).await?);
 
     // Sync loop: check for debounced changes, sync them over the persistent connection.
     let debounce = Duration::from_millis(debounce_ms);
@@ -261,7 +262,10 @@ pub async fn run(args: WatchArgs, fips_mode: bool) -> Result<()> {
         }
 
         let sess = session.as_mut().expect("session established above");
-        match sess.push_batch(&local_path, &batch, compress, fips_mode).await {
+        match sess
+            .push_batch(&local_path, &batch, compress, fips_mode)
+            .await
+        {
             Ok(()) => {
                 if args.verbose {
                     for (name, _) in &batch {

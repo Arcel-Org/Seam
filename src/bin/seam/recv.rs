@@ -483,10 +483,9 @@ mod tests {
         let dest = tempfile::tempdir().unwrap();
         let dest_path = dest.path().to_path_buf();
         let mut server_conn = server_conn;
-        let server_task =
-            tokio::spawn(
-                async move { serve_connection(&mut server_conn, &dest_path, false, false).await },
-            );
+        let server_task = tokio::spawn(async move {
+            serve_connection(&mut server_conn, &dest_path, false, false).await
+        });
 
         let src = tempfile::tempdir().unwrap();
         let mut client_conn = client_conn;
@@ -529,7 +528,9 @@ mod tests {
         // Send BYE so the server's round loop sees a clean end-of-session
         // instead of waiting on an idle timeout (mirrors what `seam watch`'s
         // PersistentPush::close does on real shutdown).
-        send_frame(&client_conn, ctrl_sid, &[proto::BYE]).await.unwrap();
+        send_frame(&client_conn, ctrl_sid, &[proto::BYE])
+            .await
+            .unwrap();
         client_conn.close().await;
 
         timeout(Duration::from_secs(5), server_task)
@@ -593,10 +594,9 @@ mod tests {
         let dest = tempfile::tempdir().unwrap();
         let dest_path = dest.path().to_path_buf();
         let mut server_conn = server_conn;
-        let server_task =
-            tokio::spawn(
-                async move { serve_connection(&mut server_conn, &dest_path, false, true).await },
-            );
+        let server_task = tokio::spawn(async move {
+            serve_connection(&mut server_conn, &dest_path, false, true).await
+        });
 
         let src = tempfile::tempdir().unwrap();
         std::fs::write(src.path().join("a.txt"), b"only round").unwrap();

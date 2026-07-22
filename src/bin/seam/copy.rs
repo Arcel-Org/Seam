@@ -330,8 +330,9 @@ async fn run_multipath_push(args: CopyArgs, fips_mode: bool, multipath_str: &str
     if ssh::parse_remote(&args.src).is_some() {
         bail!("--multipath only supports pushing to a remote destination today, not pulling");
     }
-    let (remote, remote_path) = ssh::parse_remote(&args.dest)
-        .ok_or_else(|| anyhow::anyhow!("--multipath requires a remote destination: user@host:/path"))?;
+    let (remote, remote_path) = ssh::parse_remote(&args.dest).ok_or_else(|| {
+        anyhow::anyhow!("--multipath requires a remote destination: user@host:/path")
+    })?;
 
     let local_addrs = parse_multipath_addrs(multipath_str)?;
     if local_addrs.len() < 2 {
@@ -374,7 +375,10 @@ async fn run_multipath_push(args: CopyArgs, fips_mode: bool, multipath_str: &str
 
     // Dial the first path alone so TOFU pinning settles before the rest dial
     // concurrently — avoids racing multiple first-time pin writes together.
-    eprintln!("connecting via {} → {}:{port}…", local_addrs[0], remote.host);
+    eprintln!(
+        "connecting via {} → {}:{port}…",
+        local_addrs[0], remote.host
+    );
     let first_conn = connect::dial_from(
         local_addrs[0],
         &remote.host,
@@ -420,9 +424,10 @@ async fn run_multipath_push(args: CopyArgs, fips_mode: bool, multipath_str: &str
         push_set.spawn(async move {
             let ctrl_sid = conn.open_stream().await;
             eprintln!("path {path_idx}: sending {} file(s)", bucket.len());
-            let result =
-                push_files(&mut conn, ctrl_sid, &src_path, &bucket, compress, false, 1, fips_mode, None)
-                    .await;
+            let result = push_files(
+                &mut conn, ctrl_sid, &src_path, &bucket, compress, false, 1, fips_mode, None,
+            )
+            .await;
             conn.close().await;
             result
         });

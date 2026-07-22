@@ -93,7 +93,15 @@ pub async fn dial(
     kem_pk: seam_protocol::handshake::hybrid_keys::KemPublicKey,
     cipher: CipherSuite,
 ) -> Result<SeamConn> {
-    dial_from("0.0.0.0:0".parse().unwrap(), host, port, x25519, kem_pk, cipher).await
+    dial_from(
+        "0.0.0.0:0".parse().unwrap(),
+        host,
+        port,
+        x25519,
+        kem_pk,
+        cipher,
+    )
+    .await
 }
 
 /// Like [`dial`], but binds the client socket to a specific local address

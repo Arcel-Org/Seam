@@ -1,6 +1,6 @@
 # CLI Reference
 
-This document covers every subcommand, flag, and option in the `seam` CLI (version 1.0.1).
+This document covers every subcommand, flag, and option in the `seam` CLI (version 1.0.2).
 
 ---
 
@@ -63,8 +63,8 @@ seam cp --no-compress ./archive.tar.gz alice@server:/backups/
 # Limit to 10 Mbps (useful during business hours)
 seam cp --rate 10 ./backup.tar.gz alice@server:/backups/
 
-# Multi-path transfer across two interfaces
-seam cp --multipath 192.168.1.100:0,10.0.0.1:0 ./data alice@server:/dest
+# Push a directory over two local interfaces, round-robining files across them
+seam cp --multipath 192.168.1.100:0,10.0.0.1:0 ./dataset/ alice@server:/data/dataset
 ```
 
 ### Flags
@@ -75,8 +75,8 @@ seam cp --multipath 192.168.1.100:0,10.0.0.1:0 ./data alice@server:/dest
 | `--resume` | false | Resume an interrupted transfer (uses `.seam-partial` staging files; atomic rename on success) |
 | `--direct <LINE>` | — | Skip SSH bootstrap; use a pre-started SEAM connection line directly. Format: `"SEAM PORT=<n> X25519=<hex> KEM=<hex>"` |
 | `--rate <Mbps>` | — | Cap bandwidth to N Mbps using a token-bucket limiter |
-| `--multipath <addr1,...>` | — | Comma-separated local bind addresses for multi-path transport |
-| `--multipath-redundant` | false | Send every packet on all paths simultaneously (anti-jamming) |
+| `--multipath <addr1,...>` | — | Push only. Opens one independent connection per local address and round-robins files across them. See [architecture.md](architecture.md#multi-path-transport). |
+| `--multipath-redundant` | false | Not yet supported for `seam cp` (would need per-connection temp-file isolation on the receiver). Passing it with `--multipath` is an error. |
 
 ### Behavior
 
@@ -172,8 +172,8 @@ seam shell --no-pty alice@server -- cat /etc/os-release
 |---|---|---|
 | `-p` / `--port <PORT>` | — | SSH port for bootstrap |
 | `--no-pty` | false | Force non-interactive mode (no PTY) even when stdin is a TTY |
-| `--multipath <addr1,...>` | — | Multi-path local bind addresses |
-| `--multipath-redundant` | false | Send on all paths simultaneously |
+| `--multipath <addr1,...>` | — | **Not yet wired up — parses but has no effect.** See [architecture.md](architecture.md#multi-path-transport). |
+| `--multipath-redundant` | false | **Not yet wired up — parses but has no effect.** |
 
 ### Behavior
 
@@ -220,8 +220,8 @@ seam forward -p 2222 8080:localhost:3000 alice@server
 | `-p` / `--port <PORT>` | — | SSH port for bootstrap |
 | `--bind-all` | false | Bind local port on `0.0.0.0` instead of `127.0.0.1` |
 | `--via <user@relay>` | — | Route through an intermediate Seam relay node (two-hop tunnel) |
-| `--multipath <addr1,...>` | — | Multi-path local bind addresses |
-| `--multipath-redundant` | false | Send on all paths simultaneously |
+| `--multipath <addr1,...>` | — | **Not yet wired up — parses but has no effect.** See [architecture.md](architecture.md#multi-path-transport). |
+| `--multipath-redundant` | false | **Not yet wired up — parses but has no effect.** |
 
 ### Multi-hop tunneling
 
@@ -392,8 +392,8 @@ seam serve --fips-mode --port 2222
 | `--no-shell` | false | Disable the shell service (forward and info remain available) |
 | `--auth-keys <FILE>` | — | Path to a file containing authorized client X25519 public keys (one hex key per line) |
 | `--auth-keys-dir <DIR>` | — | Directory containing `*.pub` files with authorized keys |
-| `--multipath <addr1,...>` | — | Listen on multiple interfaces simultaneously |
-| `--multipath-redundant` | false | Send every packet on all paths simultaneously |
+| `--multipath <addr1,...>` | — | **Not yet wired up — parses but has no effect.** See [architecture.md](architecture.md#multi-path-transport). |
+| `--multipath-redundant` | false | **Not yet wired up — parses but has no effect.** |
 
 ### Auth-keys file format
 
@@ -521,8 +521,8 @@ seam ping alice@server -i 200
 | `-p` / `--port <PORT>` | — | SSH port for bootstrap |
 | `-n` / `--count <N>` | `5` | Number of pings to send (0 = continuous until Ctrl-C) |
 | `-i` / `--interval <MS>` | `1000` | Interval between pings in milliseconds |
-| `--multipath <addr1,...>` | — | Multi-path local bind addresses |
-| `--multipath-redundant` | false | Send on all paths simultaneously |
+| `--multipath <addr1,...>` | — | **Not yet wired up — parses but has no effect.** See [architecture.md](architecture.md#multi-path-transport). |
+| `--multipath-redundant` | false | **Not yet wired up — parses but has no effect.** |
 
 ### Output
 
@@ -725,7 +725,7 @@ seam version [flags]
 ### Output (text)
 
 ```
-seam 1.0.1
+seam 1.0.2
 Build date   : 2025-06-01
 Noise pattern: Noise_XX_25519_ChaChaPoly_BLAKE2s
 KEM          : ML-KEM-768 (FIPS 203, CRYSTALS-Kyber)
@@ -788,8 +788,8 @@ seam config set fips_mode true
 | `cover_traffic_kbps` | int | `0` | Constant-rate cover traffic in kbps (0 = disabled) |
 | `timing_jitter_ms` | int | `0` | Per-packet random delay in ms (0 = disabled) |
 | `obfuscate` | bool | `false` | XOR first 8 bytes of header with per-session secret |
-| `multipath_addrs` | string | — | Default multi-path bind addresses (comma-separated ip:port) |
-| `multipath_mode` | string | `round-robin` | Multi-path scheduling: `round-robin`, `min-latency`, `redundant`, `weighted` |
+| `multipath_addrs` | string | — | Default multi-path bind addresses (comma-separated ip:port) (not yet consumed by any command — set but unused) |
+| `multipath_mode` | string | `round-robin` | Multi-path scheduling: `round-robin`, `min-latency`, `redundant`, `weighted` (not yet consumed by any command — set but unused) |
 | `ratchet_epoch_packets` | int | `1000` | Packets before a DH ratchet step |
 | `ratchet_epoch_seconds` | int | `30` | Seconds before a DH ratchet step |
 

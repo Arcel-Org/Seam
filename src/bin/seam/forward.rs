@@ -52,19 +52,11 @@ pub struct ForwardArgs {
     #[arg(long, value_name = "user@relay")]
     pub via: Option<String>,
 
-    /// Local bind addresses for multi-path transport (comma-separated ip:port pairs).
-    ///
-    /// Example: --multipath 192.168.1.100:0,10.0.0.1:0
-    ///
-    /// Sends packets over multiple network interfaces simultaneously for redundancy
-    /// and anti-jamming. Use --multipath-redundant to send on ALL paths at once.
+    /// NOT YET IMPLEMENTED — parses but has no effect. See architecture.md#multi-path-transport.
     #[arg(long, value_name = "addr1,addr2,...")]
     pub multipath: Option<String>,
 
-    /// Anti-jamming mode: send every packet on ALL active paths simultaneously.
-    ///
-    /// Receiver deduplicates by sequence number. Even if an adversary jams all but
-    /// one path, delivery is guaranteed. Use with --multipath.
+    /// NOT YET IMPLEMENTED — parses but has no effect. See architecture.md#multi-path-transport.
     #[arg(long)]
     pub multipath_redundant: bool,
 }
@@ -121,6 +113,7 @@ fn parse_forward_spec(spec: &str) -> Result<(u16, String, u16)> {
 // ── Client (initiating side) ──────────────────────────────────────────────────
 
 pub async fn run(args: ForwardArgs, fips_mode: bool) -> Result<()> {
+    connect::warn_if_multipath_requested(&args.multipath, args.multipath_redundant);
     let (local_port, remote_host, remote_port) = parse_forward_spec(&args.spec)?;
 
     let (user, host) = if let Some(at) = args.remote.find('@') {

@@ -15,6 +15,20 @@ thread_local! {
     static PIN_POLICY: Cell<PinPolicy> = const { Cell::new(PinPolicy::Enforce) };
 }
 
+/// Warn if `--multipath`/`--multipath-redundant` were passed on a command
+/// that doesn't implement them (everything except `seam cp`, which has its
+/// own connection-level implementation in `copy.rs::run_multipath_push`).
+/// See architecture.md#multi-path-transport for what's implemented and why
+/// the rest isn't yet.
+pub fn warn_if_multipath_requested(multipath: &Option<String>, multipath_redundant: bool) {
+    if multipath.is_some() || multipath_redundant {
+        eprintln!(
+            "warning: --multipath/--multipath-redundant are not yet implemented \
+             — transferring over a single path. See architecture.md#multi-path-transport."
+        );
+    }
+}
+
 /// Set the global TOFU pin policy for this process. Called once from main().
 pub fn set_pin_policy(policy: PinPolicy) {
     PIN_POLICY.with(|p| p.set(policy));
@@ -79,6 +93,22 @@ pub async fn dial(
     kem_pk: seam_protocol::handshake::hybrid_keys::KemPublicKey,
     cipher: CipherSuite,
 ) -> Result<SeamConn> {
+    dial_from("0.0.0.0:0".parse().unwrap(), host, port, x25519, kem_pk, cipher).await
+}
+
+/// Like [`dial`], but binds the client socket to a specific local address
+/// instead of an OS-assigned one. Used by `seam cp --multipath` to open one
+/// independent, fully-handshaked connection per local interface — each is its
+/// own session as far as the server is concerned, so no changes to the
+/// server's (address-keyed) connection dispatch are needed for this to work.
+pub async fn dial_from(
+    local_addr: SocketAddr,
+    host: &str,
+    port: u16,
+    x25519: [u8; 32],
+    kem_pk: seam_protocol::handshake::hybrid_keys::KemPublicKey,
+    cipher: CipherSuite,
+) -> Result<SeamConn> {
     // ── TOFU server identity pinning ─────────────────────────────────────────
     // Verify (or pin) the server's X25519 public key before completing the
     // cryptographic handshake.  This prevents relay MITM: even if an attacker
@@ -95,7 +125,7 @@ pub async fn dial(
         eprintln!("         run: seam doctor  to diagnose");
         IdentityKeypair::generate()
     });
-    let mut client = Client::bind("0.0.0.0:0".parse()?, id)
+    let mut client = Client::bind(local_addr, id)
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     let conn = client

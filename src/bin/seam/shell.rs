@@ -74,15 +74,11 @@ pub struct ShellArgs {
     #[arg(long)]
     pub no_pty: bool,
 
-    /// Local bind addresses for multi-path transport (comma-separated ip:port pairs).
-    ///
-    /// Example: --multipath 192.168.1.100:0,10.0.0.1:0
-    ///
-    /// Sends encrypted shell traffic over multiple network paths simultaneously.
+    /// NOT YET IMPLEMENTED — parses but has no effect. See architecture.md#multi-path-transport.
     #[arg(long, value_name = "addr1,addr2,...")]
     pub multipath: Option<String>,
 
-    /// Anti-jamming mode: send every packet on ALL active paths simultaneously.
+    /// NOT YET IMPLEMENTED — parses but has no effect. See architecture.md#multi-path-transport.
     #[arg(long)]
     pub multipath_redundant: bool,
 }
@@ -134,6 +130,7 @@ pub async fn run_with_mux(
 }
 
 pub async fn run(args: ShellArgs) -> Result<()> {
+    connect::warn_if_multipath_requested(&args.multipath, args.multipath_redundant);
     let cfg = super::config::Config::load().ok().unwrap_or_default();
     let cipher = seam_protocol::crypto::CipherSuite::parse(&cfg.cipher).unwrap_or_default();
 

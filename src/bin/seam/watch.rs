@@ -10,13 +10,16 @@
 use anyhow::{Result, anyhow, bail};
 use clap::Args;
 use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher};
+use seam_protocol::api::SeamConn;
 use seam_protocol::crypto::CipherSuite;
+use seam_protocol::session::stream::StreamId;
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::process::Child;
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 
-use crate::ssh;
+use crate::{connect, proto, ssh};
 
 #[derive(Args)]
 pub struct WatchArgs {
@@ -43,19 +46,90 @@ pub struct WatchArgs {
     pub verbose: bool,
 }
 
+/// A Seam connection to the remote receiver kept alive for the whole `seam
+/// watch` session. Every sync batch reuses the same connection (and control
+/// stream) instead of re-bootstrapping over SSH and redoing the post-quantum
+/// handshake for every debounce cycle.
+struct PersistentPush {
+    conn: SeamConn,
+    ctrl_sid: StreamId,
+    // Kept alive for the session's duration — dropping it kills the SSH
+    // channel and the remote `recv` process.
+    _remote_process: Child,
+}
+
+impl PersistentPush {
+    async fn connect(
+        remote: &ssh::RemoteInfo,
+        remote_path: &str,
+        cipher: CipherSuite,
+        fips_mode: bool,
+    ) -> Result<Self> {
+        // No `--once`: the remote receiver stays up and accepts further
+        // HELLO/file rounds on this same connection for subsequent batches.
+        let subcmd = format!(
+            "recv {} --port 0{}",
+            connect::shell_quote(remote_path),
+            if fips_mode { " --fips-mode" } else { "" }
+        );
+        let (conn, remote_process) =
+            connect::bootstrap_and_connect(remote, &remote.host, &subcmd, cipher).await?;
+        eprintln!("  persistent session established — further syncs reuse this connection");
+        let ctrl_sid = conn.open_stream().await;
+
+        Ok(Self {
+            conn,
+            ctrl_sid,
+            _remote_process: remote_process,
+        })
+    }
+
+    async fn push_batch(
+        &mut self,
+        base: &Path,
+        files: &[(String, std::fs::Metadata)],
+        compress: bool,
+        fips_mode: bool,
+    ) -> Result<()> {
+        super::copy::push_files(
+            &mut self.conn,
+            self.ctrl_sid,
+            base,
+            files,
+            compress,
+            false, // resume: watch always sends the current file contents
+            1,     // parallel: batches are many small files, not one big one
+            fips_mode,
+            None, // rate limiting isn't exposed on `seam watch` today
+        )
+        .await
+    }
+
+    async fn close(self) {
+        // Tell the remote receiver we're done for good, in place of the next
+        // HELLO, so it exits right away instead of only noticing once its
+        // connection-idle timeout eventually fires.
+        let _ = proto::send_frame(&self.conn, self.ctrl_sid, &[proto::BYE]).await;
+        self.conn.close().await;
+    }
+}
+
 pub async fn run(args: WatchArgs, fips_mode: bool) -> Result<()> {
     let local_path = PathBuf::from(&args.local);
     if !local_path.exists() || !local_path.is_dir() {
         bail!("local path must be an existing directory: {}", args.local);
     }
 
-    let (remote_info, remote_path) = ssh::parse_remote(&args.remote)
+    let (mut remote_info, remote_path) = ssh::parse_remote(&args.remote)
         .ok_or_else(|| anyhow!("invalid remote spec: {} (use user@host:/path)", args.remote))?;
+    if args.ssh_port.is_some() {
+        remote_info.ssh_port = args.ssh_port;
+    }
 
     let cfg = super::config::Config::load().ok().unwrap_or_default();
     let compress = !args.no_compress && cfg.compress;
     let cipher_str = if fips_mode { "aes256gcm" } else { &cfg.cipher };
-    let _cipher = CipherSuite::parse(cipher_str).unwrap_or_default();
+    let cipher = CipherSuite::parse(cipher_str).unwrap_or_default();
 
     eprintln!(
         "watching {} → {}:{}",
@@ -112,12 +186,25 @@ pub async fn run(args: WatchArgs, fips_mode: bool) -> Result<()> {
         }
     });
 
-    // Sync loop: check for debounced changes, sync them via seam cp.
+    // Establish the persistent connection up front so the first sync cycle
+    // doesn't pay bootstrap+handshake latency in the middle of a batch.
+    let mut session = Some(PersistentPush::connect(&remote_info, &remote_path, cipher, fips_mode).await?);
+
+    // Sync loop: check for debounced changes, sync them over the persistent connection.
     let debounce = Duration::from_millis(debounce_ms);
     let mut sync_count: u64 = 0;
 
     loop {
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        tokio::select! {
+            _ = tokio::time::sleep(Duration::from_millis(50)) => {}
+            _ = tokio::signal::ctrl_c() => {
+                eprintln!("\n  shutting down…");
+                if let Some(s) = session.take() {
+                    s.close().await;
+                }
+                return Ok(());
+            }
+        }
 
         // Collect files that have been stable for debounce_ms.
         let ready: Vec<PathBuf> = {
@@ -145,40 +232,48 @@ pub async fn run(args: WatchArgs, fips_mode: bool) -> Result<()> {
             eprintln!("    ~ {}", p.display());
         }
 
-        // For each changed file, sync it via seam cp (push mode).
-        // We re-use the SSH bootstrap for each batch. For production use,
-        // a persistent connection pool would be more efficient.
-        // TODO: maintain a persistent Seam session across batches.
-        for rel in &ready {
-            let src = local_path.join(rel);
-            if !src.exists() {
-                eprintln!("    (deleted, skipping: {})", rel.display());
-                continue;
+        let batch: Vec<(String, std::fs::Metadata)> = ready
+            .iter()
+            .filter_map(|rel| {
+                let src = local_path.join(rel);
+                match src.metadata() {
+                    Ok(meta) if meta.is_file() => Some((rel.to_string_lossy().to_string(), meta)),
+                    _ => {
+                        eprintln!("    (deleted, skipping: {})", rel.display());
+                        None
+                    }
+                }
+            })
+            .collect();
+
+        if batch.is_empty() {
+            continue;
+        }
+
+        if session.is_none() {
+            match PersistentPush::connect(&remote_info, &remote_path, cipher, fips_mode).await {
+                Ok(s) => session = Some(s),
+                Err(e) => {
+                    eprintln!("    ERROR reconnecting: {e} — will retry next sync");
+                    continue;
+                }
             }
+        }
 
-            let dest_spec = format!(
-                "{}:{}/{}",
-                remote_info.target(),
-                remote_path.trim_end_matches('/'),
-                rel.display()
-            );
-
-            let copy_args = super::copy::CopyArgs {
-                src: src.to_string_lossy().to_string(),
-                dest: dest_spec,
-                no_compress: !compress,
-                resume: false,
-                direct: None,
-                rate: None,
-                multipath: None,
-                multipath_redundant: false,
-                parallel: 1,
-            };
-
-            if let Err(e) = super::copy::run(copy_args, fips_mode).await {
-                eprintln!("    ERROR syncing {}: {e}", rel.display());
-            } else if args.verbose {
-                eprintln!("    OK: {}", rel.display());
+        let sess = session.as_mut().expect("session established above");
+        match sess.push_batch(&local_path, &batch, compress, fips_mode).await {
+            Ok(()) => {
+                if args.verbose {
+                    for (name, _) in &batch {
+                        eprintln!("    OK: {name}");
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("    ERROR syncing batch: {e} — will reconnect next sync");
+                if let Some(s) = session.take() {
+                    s.close().await;
+                }
             }
         }
     }

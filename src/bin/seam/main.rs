@@ -436,7 +436,7 @@ async fn main() -> Result<()> {
         Some(Commands::ForwardHopRecv(args)) => forward::run_hop_recv(args).await,
         Some(Commands::SyncRecv(args)) => sync::run_recv(args, fips_active).await,
         Some(Commands::ShellRecv(args)) => shell::run_recv(args).await,
-        Some(Commands::Recv(args)) => recv::run(args).await,
+        Some(Commands::Recv(args)) => recv::run(args, fips_active).await,
         Some(Commands::Send(args)) => send::run(args).await,
         Some(Commands::LsRecv(args)) => ls::run_recv(args).await,
         Some(Commands::PipeRecv(args)) => pipe::run_recv(args).await,

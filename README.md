@@ -56,7 +56,8 @@ seam transfers the same data in about 30% less wall time than scp on a clean loc
 | Head-of-line blocking | None (FEC) | None | Yes | Unknown |
 | Forward secrecy | ✅ Double ratchet | ✅ per-session | ✅ per-session | Unknown |
 | Traffic analysis resistance | ✅ padding + chaff + jitter | ❌ | ❌ | ❌ |
-| Multi-path anti-jamming | ✅ PathScheduler | ❌ | ❌ | ❌ |
+| Multi-path (round-robin, `seam cp`) | ✅ `--multipath` | ❌ | ❌ | ❌ |
+| Multi-path anti-jamming (redundant, packet-level) | 🚧 engine built, not wired to any command yet | ❌ | ❌ | ❌ |
 | Session resumption | ✅ zero-RTT | ❌ | ❌ | Unknown |
 | FIPS mode | ✅ --fips-mode | ❌ | Partial | ✅ |
 | Audit logging (SP 800-53) | ✅ | ❌ | Partial | Unknown |
@@ -68,7 +69,7 @@ seam transfers the same data in about 30% less wall time than scp on a clean loc
 | NAT hole punching | ✅ seam punch | ❌ | ❌ | ❌ |
 | Port scanner built-in | ✅ seam scan | ❌ | ❌ | ❌ |
 | Proxy (SOCKS5) built-in | ✅ seam proxy | ❌ | ✅ | ❌ |
-| FUSE filesystem | ✅ seam mount | ❌ | ❌ | ❌ |
+| FUSE filesystem | 🚧 mounts, but browsing is a stub | ❌ | ❌ | ❌ |
 | Interactive TUI | ✅ | ❌ | ❌ | ❌ |
 
 ---
@@ -114,7 +115,7 @@ seam
 ```
 
 ```
-╭─ Seam ───────────────────────────── v1.0.1 ─╮  ╭─ Actions ──────────────────╮
+╭─ Seam ───────────────────────────── v1.0.2 ─╮  ╭─ Actions ──────────────────╮
 │  Host  alice@server.example.com             │  │  1 ⬆  Copy file/dir        │
 │                                             │  │  2 ⬇  Sync directory       │
 ╰─────────────────────────────────────────────╯  │  3 ⧎  Open tunnel          │
@@ -162,6 +163,9 @@ seam cp --resume ./large.iso alice@server:/data/
 
 # Raw transfer, no compression (already-compressed files)
 seam cp --no-compress ./archive.tar.gz alice@server:/backups/
+
+# Push over two local interfaces, round-robining files across independent connections
+seam cp --multipath 192.168.1.100:0,10.0.0.1:0 ./dataset/ alice@server:/data/dataset
 ```
 
 seam bootstraps itself on the remote over SSH if it is not already installed — no manual setup on the server side. The bootstrap uses a pure-Rust SSH implementation with no dependency on a system `ssh` binary.
@@ -302,6 +306,11 @@ Used as a building block for peer-to-peer seam connections through symmetric NAT
 ### `seam mount` — FUSE filesystem
 
 Mount a remote directory as a local filesystem. Requires FUSE to be available on the host.
+
+> **Not yet functional.** The mount succeeds, but the filesystem implementation
+> is currently a stub — it never contacts the remote, so it always presents as
+> an empty, read-only directory. Tracked as follow-up work; use `seam cp`/`seam
+> sync`/`seam watch` for real file transfer today.
 
 ```sh
 seam mount alice@server:/data /mnt/remote
@@ -444,7 +453,7 @@ Identity keys are signed with **ML-DSA-65** (NIST FIPS 204). Forward secrecy is 
 
 ### Supply chain security
 
-Seam runs `cargo audit` in CI on every push. As of v1.0.1, no unresolved `cargo audit` findings — one transitive dependency (`anyhow`, pulled in via the TUI's terminal backend) carries an allowed advisory with no fix released upstream yet.
+Seam runs `cargo audit` in CI on every push. As of v1.0.2, no unresolved `cargo audit` findings — one transitive dependency (`anyhow`, pulled in via the TUI's terminal backend) carries an allowed advisory with no fix released upstream yet.
 
 ### Anti-replay
 

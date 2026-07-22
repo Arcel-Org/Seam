@@ -24,6 +24,10 @@ pub const PARALLEL_INIT: u8 = 0x0a;
 /// CHUNK_INFO frame: [type(1)][chunk_index(1)][n_chunks(1)][offset(8)][chunk_size(8)][name_len(2)][name]
 /// Sent on each chunk stream to identify which byte range to write.
 pub const CHUNK_INFO: u8 = 0x0b;
+/// BYE frame: sent on the control stream in place of the next HELLO to end a
+/// persistent multi-round session (e.g. `seam watch` shutting down). Lets the
+/// receiver exit immediately instead of waiting on connection-idle detection.
+pub const BYE: u8 = 0x0c;
 
 pub const COMPRESS_NONE: u8 = 0;
 pub const COMPRESS_ZSTD: u8 = 1;
@@ -68,6 +72,50 @@ pub async fn read_frame(conn: &mut SeamConn, sid: StreamId, buf: &mut Vec<u8>) -
                 bail!("stream {s} closed before frame complete");
             }
             Some(SessionEvent::Closed) | None => bail!("connection closed"),
+            _ => {}
+        }
+    }
+}
+
+/// Like `read_frame`, but distinguishes a clean end-of-session from a real
+/// error: returns `Ok(None)` if the peer closes the connection at a frame
+/// boundary (no partial frame buffered). Used by persistent multi-round
+/// receivers (e.g. `seam watch`'s reused connection) to tell "sender is done
+/// for good" apart from "sender disconnected mid-transfer".
+pub async fn read_frame_opt(
+    conn: &mut SeamConn,
+    sid: StreamId,
+    buf: &mut Vec<u8>,
+) -> Result<Option<Vec<u8>>> {
+    loop {
+        if buf.len() >= 4 {
+            let len = u32::from_be_bytes(buf[..4].try_into().unwrap()) as usize;
+            if buf.len() >= 4 + len {
+                let frame = buf[4..4 + len].to_vec();
+                buf.drain(..4 + len);
+                return Ok(Some(frame));
+            }
+        }
+        match conn.read_event().await {
+            Some(SessionEvent::DataAvailable(s)) if s == sid => {
+                let data = conn
+                    .read(s, 65536)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("{e}"))?;
+                buf.extend_from_slice(&data);
+            }
+            Some(SessionEvent::StreamFinished(s)) if s == sid => {
+                if buf.is_empty() {
+                    return Ok(None);
+                }
+                bail!("stream {s} closed before frame complete");
+            }
+            Some(SessionEvent::Closed) | None => {
+                if buf.is_empty() {
+                    return Ok(None);
+                }
+                bail!("connection closed before frame complete");
+            }
             _ => {}
         }
     }

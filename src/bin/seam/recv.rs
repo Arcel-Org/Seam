@@ -7,7 +7,7 @@ use seam_protocol::{
 };
 use std::path::PathBuf;
 
-use crate::proto::{self, read_frame, send_frame, wait_for_stream};
+use crate::proto::{self, read_frame, read_frame_opt, send_frame, wait_for_stream};
 
 #[derive(Args)]
 pub struct RecvArgs {
@@ -16,19 +16,28 @@ pub struct RecvArgs {
     /// UDP port to listen on (0 = OS-assigned)
     #[arg(long, default_value_t = 0)]
     pub port: u16,
-    /// Exit after one transfer
+    /// Exit after one transfer. Without this flag, the receiver stays up and
+    /// accepts additional HELLO/file rounds on the same connection until the
+    /// sender closes it — used by `seam watch` to avoid re-handshaking for
+    /// every sync cycle.
     #[arg(long)]
     pub once: bool,
+    /// Accept this many independent connections instead of one, each drained
+    /// concurrently into the same destination directory. Used internally by
+    /// `seam cp --multipath` — each local path on the sender's side opens its
+    /// own fully-handshaked connection here, so no server-side awareness of
+    /// "multiple addresses, one session" is needed.
+    #[arg(long, default_value_t = 1)]
+    pub multipath_count: usize,
 }
 
-pub async fn run(args: RecvArgs) -> Result<()> {
+pub async fn run(args: RecvArgs, cli_fips_mode: bool) -> Result<()> {
     let id = IdentityKeypair::generate();
     let x25519_hex = hex::encode(id.x25519_public.as_bytes());
     let kem_hex = hex::encode(pk_to_bytes(&id.kem_pk));
 
     let cfg = super::config::Config::load().ok().unwrap_or_default();
-    // Check FIPS mode from env/config (CLI flag is inherited via global flag)
-    let fips_mode = super::config::Config::effective_fips_mode(cfg.fips_mode, false);
+    let fips_mode = super::config::Config::effective_fips_mode(cfg.fips_mode, cli_fips_mode);
     let cipher_str = if fips_mode { "aes256gcm" } else { &cfg.cipher };
     let cipher = seam_protocol::crypto::CipherSuite::parse(cipher_str).unwrap_or_default();
     let addr: std::net::SocketAddr = format!("0.0.0.0:{}", args.port).parse()?;
@@ -40,30 +49,83 @@ pub async fn run(args: RecvArgs) -> Result<()> {
     // Sender reads this line over SSH to get connection info.
     println!("SEAM PORT={port} X25519={x25519_hex} KEM={kem_hex}");
 
+    std::fs::create_dir_all(&args.dest)?;
+
+    if args.multipath_count > 1 {
+        let mut conns = Vec::with_capacity(args.multipath_count);
+        for _ in 0..args.multipath_count {
+            conns.push(
+                server
+                    .accept()
+                    .await
+                    .ok_or_else(|| anyhow::anyhow!("no connection"))?,
+            );
+        }
+        let mut tasks = Vec::with_capacity(conns.len());
+        for mut conn in conns {
+            let dest = args.dest.clone();
+            tasks.push(tokio::spawn(async move {
+                let result = serve_connection(&mut conn, &dest, fips_mode, true).await;
+                conn.close().await;
+                result
+            }));
+        }
+        for task in tasks {
+            task.await.map_err(|e| anyhow::anyhow!("{e}"))??;
+        }
+        return Ok(());
+    }
+
     let mut conn = server
         .accept()
         .await
         .ok_or_else(|| anyhow::anyhow!("no connection"))?;
 
-    std::fs::create_dir_all(&args.dest)?;
-    receive_transfer(&mut conn, &args.dest, fips_mode).await?;
+    serve_connection(&mut conn, &args.dest, fips_mode, args.once).await?;
+
     conn.close().await;
     Ok(())
 }
 
-async fn receive_transfer(
+/// Accept HELLO..DONE rounds on `conn` until either `once` is set (exit after
+/// the first round) or the sender closes the connection cleanly between
+/// rounds. Split out from [`run`] so it's directly testable over a local
+/// loopback connection without going through SSH bootstrap.
+async fn serve_connection(
     conn: &mut SeamConn,
     dest: &std::path::Path,
     fips_mode: bool,
+    once: bool,
 ) -> Result<()> {
+    let ctrl_sid = wait_for_stream(conn).await?;
+    let _ = conn.tick().await;
     let mut buf: Vec<u8> = Vec::new();
 
-    let ctrl_sid = wait_for_stream(conn).await?;
-    // Flush ACKs queued during stream-open handshake.
-    let _ = conn.tick().await;
+    loop {
+        let hello = match read_frame_opt(conn, ctrl_sid, &mut buf).await? {
+            Some(f) => f,
+            None => break, // peer disconnected without a clean BYE (e.g. crash)
+        };
+        if hello.first() == Some(&proto::BYE) {
+            break; // sender is done for good
+        }
+        receive_round(conn, ctrl_sid, &hello, dest, fips_mode, &mut buf).await?;
+        if once {
+            break;
+        }
+    }
+    Ok(())
+}
 
-    // HELLO
-    let hello = read_frame(conn, ctrl_sid, &mut buf).await?;
+/// Handle one HELLO..DONE round on an already-open control stream.
+async fn receive_round(
+    conn: &mut SeamConn,
+    ctrl_sid: StreamId,
+    hello: &[u8],
+    dest: &std::path::Path,
+    fips_mode: bool,
+    buf: &mut Vec<u8>,
+) -> Result<()> {
     let _ = conn.tick().await;
     if hello.is_empty() || hello[0] != proto::HELLO {
         bail!(
@@ -78,7 +140,7 @@ async fn receive_transfer(
 
     // File receive loop
     loop {
-        let frame = read_frame(conn, ctrl_sid, &mut buf).await?;
+        let frame = read_frame(conn, ctrl_sid, buf).await?;
         // Flush ACKs for all packets received while assembling this frame.
         let _ = conn.tick().await;
 
@@ -87,17 +149,14 @@ async fn receive_transfer(
         }
         match frame[0] {
             proto::FILE_INFO => {
-                receive_file(conn, ctrl_sid, &frame, dest, compress, &mut buf, fips_mode).await?;
+                receive_file(conn, ctrl_sid, &frame, dest, compress, buf, fips_mode).await?;
             }
             proto::PARALLEL_INIT => {
                 if frame.len() < 2 {
                     bail!("PARALLEL_INIT frame too short");
                 }
                 let n_chunks = frame[1] as usize;
-                receive_parallel(
-                    conn, ctrl_sid, n_chunks, dest, compress, &mut buf, fips_mode,
-                )
-                .await?;
+                receive_parallel(conn, ctrl_sid, n_chunks, dest, compress, buf, fips_mode).await?;
             }
             proto::DONE => break,
             t => bail!("unexpected frame type 0x{:02x}", t),
@@ -370,4 +429,323 @@ async fn receive_file(
         eprintln!("received: {name} ({size} bytes) [no integrity check]");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use seam_protocol::api::{Client, Server};
+    use seam_protocol::handshake::IdentityKeypair;
+    use tokio::time::{Duration, timeout};
+
+    /// Drives two full HELLO..DONE rounds over one connection — the exact
+    /// pattern `seam watch`'s persistent session relies on — and checks that
+    /// `serve_connection` (without `--once`) stays up between them instead
+    /// of tearing the connection down after the first round.
+    #[tokio::test]
+    async fn persistent_session_survives_multiple_rounds() {
+        let server_id = IdentityKeypair::generate();
+        let server_x25519 = server_id.x25519_public.to_bytes();
+        let server_kem_pk = server_id.kem_pk.clone();
+
+        let mut server = Server::bind("127.0.0.1:0".parse().unwrap(), server_id)
+            .await
+            .unwrap();
+        let server_addr = server.local_addr().unwrap();
+
+        let (server_conn, client_conn) = tokio::join!(
+            async {
+                timeout(Duration::from_secs(5), server.accept())
+                    .await
+                    .expect("accept timed out")
+                    .expect("no connection")
+            },
+            async {
+                let client_id = IdentityKeypair::generate();
+                let mut client = Client::bind("127.0.0.1:0".parse().unwrap(), client_id)
+                    .await
+                    .unwrap();
+                timeout(
+                    Duration::from_secs(5),
+                    client.connect(
+                        server_addr,
+                        &server_x25519,
+                        &server_kem_pk,
+                        Default::default(),
+                    ),
+                )
+                .await
+                .expect("connect timed out")
+                .expect("connect failed")
+            },
+        );
+
+        let dest = tempfile::tempdir().unwrap();
+        let dest_path = dest.path().to_path_buf();
+        let mut server_conn = server_conn;
+        let server_task =
+            tokio::spawn(
+                async move { serve_connection(&mut server_conn, &dest_path, false, false).await },
+            );
+
+        let src = tempfile::tempdir().unwrap();
+        let mut client_conn = client_conn;
+        let ctrl_sid = client_conn.open_stream().await;
+
+        // Round 1.
+        std::fs::write(src.path().join("a.txt"), b"round one").unwrap();
+        let files = crate::copy::collect_files(src.path()).unwrap();
+        crate::copy::push_files(
+            &mut client_conn,
+            ctrl_sid,
+            src.path(),
+            &files,
+            false,
+            false,
+            1,
+            false,
+            None,
+        )
+        .await
+        .expect("round 1 push failed");
+
+        // Round 2 — same connection, same control stream, no reconnect.
+        std::fs::write(src.path().join("b.txt"), b"round two").unwrap();
+        let files = crate::copy::collect_files(src.path()).unwrap();
+        crate::copy::push_files(
+            &mut client_conn,
+            ctrl_sid,
+            src.path(),
+            &files,
+            false,
+            false,
+            1,
+            false,
+            None,
+        )
+        .await
+        .expect("round 2 push failed");
+
+        // Send BYE so the server's round loop sees a clean end-of-session
+        // instead of waiting on an idle timeout (mirrors what `seam watch`'s
+        // PersistentPush::close does on real shutdown).
+        send_frame(&client_conn, ctrl_sid, &[proto::BYE]).await.unwrap();
+        client_conn.close().await;
+
+        timeout(Duration::from_secs(5), server_task)
+            .await
+            .expect("server task timed out")
+            .expect("server task panicked")
+            .expect("serve_connection returned an error");
+
+        assert_eq!(
+            std::fs::read(dest.path().join("a.txt")).unwrap(),
+            b"round one"
+        );
+        assert_eq!(
+            std::fs::read(dest.path().join("b.txt")).unwrap(),
+            b"round two"
+        );
+    }
+
+    /// With `--once`, the receiver must stop after the first round even
+    /// though the sender keeps the connection open for a second one —
+    /// this is the pre-existing behavior every other `seam` command relies
+    /// on and must not regress.
+    #[tokio::test]
+    async fn once_mode_stops_after_first_round() {
+        let server_id = IdentityKeypair::generate();
+        let server_x25519 = server_id.x25519_public.to_bytes();
+        let server_kem_pk = server_id.kem_pk.clone();
+
+        let mut server = Server::bind("127.0.0.1:0".parse().unwrap(), server_id)
+            .await
+            .unwrap();
+        let server_addr = server.local_addr().unwrap();
+
+        let (server_conn, client_conn) = tokio::join!(
+            async {
+                timeout(Duration::from_secs(5), server.accept())
+                    .await
+                    .expect("accept timed out")
+                    .expect("no connection")
+            },
+            async {
+                let client_id = IdentityKeypair::generate();
+                let mut client = Client::bind("127.0.0.1:0".parse().unwrap(), client_id)
+                    .await
+                    .unwrap();
+                timeout(
+                    Duration::from_secs(5),
+                    client.connect(
+                        server_addr,
+                        &server_x25519,
+                        &server_kem_pk,
+                        Default::default(),
+                    ),
+                )
+                .await
+                .expect("connect timed out")
+                .expect("connect failed")
+            },
+        );
+
+        let dest = tempfile::tempdir().unwrap();
+        let dest_path = dest.path().to_path_buf();
+        let mut server_conn = server_conn;
+        let server_task =
+            tokio::spawn(
+                async move { serve_connection(&mut server_conn, &dest_path, false, true).await },
+            );
+
+        let src = tempfile::tempdir().unwrap();
+        std::fs::write(src.path().join("a.txt"), b"only round").unwrap();
+        let mut client_conn = client_conn;
+        let ctrl_sid = client_conn.open_stream().await;
+        let files = crate::copy::collect_files(src.path()).unwrap();
+        crate::copy::push_files(
+            &mut client_conn,
+            ctrl_sid,
+            src.path(),
+            &files,
+            false,
+            false,
+            1,
+            false,
+            None,
+        )
+        .await
+        .expect("push failed");
+
+        // `--once` should have already returned after round one — no need
+        // to close the client connection for the server task to finish.
+        timeout(Duration::from_secs(5), server_task)
+            .await
+            .expect("server task timed out — --once did not stop after one round")
+            .expect("server task panicked")
+            .expect("serve_connection returned an error");
+
+        assert_eq!(
+            std::fs::read(dest.path().join("a.txt")).unwrap(),
+            b"only round"
+        );
+    }
+
+    /// Exercises the mechanics `seam cp --multipath` relies on: N independent,
+    /// concurrently-accepted connections (mirroring `recv --multipath-count`)
+    /// each round-robin-fed a distinct subset of files, converging on the
+    /// same destination directory. Bypasses `connect::dial`/SSH bootstrap
+    /// entirely (which touch real on-disk identity/known_hosts state) and
+    /// drives `Client`/`Server` directly, like the tests above.
+    #[tokio::test]
+    async fn multipath_round_robin_delivers_all_files_across_independent_sessions() {
+        const PATHS: usize = 3;
+
+        let server_id = IdentityKeypair::generate();
+        let server_x25519 = server_id.x25519_public.to_bytes();
+        let server_kem_pk = server_id.kem_pk.clone();
+
+        let mut server = Server::bind("127.0.0.1:0".parse().unwrap(), server_id)
+            .await
+            .unwrap();
+        let server_addr = server.local_addr().unwrap();
+
+        // Dial PATHS independent client connections concurrently — each is
+        // its own full handshake, exactly like `dial_from` per local address.
+        let mut dial_tasks = Vec::new();
+        for _ in 0..PATHS {
+            let server_kem_pk = server_kem_pk.clone();
+            dial_tasks.push(tokio::spawn(async move {
+                let client_id = IdentityKeypair::generate();
+                let mut client = Client::bind("127.0.0.1:0".parse().unwrap(), client_id)
+                    .await
+                    .unwrap();
+                timeout(
+                    Duration::from_secs(5),
+                    client.connect(
+                        server_addr,
+                        &server_x25519,
+                        &server_kem_pk,
+                        Default::default(),
+                    ),
+                )
+                .await
+                .expect("connect timed out")
+                .expect("connect failed")
+            }));
+        }
+
+        // Accept PATHS connections server-side (order doesn't need to match
+        // dial order — files are self-describing, not path-indexed).
+        let mut server_conns = Vec::with_capacity(PATHS);
+        for _ in 0..PATHS {
+            server_conns.push(
+                timeout(Duration::from_secs(5), server.accept())
+                    .await
+                    .expect("accept timed out")
+                    .expect("no connection"),
+            );
+        }
+
+        let dest = tempfile::tempdir().unwrap();
+        let mut server_tasks = Vec::with_capacity(PATHS);
+        for mut conn in server_conns {
+            let dest_path = dest.path().to_path_buf();
+            server_tasks.push(tokio::spawn(async move {
+                let r = serve_connection(&mut conn, &dest_path, false, true).await;
+                conn.close().await;
+                r
+            }));
+        }
+
+        let src = tempfile::tempdir().unwrap();
+        let all_files: Vec<String> = (0..PATHS * 2).map(|i| format!("file{i}.txt")).collect();
+        for name in &all_files {
+            std::fs::write(src.path().join(name), format!("contents of {name}")).unwrap();
+        }
+        let files = crate::copy::collect_files(src.path()).unwrap();
+
+        // Round-robin bucket files across the PATHS dialed connections —
+        // same scheme as `run_multipath_push`.
+        let mut buckets: Vec<Vec<(String, std::fs::Metadata)>> =
+            (0..PATHS).map(|_| Vec::new()).collect();
+        for (i, file) in files.into_iter().enumerate() {
+            buckets[i % PATHS].push(file);
+        }
+
+        let mut client_conns = Vec::with_capacity(PATHS);
+        for task in dial_tasks {
+            client_conns.push(task.await.unwrap());
+        }
+
+        let mut push_tasks = Vec::with_capacity(PATHS);
+        for (mut conn, bucket) in client_conns.into_iter().zip(buckets) {
+            let src_path = src.path().to_path_buf();
+            push_tasks.push(tokio::spawn(async move {
+                let ctrl_sid = conn.open_stream().await;
+                let r = crate::copy::push_files(
+                    &mut conn, ctrl_sid, &src_path, &bucket, false, false, 1, false, None,
+                )
+                .await;
+                conn.close().await;
+                r
+            }));
+        }
+        for task in push_tasks {
+            task.await.unwrap().expect("push failed");
+        }
+        for task in server_tasks {
+            task.await
+                .unwrap()
+                .expect("serve_connection returned an error");
+        }
+
+        for name in &all_files {
+            assert_eq!(
+                std::fs::read(dest.path().join(name)).unwrap(),
+                format!("contents of {name}").into_bytes(),
+                "file {name} missing or corrupted after multipath delivery"
+            );
+        }
+    }
 }

@@ -39,16 +39,17 @@ pub struct CopyArgs {
 
     /// Local bind addresses for multi-path transport (comma-separated ip:port pairs).
     ///
-    /// Example: --multipath 192.168.1.100:0,10.0.0.1:0
-    ///
-    /// Sends file chunks over multiple network interfaces simultaneously.
-    /// Combine with --multipath-redundant for maximum anti-jamming protection.
+    /// Opens one independent, fully-handshaked connection per address and
+    /// round-robins files across them — pushing to a remote destination only.
+    /// Each path is its own session, so losing one only affects the files
+    /// in flight on it. Example: --multipath 192.168.1.100:0,10.0.0.1:0
     #[arg(long, value_name = "addr1,addr2,...")]
     pub multipath: Option<String>,
 
-    /// Anti-jamming mode: send every packet on ALL active paths simultaneously.
-    ///
-    /// Receiver deduplicates by sequence number. Best for contested RF environments.
+    /// NOT YET IMPLEMENTED for `seam cp` — would require per-connection
+    /// temp-file isolation on the receiver to send the same file redundantly
+    /// over every path without a write race. Passing this with --multipath
+    /// is an error today; use --multipath alone for round-robin distribution.
     #[arg(long)]
     pub multipath_redundant: bool,
 
@@ -110,6 +111,9 @@ impl TokenBucket {
 }
 
 pub async fn run(args: CopyArgs, fips_mode: bool) -> Result<()> {
+    if let Some(multipath_str) = args.multipath.clone() {
+        return run_multipath_push(args, fips_mode, &multipath_str).await;
+    }
     let cfg = super::config::Config::load().ok().unwrap_or_default();
     let compress = if args.no_compress {
         false
@@ -271,84 +275,251 @@ pub async fn run(args: CopyArgs, fips_mode: bool) -> Result<()> {
     } else {
         // ── Push protocol: we send HELLO, wait for ACK, then send files ────────
         let src_path = PathBuf::from(&args.src);
-        let hello = [
-            proto::HELLO,
-            if compress {
-                proto::COMPRESS_ZSTD
-            } else {
-                proto::COMPRESS_NONE
-            },
-        ];
-        send_frame(&conn, ctrl_sid, &hello).await?;
-
-        let ack = read_frame(&mut conn, ctrl_sid, &mut buf).await?;
-        if ack.is_empty() || ack[0] != proto::ACK {
-            bail!("expected ACK from receiver");
-        }
-
         let files = collect_files(&src_path)?;
-        let total_bytes: u64 = files.iter().map(|(_, meta)| meta.len()).sum();
-
-        let pb = ProgressBar::new(total_bytes);
-        pb.set_style(
-            ProgressStyle::with_template(
-                "{spinner:.cyan} {msg}\n  [{bar:40.green/dim}] {bytes}/{total_bytes} ({bytes_per_sec}, eta {eta})",
-            )
-            .unwrap()
-            .progress_chars("█▉▊▋▌▍▎▏ "),
-        );
-
-        let push_start = std::time::Instant::now();
-
-        // Use parallel streams when --parallel N > 1, single file only.
-        let use_parallel = args.parallel > 1 && files.len() == 1;
-        if use_parallel {
-            let (rel_name, _meta) = &files[0];
-            pb.set_message(format!("sending {rel_name} (parallel ×{})", args.parallel));
-            send_file_parallel(
-                &mut conn,
-                ctrl_sid,
-                &src_path,
-                rel_name,
-                compress,
-                &pb,
-                &mut buf,
-                fips_mode,
-                args.parallel,
-            )
-            .await?;
-        } else {
-            for (rel_name, _meta) in &files {
-                pb.set_message(format!("sending {rel_name}"));
-                send_file(
-                    &mut conn,
-                    ctrl_sid,
-                    &src_path,
-                    rel_name,
-                    compress,
-                    &pb,
-                    args.resume,
-                    &mut buf,
-                    fips_mode,
-                    rate_limiter.as_mut(),
-                )
-                .await?;
-            }
-        }
-
-        send_frame(&conn, ctrl_sid, &[proto::DONE]).await?;
-        let push_secs = push_start.elapsed().as_secs_f64().max(0.001);
-        let push_mib_s = (total_bytes as f64) / (1024.0 * 1024.0) / push_secs;
-        pb.finish_with_message(format!(
-            "done — {} file(s), {} MiB in {:.1}s ({:.1} MiB/s)",
-            files.len(),
-            total_bytes / (1024 * 1024),
-            push_secs,
-            push_mib_s,
-        ));
+        push_files(
+            &mut conn,
+            ctrl_sid,
+            &src_path,
+            &files,
+            compress,
+            args.resume,
+            args.parallel,
+            fips_mode,
+            rate_limiter.as_mut(),
+        )
+        .await?;
     }
 
     conn.close().await;
+    Ok(())
+}
+
+/// Parse a comma-separated `--multipath` value into local bind addresses.
+fn parse_multipath_addrs(s: &str) -> Result<Vec<std::net::SocketAddr>> {
+    s.split(',')
+        .map(|part| {
+            let part = part.trim();
+            part.parse::<std::net::SocketAddr>()
+                .map_err(|e| anyhow::anyhow!("invalid --multipath address {part:?}: {e}"))
+        })
+        .collect()
+}
+
+/// `seam cp --multipath addr1,addr2,...`: push a source directory/file to a
+/// remote destination over N independent connections (one per local bind
+/// address), round-robining files across them.
+///
+/// Each path does its own full handshake and is, as far as the server is
+/// concerned, a completely separate session — this is what lets it work
+/// without any change to the server's (address-keyed) connection dispatch.
+/// The tradeoff vs. true packet-level path scheduling ([`seam_protocol::transport::multipath`])
+/// is coarser granularity (whole files, not packets) and N handshakes instead
+/// of one, in exchange for zero risk to the shared session/transport code
+/// every other command also relies on.
+async fn run_multipath_push(args: CopyArgs, fips_mode: bool, multipath_str: &str) -> Result<()> {
+    if args.multipath_redundant {
+        bail!(
+            "--multipath-redundant is not yet supported for `seam cp` (sending the same file \
+             over multiple paths concurrently needs per-connection temp-file isolation on the \
+             receiver to avoid a write race). Use --multipath alone for round-robin distribution."
+        );
+    }
+    if args.direct.is_some() {
+        bail!("--multipath cannot be combined with --direct");
+    }
+    if ssh::parse_remote(&args.src).is_some() {
+        bail!("--multipath only supports pushing to a remote destination today, not pulling");
+    }
+    let (remote, remote_path) = ssh::parse_remote(&args.dest)
+        .ok_or_else(|| anyhow::anyhow!("--multipath requires a remote destination: user@host:/path"))?;
+
+    let local_addrs = parse_multipath_addrs(multipath_str)?;
+    if local_addrs.len() < 2 {
+        bail!("--multipath requires at least 2 comma-separated addresses");
+    }
+
+    let src_path = PathBuf::from(&args.src);
+    if !src_path.exists() {
+        bail!("source not found: {}", args.src);
+    }
+
+    let cfg = super::config::Config::load().ok().unwrap_or_default();
+    let compress = if args.no_compress {
+        false
+    } else {
+        cfg.compress
+    };
+    let cipher_str = if fips_mode { "aes256gcm" } else { &cfg.cipher };
+    let cipher = seam_protocol::crypto::CipherSuite::parse(cipher_str).unwrap_or_default();
+
+    let n = local_addrs.len();
+    let seam_bin = match remote.seam_path() {
+        Some(p) => p,
+        None => {
+            eprintln!("seam not found on {} — bootstrapping…", remote.target());
+            remote.bootstrap_copy_self()?
+        }
+    };
+    let recv_subcmd = format!(
+        "recv {} --port 0 --once --multipath-count {n}{}",
+        connect::shell_quote(&remote_path),
+        if fips_mode { " --fips-mode" } else { "" }
+    );
+    eprintln!(
+        "starting receiver on {} (expecting {n} paths)…",
+        remote.target()
+    );
+    let (line, _ssh_child) = remote.start_remote_seam(&seam_bin, &recv_subcmd)?;
+    let (port, x25519_bytes, kem_pk) = connect::parse_seam_line(&line)?;
+
+    // Dial the first path alone so TOFU pinning settles before the rest dial
+    // concurrently — avoids racing multiple first-time pin writes together.
+    eprintln!("connecting via {} → {}:{port}…", local_addrs[0], remote.host);
+    let first_conn = connect::dial_from(
+        local_addrs[0],
+        &remote.host,
+        port,
+        x25519_bytes,
+        kem_pk.clone(),
+        cipher,
+    )
+    .await?;
+
+    let mut dial_set = tokio::task::JoinSet::new();
+    for &local_addr in &local_addrs[1..] {
+        let host = remote.host.clone();
+        let kem_pk = kem_pk.clone();
+        dial_set.spawn(async move {
+            eprintln!("connecting via {local_addr} → {host}:{port}…");
+            connect::dial_from(local_addr, &host, port, x25519_bytes, kem_pk, cipher).await
+        });
+    }
+    let mut conns = vec![first_conn];
+    while let Some(res) = dial_set.join_next().await {
+        conns.push(res.map_err(|e| anyhow::anyhow!("{e}"))??);
+    }
+    eprintln!("connected — {n} paths established");
+
+    // Round-robin: bucket files by index across the N connections.
+    let files = collect_files(&src_path)?;
+    let mut buckets: Vec<Vec<(String, std::fs::Metadata)>> = (0..n).map(|_| Vec::new()).collect();
+    for (i, file) in files.into_iter().enumerate() {
+        buckets[i % n].push(file);
+    }
+
+    let mut push_set = tokio::task::JoinSet::new();
+    for (path_idx, (mut conn, bucket)) in conns.into_iter().zip(buckets).enumerate() {
+        if bucket.is_empty() {
+            push_set.spawn(async move {
+                conn.close().await;
+                Ok::<(), anyhow::Error>(())
+            });
+            continue;
+        }
+        let src_path = src_path.clone();
+        push_set.spawn(async move {
+            let ctrl_sid = conn.open_stream().await;
+            eprintln!("path {path_idx}: sending {} file(s)", bucket.len());
+            let result =
+                push_files(&mut conn, ctrl_sid, &src_path, &bucket, compress, false, 1, fips_mode, None)
+                    .await;
+            conn.close().await;
+            result
+        });
+    }
+    while let Some(res) = push_set.join_next().await {
+        res.map_err(|e| anyhow::anyhow!("{e}"))??;
+    }
+
+    eprintln!("done — {n} paths");
+    Ok(())
+}
+
+/// Run one HELLO..DONE push round over an already-open control stream,
+/// sending `files` (as returned by [`collect_files`]) from under `base`.
+///
+/// Shared by `seam cp`'s single-shot push and `seam watch`'s persistent
+/// session, which reuses the same connection across many rounds instead of
+/// re-bootstrapping and re-handshaking for every sync batch.
+#[allow(clippy::too_many_arguments)]
+pub async fn push_files(
+    conn: &mut seam_protocol::api::SeamConn,
+    ctrl_sid: seam_protocol::session::stream::StreamId,
+    base: &Path,
+    files: &[(String, std::fs::Metadata)],
+    compress: bool,
+    resume: bool,
+    parallel: u8,
+    fips_mode: bool,
+    mut rate_limiter: Option<&mut TokenBucket>,
+) -> Result<()> {
+    let hello = [
+        proto::HELLO,
+        if compress {
+            proto::COMPRESS_ZSTD
+        } else {
+            proto::COMPRESS_NONE
+        },
+    ];
+    send_frame(conn, ctrl_sid, &hello).await?;
+
+    let mut buf = Vec::new();
+    let ack = read_frame(conn, ctrl_sid, &mut buf).await?;
+    if ack.is_empty() || ack[0] != proto::ACK {
+        bail!("expected ACK from receiver");
+    }
+
+    let total_bytes: u64 = files.iter().map(|(_, meta)| meta.len()).sum();
+
+    let pb = ProgressBar::new(total_bytes);
+    pb.set_style(
+        ProgressStyle::with_template(
+            "{spinner:.cyan} {msg}\n  [{bar:40.green/dim}] {bytes}/{total_bytes} ({bytes_per_sec}, eta {eta})",
+        )
+        .unwrap()
+        .progress_chars("█▉▊▋▌▍▎▏ "),
+    );
+
+    let push_start = std::time::Instant::now();
+
+    // Use parallel streams when --parallel N > 1, single file only.
+    let use_parallel = parallel > 1 && files.len() == 1;
+    if use_parallel {
+        let (rel_name, _meta) = &files[0];
+        pb.set_message(format!("sending {rel_name} (parallel ×{parallel})"));
+        send_file_parallel(
+            conn, ctrl_sid, base, rel_name, compress, &pb, &mut buf, fips_mode, parallel,
+        )
+        .await?;
+    } else {
+        for (rel_name, _meta) in files {
+            pb.set_message(format!("sending {rel_name}"));
+            send_file(
+                conn,
+                ctrl_sid,
+                base,
+                rel_name,
+                compress,
+                &pb,
+                resume,
+                &mut buf,
+                fips_mode,
+                rate_limiter.as_deref_mut(),
+            )
+            .await?;
+        }
+    }
+
+    send_frame(conn, ctrl_sid, &[proto::DONE]).await?;
+    let push_secs = push_start.elapsed().as_secs_f64().max(0.001);
+    let push_mib_s = (total_bytes as f64) / (1024.0 * 1024.0) / push_secs;
+    pb.finish_with_message(format!(
+        "done — {} file(s), {} MiB in {:.1}s ({:.1} MiB/s)",
+        files.len(),
+        total_bytes / (1024 * 1024),
+        push_secs,
+        push_mib_s,
+    ));
     Ok(())
 }
 

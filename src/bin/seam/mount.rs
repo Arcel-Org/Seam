@@ -64,6 +64,11 @@ async fn run_fuse(args: MountArgs) -> Result<()> {
         args.remote,
         mountpoint.display()
     );
+    eprintln!(
+        "warning: seam mount's filesystem is not yet implemented — it will \
+         mount successfully but always present as an empty directory. \
+         Use `seam cp`/`seam sync`/`seam watch` for real file transfer."
+    );
 
     let fs = SeamFS::new(args.remote.clone());
     let mut options = vec![

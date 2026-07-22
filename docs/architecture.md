@@ -314,7 +314,37 @@ seam config set cc bbr
 
 ## Multi-Path Transport
 
-When `--multipath addr1,addr2,...` is specified, seam binds to multiple local network interfaces simultaneously. Packets can be scheduled across paths in several modes:
+There are two distinct things called "multi-path" in this codebase — don't confuse them:
+
+### Connection-level (`seam cp --multipath`) — implemented
+
+`seam cp --multipath addr1,addr2,...` opens one independent, fully-handshaked
+connection per local address and round-robins files across them (`src/bin/seam/copy.rs`:
+`run_multipath_push`). Each path is its own session as far as the server's
+connection dispatch is concerned — the receiver (`seam recv --multipath-count N`)
+just accepts N separate connections and drains each concurrently into the same
+destination directory. This gives real fault isolation (losing one path only
+affects the files in flight on it) at the cost of coarser granularity than
+packet-level scheduling and N handshakes instead of one. `--multipath-redundant`
+is not supported this way yet — sending the same file over every path
+concurrently needs per-connection temp-file isolation on the receiver to avoid
+a write race, so it's rejected with an explicit error rather than attempted.
+Pull direction and every other command (`forward`, `ping`, `serve`, `shell`)
+don't use this path yet either.
+
+### Packet-level (`PathScheduler`/`MultiPathEndpoint`) — not wired up
+
+> **Status: engine built, not reachable from any CLI command.**
+> `MultiPathEndpoint`/`PathScheduler` below are implemented and unit-tested in
+> `src/transport/multipath.rs`, and the `multipath_addrs`/`multipath_mode`
+> config keys and remaining `--multipath`/`--multipath-redundant` flags exist,
+> but nothing constructs a `MultiPathEndpoint` from them. True packet-level
+> scheduling within a *single* session additionally requires the server's
+> connection dispatch (keyed by a single source `SocketAddr` per session in
+> `server_recv_loop`) to recognize several concurrent source addresses as one
+> session — a larger, security-relevant change, tracked as follow-up work.
+
+The design, once wired up: seam would bind to multiple local network interfaces simultaneously and schedule packets across paths in several modes:
 
 | Mode | Description |
 |---|---|
@@ -323,7 +353,7 @@ When `--multipath addr1,addr2,...` is specified, seam binds to multiple local ne
 | `redundant` | Send every packet on all paths simultaneously; receiver deduplicates by sequence number |
 | `weighted` | Weight by bandwidth estimate |
 
-Redundant mode provides anti-jamming protection: even if all but one path is jammed or degraded, delivery is guaranteed. Per-packet deduplication by sequence number prevents the anti-replay window from rejecting redundant copies.
+Redundant mode would provide anti-jamming protection: even if all but one path is jammed or degraded, delivery is guaranteed. Per-packet deduplication by sequence number prevents the anti-replay window from rejecting redundant copies. This is the mode `docs/threat-model.md`'s "Multi-path redundancy (anti-jamming)" property refers to — it is explicitly called out there as not yet reachable.
 
 ---
 

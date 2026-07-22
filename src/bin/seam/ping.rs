@@ -24,14 +24,11 @@ pub struct PingArgs {
     #[arg(short = 'i', long, default_value_t = 1000)]
     pub interval: u64,
 
-    /// Local bind addresses for multi-path transport (comma-separated ip:port pairs).
-    ///
-    /// When set, ping measures per-path RTT and shows aggregate statistics.
-    /// Example: --multipath 192.168.1.100:0,10.0.0.1:0
+    /// NOT YET IMPLEMENTED — parses but has no effect. See architecture.md#multi-path-transport.
     #[arg(long, value_name = "addr1,addr2,...")]
     pub multipath: Option<String>,
 
-    /// Anti-jamming mode: send every packet on ALL active paths simultaneously.
+    /// NOT YET IMPLEMENTED — parses but has no effect. See architecture.md#multi-path-transport.
     #[arg(long)]
     pub multipath_redundant: bool,
 }
@@ -76,6 +73,7 @@ fn print_summary(remote: &str, stats: &PingStats) {
 }
 
 pub async fn run(args: PingArgs) -> Result<()> {
+    connect::warn_if_multipath_requested(&args.multipath, args.multipath_redundant);
     let cfg = super::config::Config::load().ok().unwrap_or_default();
     let cipher = seam_protocol::crypto::CipherSuite::parse(&cfg.cipher).unwrap_or_default();
 

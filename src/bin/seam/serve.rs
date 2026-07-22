@@ -116,16 +116,11 @@ pub struct ServeArgs {
     #[arg(long, value_name = "DIR")]
     pub auth_keys_dir: Option<std::path::PathBuf>,
 
-    /// Local bind addresses for multi-path transport (comma-separated ip:port pairs).
-    ///
-    /// Example: --multipath 192.168.1.100:0,10.0.0.1:0
-    ///
-    /// When set, the server simultaneously listens on multiple network interfaces.
-    /// Enables clients to connect over whichever path is available.
+    /// NOT YET IMPLEMENTED — parses but has no effect. See architecture.md#multi-path-transport.
     #[arg(long, value_name = "addr1,addr2,...")]
     pub multipath: Option<String>,
 
-    /// Anti-jamming mode: send every packet on ALL active paths simultaneously.
+    /// NOT YET IMPLEMENTED — parses but has no effect. See architecture.md#multi-path-transport.
     #[arg(long)]
     pub multipath_redundant: bool,
 }
@@ -183,6 +178,7 @@ pub fn load_auth_keys_dir(dir: &std::path::Path) -> Result<HashSet<[u8; 32]>> {
 }
 
 pub async fn run(args: ServeArgs, fips_mode: bool) -> Result<()> {
+    connect::warn_if_multipath_requested(&args.multipath, args.multipath_redundant);
     let cfg = super::config::Config::load().ok().unwrap_or_default();
     let cipher_str = if fips_mode {
         "aes256gcm"

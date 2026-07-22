@@ -4,7 +4,7 @@
 **Version:** 1.0  
 **Date:** 2026-06-05  
 **Prepared by:** Arcel  
-**Product:** Seam v1.0.1 — Post-Quantum UDP Transport Protocol  
+**Product:** Seam v1.0.2 — Post-Quantum UDP Transport Protocol  
 **Status:** Pre-audit (third-party security audit not yet completed; see Section 6)
 
 ---
@@ -447,7 +447,7 @@ The following table enumerates the security properties Seam claims, the specific
 | Timing jitter | Per-packet LCG random delay 0–N ms before send; recommended ≤10ms for interactive, ≤50ms for bulk transfer | `src/transport/tar.rs`: `JitterConfig::sample_delay` | `max_jitter_ms > 0` (opt-in) |
 | Protocol fingerprint obfuscation | First 8 bytes of each packet XORed with BLAKE3-derived per-session mask | `src/transport/tar.rs`: `obfuscate_header`, `derive_obfuscation_secret` | `obfuscate = true` (opt-in) |
 | Chaff scheduling (exponential inter-packet intervals) | Chaff packets at exponentially-distributed intervals (mean 50ms); MTU padding to path MTU | `src/transport/chaff.rs`: `ChaffScheduler` | `ChaffScheduler::enable()` called |
-| Multi-path redundancy (anti-jamming) | Simultaneous transmission on all active paths; per-path and global dedup windows (64 packets) prevent duplicate delivery | `src/transport/multipath.rs`: `MultiPathEndpoint`, `PathScheduler::Redundant` | Multiple network interfaces configured |
+| Multi-path redundancy (anti-jamming) — **not yet wired up, do not rely on this** | Engine implemented and unit-tested, but no command constructs it; `--multipath`/`--multipath-redundant` flags currently parse and have no effect | `src/transport/multipath.rs`: `MultiPathEndpoint`, `PathScheduler::Redundant` | Not reachable from any CLI command today |
 | Audit logging | JSONL O_APPEND log at `~/.local/share/seam/audit.jsonl`; records timestamp, subcommand, remote, exit code, bytes, FIPS flag, PID | `src/bin/seam/audit.rs`: `AuditEntry`, `log()` | Always; non-fatal if write fails |
 | Key zeroization | `Zeroizing<[u8; 32]>` wrappers on all key material; explicit `zeroize()` in `Drop` impls for `DoubleRatchet`, `KeySchedule`, `PacketKeys` | `src/crypto/ratchet.rs`, `src/crypto/rekey.rs`, `src/crypto/keys.rs` | Always; on session close and on panic |
 | Cipher negotiation (downgrade resistance) | AES-256-GCM used only if both sides indicate preference; defaults to ChaCha20-Poly1305 otherwise | `src/handshake/state.rs`: `ServerHandshake::read_msg1` negotiation | Always; negotiated in handshake |
@@ -647,4 +647,4 @@ seam audit show --json --since 2026-01-01 > /var/log/seam-export.jsonl
 
 ---
 
-*This document was prepared by Arcel for the Seam v1.0.1 release. It reflects the state of the implementation as read from the source tree at the time of writing. Security properties are conditional on correct implementation; evaluators should perform independent code review against the source files cited in Section 5. This document does not constitute a security certification or accreditation.*
+*This document was prepared by Arcel for the Seam v1.0.2 release. It reflects the state of the implementation as read from the source tree at the time of writing. Security properties are conditional on correct implementation; evaluators should perform independent code review against the source files cited in Section 5. This document does not constitute a security certification or accreditation.*

@@ -19,7 +19,7 @@ blake3 = "1"
 bytes = "1"
 thiserror = "2"
 zeroize = { version = "1", features = ["derive"] }
-snow = "0.9"
+snow = { version = "0.9", features = ["risky-raw-split"] }
 x25519-dalek = { version = "2", features = ["static_secrets"] }
 rand = "0.8"
 subtle = "2"

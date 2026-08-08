@@ -173,8 +173,11 @@ impl ClientHandshake {
             .ok_or_else(|| SeamError::HandshakeFailed("no remote static".into()))?
             .try_into()
             .map_err(|_| SeamError::HandshakeFailed("bad static key length".into()))?;
+        // Real X25519-derived secret material (see `finish`'s doc comment for
+        // why this must come from the Noise chaining key, not the public hash).
+        let dh_split = self.noise.dangerously_get_raw_split();
 
-        finish(hash, peer_static, kem_shared, agreed_cipher)
+        finish(hash, peer_static, kem_shared, dh_split, agreed_cipher)
     }
 }
 
@@ -279,8 +282,9 @@ impl ServerHandshake {
             .ok_or_else(|| SeamError::HandshakeFailed("no remote static".into()))?
             .try_into()
             .map_err(|_| SeamError::HandshakeFailed("bad static key length".into()))?;
+        let dh_split = self.noise.dangerously_get_raw_split();
 
-        finish(hash, peer_static, kem_shared, agreed_cipher)
+        finish(hash, peer_static, kem_shared, dh_split, agreed_cipher)
     }
 }
 
@@ -292,9 +296,29 @@ fn finish(
     hash: Vec<u8>,
     peer_static: [u8; 32],
     kem_shared: [u8; 32],
+    dh_split: ([u8; 32], [u8; 32]),
     cipher_suite: CipherSuite,
 ) -> Result<HandshakeResult, SeamError> {
-    let x25519_component = blake3::derive_key("apex/x25519-component/v1", &hash);
+    // Real X25519-derived secret material from the Noise chaining key (via
+    // `dangerously_get_raw_split`, which HKDFs the final `ck` — the
+    // accumulator for all three DH operations in Noise_XX: ee, se, es).
+    //
+    // Previously this was `blake3::derive_key("apex/x25519-component/v1",
+    // &hash)`, where `hash` is the *public* handshake transcript hash —
+    // recomputable by anyone who observed the three handshake messages, no
+    // key material required. That made the "hybrid" construction hybrid in
+    // name only: an eavesdropper could reproduce the X25519 "contribution"
+    // from public data, so session confidentiality rested entirely on
+    // ML-KEM-768 despite the documented claim that breaking either primitive
+    // alone is insufficient. Concatenating both halves of the raw split
+    // gives a value neither peer's public transcript alone can reproduce.
+    let mut x25519_component = [0u8; 32];
+    {
+        let mut combined = [0u8; 64];
+        combined[..32].copy_from_slice(&dh_split.0);
+        combined[32..].copy_from_slice(&dh_split.1);
+        x25519_component.copy_from_slice(blake3::hash(&combined).as_bytes());
+    }
     let hybrid = HybridSharedSecret::new(kem_shared, x25519_component);
     let (keys_c2s, keys_s2c) = hybrid.derive_directional_packet_keys(&hash, cipher_suite);
     let session_id = u64::from_le_bytes(hash[..8].try_into().unwrap());

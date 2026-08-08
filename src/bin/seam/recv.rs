@@ -29,6 +29,13 @@ pub struct RecvArgs {
     /// "multiple addresses, one session" is needed.
     #[arg(long, default_value_t = 1)]
     pub multipath_count: usize,
+    /// Every connection may deliver the same filename (sender is running
+    /// `--multipath-redundant`). Stage each connection's copy under its own
+    /// suffixed `.seam-partial` file to avoid two connections writing the
+    /// same staging file concurrently, and treat "final file already exists"
+    /// as a benign race won by a faster path rather than an error.
+    #[arg(long)]
+    pub multipath_redundant: bool,
 }
 
 pub async fn run(args: RecvArgs, cli_fips_mode: bool) -> Result<()> {
@@ -62,10 +69,11 @@ pub async fn run(args: RecvArgs, cli_fips_mode: bool) -> Result<()> {
             );
         }
         let mut tasks = Vec::with_capacity(conns.len());
-        for mut conn in conns {
+        for (path_idx, mut conn) in conns.into_iter().enumerate() {
             let dest = args.dest.clone();
+            let staging_idx = args.multipath_redundant.then_some(path_idx);
             tasks.push(tokio::spawn(async move {
-                let result = serve_connection(&mut conn, &dest, fips_mode, true).await;
+                let result = serve_connection(&mut conn, &dest, fips_mode, true, staging_idx).await;
                 conn.close().await;
                 result
             }));
@@ -81,7 +89,7 @@ pub async fn run(args: RecvArgs, cli_fips_mode: bool) -> Result<()> {
         .await
         .ok_or_else(|| anyhow::anyhow!("no connection"))?;
 
-    serve_connection(&mut conn, &args.dest, fips_mode, args.once).await?;
+    serve_connection(&mut conn, &args.dest, fips_mode, args.once, None).await?;
 
     conn.close().await;
     Ok(())
@@ -96,6 +104,7 @@ async fn serve_connection(
     dest: &std::path::Path,
     fips_mode: bool,
     once: bool,
+    redundant_path_idx: Option<usize>,
 ) -> Result<()> {
     let ctrl_sid = wait_for_stream(conn).await?;
     let _ = conn.tick().await;
@@ -109,7 +118,16 @@ async fn serve_connection(
         if hello.first() == Some(&proto::BYE) {
             break; // sender is done for good
         }
-        receive_round(conn, ctrl_sid, &hello, dest, fips_mode, &mut buf).await?;
+        receive_round(
+            conn,
+            ctrl_sid,
+            &hello,
+            dest,
+            fips_mode,
+            &mut buf,
+            redundant_path_idx,
+        )
+        .await?;
         if once {
             break;
         }
@@ -118,6 +136,7 @@ async fn serve_connection(
 }
 
 /// Handle one HELLO..DONE round on an already-open control stream.
+#[allow(clippy::too_many_arguments)]
 async fn receive_round(
     conn: &mut SeamConn,
     ctrl_sid: StreamId,
@@ -125,6 +144,7 @@ async fn receive_round(
     dest: &std::path::Path,
     fips_mode: bool,
     buf: &mut Vec<u8>,
+    redundant_path_idx: Option<usize>,
 ) -> Result<()> {
     let _ = conn.tick().await;
     if hello.is_empty() || hello[0] != proto::HELLO {
@@ -149,7 +169,17 @@ async fn receive_round(
         }
         match frame[0] {
             proto::FILE_INFO => {
-                receive_file(conn, ctrl_sid, &frame, dest, compress, buf, fips_mode).await?;
+                receive_file(
+                    conn,
+                    ctrl_sid,
+                    &frame,
+                    dest,
+                    compress,
+                    buf,
+                    fips_mode,
+                    redundant_path_idx,
+                )
+                .await?;
             }
             proto::PARALLEL_INIT => {
                 if frame.len() < 2 {
@@ -300,6 +330,7 @@ async fn receive_parallel(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn receive_file(
     conn: &mut SeamConn,
     ctrl_sid: StreamId,
@@ -308,6 +339,7 @@ async fn receive_file(
     compress: bool,
     buf: &mut Vec<u8>,
     fips_mode: bool,
+    redundant_path_idx: Option<usize>,
 ) -> Result<()> {
     use std::io::{Seek, SeekFrom, Write};
 
@@ -337,10 +369,19 @@ async fn receive_file(
     //   1. The output file is never left in a partial/corrupt state.
     //   2. If a previous transfer was interrupted, we resume from the partial.
     //   3. On checksum mismatch we delete the partial and signal the sender.
+    //
+    // In `--multipath-redundant` mode, every path delivers the same filename
+    // over its own independent connection concurrently. Suffixing the staging
+    // file with the path index gives each connection an isolated write target
+    // — without this, two connections opening/truncating/writing the same
+    // `.seam-partial` file at once would interleave and corrupt it.
     let partial_path = {
         let mut p = out_path.clone();
         let mut fname = p.file_name().unwrap_or_default().to_owned();
         fname.push(".seam-partial");
+        if let Some(idx) = redundant_path_idx {
+            fname.push(format!(".p{idx}"));
+        }
         p.set_file_name(fname);
         p
     };
@@ -406,12 +447,25 @@ async fn receive_file(
         let actual = hasher.finalize();
         if actual == expected {
             // ── Atomic promotion: partial → final path ────────────────────────
-            std::fs::rename(&partial_path, &out_path)?;
-            send_frame(conn, ctrl_sid, &[proto::ACK]).await?;
-            eprintln!(
-                "received: {name} ({size} bytes) [{algo_name} OK: {}]",
-                hex::encode(&expected[..8])
-            );
+            // In redundant mode a faster path may have already promoted this
+            // exact (checksum-verified) file; `rename` onto an existing final
+            // path is still atomic and race-free, so no promotion is strictly
+            // required — but skipping it avoids needless churn and gives a
+            // clearer log line about which path "won".
+            if redundant_path_idx.is_some() && out_path.exists() {
+                let _ = std::fs::remove_file(&partial_path);
+                send_frame(conn, ctrl_sid, &[proto::ACK]).await?;
+                eprintln!(
+                    "received: {name} ({size} bytes) [{algo_name} OK, already delivered by a faster path]"
+                );
+            } else {
+                std::fs::rename(&partial_path, &out_path)?;
+                send_frame(conn, ctrl_sid, &[proto::ACK]).await?;
+                eprintln!(
+                    "received: {name} ({size} bytes) [{algo_name} OK: {}]",
+                    hex::encode(&expected[..8])
+                );
+            }
         } else {
             // ── Checksum mismatch: remove corrupted partial ───────────────────
             // Do NOT keep the partial — it is corrupt. The caller will need to
@@ -484,7 +538,7 @@ mod tests {
         let dest_path = dest.path().to_path_buf();
         let mut server_conn = server_conn;
         let server_task = tokio::spawn(async move {
-            serve_connection(&mut server_conn, &dest_path, false, false).await
+            serve_connection(&mut server_conn, &dest_path, false, false, None).await
         });
 
         let src = tempfile::tempdir().unwrap();
@@ -595,7 +649,7 @@ mod tests {
         let dest_path = dest.path().to_path_buf();
         let mut server_conn = server_conn;
         let server_task = tokio::spawn(async move {
-            serve_connection(&mut server_conn, &dest_path, false, true).await
+            serve_connection(&mut server_conn, &dest_path, false, true, None).await
         });
 
         let src = tempfile::tempdir().unwrap();
@@ -692,7 +746,7 @@ mod tests {
         for mut conn in server_conns {
             let dest_path = dest.path().to_path_buf();
             server_tasks.push(tokio::spawn(async move {
-                let r = serve_connection(&mut conn, &dest_path, false, true).await;
+                let r = serve_connection(&mut conn, &dest_path, false, true, None).await;
                 conn.close().await;
                 r
             }));
@@ -747,5 +801,142 @@ mod tests {
                 "file {name} missing or corrupted after multipath delivery"
             );
         }
+    }
+
+    /// Exercises `--multipath-redundant`: every one of PATHS connections
+    /// pushes the *same* files concurrently. Without per-connection staging
+    /// isolation, two connections would open/truncate/write the same
+    /// `.seam-partial` file at once and corrupt it. With isolation, every
+    /// path writes its own suffixed staging file and only the first to
+    /// finish (and checksum) promotes to the final path; the rest detect the
+    /// final file already exists and clean up their own partial instead of
+    /// erroring or corrupting it.
+    #[tokio::test]
+    async fn multipath_redundant_delivers_without_write_race() {
+        const PATHS: usize = 3;
+
+        let server_id = IdentityKeypair::generate();
+        let server_x25519 = server_id.x25519_public.to_bytes();
+        let server_kem_pk = server_id.kem_pk.clone();
+
+        let mut server = Server::bind("127.0.0.1:0".parse().unwrap(), server_id)
+            .await
+            .unwrap();
+        let server_addr = server.local_addr().unwrap();
+
+        let mut dial_tasks = Vec::new();
+        for _ in 0..PATHS {
+            let server_kem_pk = server_kem_pk.clone();
+            dial_tasks.push(tokio::spawn(async move {
+                let client_id = IdentityKeypair::generate();
+                let mut client = Client::bind("127.0.0.1:0".parse().unwrap(), client_id)
+                    .await
+                    .unwrap();
+                timeout(
+                    Duration::from_secs(5),
+                    client.connect(
+                        server_addr,
+                        &server_x25519,
+                        &server_kem_pk,
+                        Default::default(),
+                    ),
+                )
+                .await
+                .expect("connect timed out")
+                .expect("connect failed")
+            }));
+        }
+
+        let mut server_conns = Vec::with_capacity(PATHS);
+        for _ in 0..PATHS {
+            server_conns.push(
+                timeout(Duration::from_secs(5), server.accept())
+                    .await
+                    .expect("accept timed out")
+                    .expect("no connection"),
+            );
+        }
+
+        let dest = tempfile::tempdir().unwrap();
+        let mut server_tasks = Vec::with_capacity(PATHS);
+        for (path_idx, mut conn) in server_conns.into_iter().enumerate() {
+            let dest_path = dest.path().to_path_buf();
+            server_tasks.push(tokio::spawn(async move {
+                let r = serve_connection(&mut conn, &dest_path, false, true, Some(path_idx)).await;
+                conn.close().await;
+                r
+            }));
+        }
+
+        // Large enough (>> copy::CHUNK, 32 KiB) that `receive_file`'s
+        // while-loop spans multiple DATA frames — i.e. multiple `.await`
+        // points mid-write, which is where a concurrent truncate from
+        // another path can land and corrupt an in-progress write into a
+        // sparse/zero-holed file. A single-frame file can't exercise this:
+        // its one open+truncate happens entirely before any write.
+        let src = tempfile::tempdir().unwrap();
+        let big_content: Vec<u8> = (0..200_000usize).map(|i| (i % 251) as u8).collect();
+        std::fs::write(src.path().join("big.bin"), &big_content).unwrap();
+        let files = crate::copy::collect_files(src.path()).unwrap();
+
+        let mut client_conns = Vec::with_capacity(PATHS);
+        for task in dial_tasks {
+            client_conns.push(task.await.unwrap());
+        }
+
+        // Every path pushes the *entire* file list concurrently — this is
+        // the write race the staging isolation exists to prevent.
+        let mut push_tasks = Vec::with_capacity(PATHS);
+        for mut conn in client_conns {
+            let src_path = src.path().to_path_buf();
+            let files = files.clone();
+            push_tasks.push(tokio::spawn(async move {
+                let ctrl_sid = conn.open_stream().await;
+                let r = crate::copy::push_files(
+                    &mut conn, ctrl_sid, &src_path, &files, false, false, 1, false, None,
+                )
+                .await;
+                conn.close().await;
+                r
+            }));
+        }
+        for task in push_tasks {
+            timeout(Duration::from_secs(30), task)
+                .await
+                .expect("push timed out")
+                .unwrap()
+                .expect("push failed");
+        }
+        for task in server_tasks {
+            timeout(Duration::from_secs(30), task)
+                .await
+                .expect("serve_connection timed out")
+                .unwrap()
+                .expect("serve_connection returned an error");
+        }
+
+        let got = std::fs::read(dest.path().join("big.bin")).unwrap();
+        assert_eq!(
+            got.len(),
+            big_content.len(),
+            "big.bin has wrong length after redundant multipath delivery — likely a sparse hole \
+             from a concurrent truncate mid-write"
+        );
+        assert_eq!(
+            got, big_content,
+            "big.bin corrupted after redundant multipath delivery"
+        );
+
+        // No leftover staging files from the paths that lost the race.
+        let leftovers: Vec<_> = std::fs::read_dir(dest.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.contains(".seam-partial"))
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "leftover staging files after redundant delivery: {leftovers:?}"
+        );
     }
 }

@@ -46,10 +46,11 @@ pub struct CopyArgs {
     #[arg(long, value_name = "addr1,addr2,...")]
     pub multipath: Option<String>,
 
-    /// NOT YET IMPLEMENTED for `seam cp` — would require per-connection
-    /// temp-file isolation on the receiver to send the same file redundantly
-    /// over every path without a write race. Passing this with --multipath
-    /// is an error today; use --multipath alone for round-robin distribution.
+    /// Send every file over every `--multipath` path concurrently instead of
+    /// round-robining. The receiver keeps each path's copy in an isolated
+    /// staging file and promotes whichever finishes (and checksums) first;
+    /// later arrivals are dropped. Trades bandwidth for anti-jamming
+    /// resilience — the transfer survives any N-1 of N paths being lost.
     #[arg(long)]
     pub multipath_redundant: bool,
 
@@ -317,13 +318,6 @@ fn parse_multipath_addrs(s: &str) -> Result<Vec<std::net::SocketAddr>> {
 /// of one, in exchange for zero risk to the shared session/transport code
 /// every other command also relies on.
 async fn run_multipath_push(args: CopyArgs, fips_mode: bool, multipath_str: &str) -> Result<()> {
-    if args.multipath_redundant {
-        bail!(
-            "--multipath-redundant is not yet supported for `seam cp` (sending the same file \
-             over multiple paths concurrently needs per-connection temp-file isolation on the \
-             receiver to avoid a write race). Use --multipath alone for round-robin distribution."
-        );
-    }
     if args.direct.is_some() {
         bail!("--multipath cannot be combined with --direct");
     }
@@ -362,13 +356,23 @@ async fn run_multipath_push(args: CopyArgs, fips_mode: bool, multipath_str: &str
         }
     };
     let recv_subcmd = format!(
-        "recv {} --port 0 --once --multipath-count {n}{}",
+        "recv {} --port 0 --once --multipath-count {n}{}{}",
         connect::shell_quote(&remote_path),
+        if args.multipath_redundant {
+            " --multipath-redundant"
+        } else {
+            ""
+        },
         if fips_mode { " --fips-mode" } else { "" }
     );
     eprintln!(
-        "starting receiver on {} (expecting {n} paths)…",
-        remote.target()
+        "starting receiver on {} (expecting {n} paths{})…",
+        remote.target(),
+        if args.multipath_redundant {
+            ", redundant"
+        } else {
+            ""
+        }
     );
     let (line, _ssh_child) = remote.start_remote_seam(&seam_bin, &recv_subcmd)?;
     let (port, x25519_bytes, kem_pk) = connect::parse_seam_line(&line)?;
@@ -404,12 +408,21 @@ async fn run_multipath_push(args: CopyArgs, fips_mode: bool, multipath_str: &str
     }
     eprintln!("connected — {n} paths established");
 
-    // Round-robin: bucket files by index across the N connections.
     let files = collect_files(&src_path)?;
-    let mut buckets: Vec<Vec<(String, std::fs::Metadata)>> = (0..n).map(|_| Vec::new()).collect();
-    for (i, file) in files.into_iter().enumerate() {
-        buckets[i % n].push(file);
-    }
+    let buckets: Vec<Vec<(String, std::fs::Metadata)>> = if args.multipath_redundant {
+        // Redundant: every path sends every file. The receiver's per-connection
+        // staging isolation (see recv.rs::receive_file) makes this safe.
+        (0..n).map(|_| files.clone()).collect()
+    } else {
+        // Round-robin: bucket files by index across the N connections so each
+        // file crosses exactly one path.
+        let mut buckets: Vec<Vec<(String, std::fs::Metadata)>> =
+            (0..n).map(|_| Vec::new()).collect();
+        for (i, file) in files.into_iter().enumerate() {
+            buckets[i % n].push(file);
+        }
+        buckets
+    };
 
     let mut push_set = tokio::task::JoinSet::new();
     for (path_idx, (mut conn, bucket)) in conns.into_iter().zip(buckets).enumerate() {

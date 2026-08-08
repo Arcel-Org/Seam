@@ -318,6 +318,22 @@ fn decode_manifest(data: &[u8]) -> Result<Vec<ManifestEntry>> {
         bail!("manifest too short");
     }
     let count = u32::from_be_bytes(data[..4].try_into()?) as usize;
+    // Bound against the minimum possible per-entry size (path_len 4B +
+    // size 8B + hash bytes, for a zero-length path) before trusting `count`
+    // for allocation sizing. Without this, a malicious/corrupt manifest
+    // declaring a huge count (up to u32::MAX) drives an immediate
+    // multi-gigabyte `Vec::with_capacity` — Rust's allocator failure path
+    // aborts the process rather than returning a catchable error, so this
+    // is a crash-on-receipt DoS, independent of the later truncation
+    // checks in the loop below (which never run because the abort happens
+    // first).
+    const MIN_ENTRY_LEN: usize = 4 + 8 + SYNC_HASH_LEN;
+    if count > data.len() / MIN_ENTRY_LEN {
+        bail!(
+            "manifest entry count {count} implausible for {} bytes of data",
+            data.len()
+        );
+    }
     let mut pos = 4;
     let mut entries = Vec::with_capacity(count);
     for _ in 0..count {
@@ -938,4 +954,58 @@ pub async fn run_recv(args: SyncRecvArgs, fips_mode: bool) -> Result<()> {
 
     conn.close().await;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn manifest_roundtrip() {
+        let entries = vec![
+            ManifestEntry {
+                path: "a.txt".to_string(),
+                size: 123,
+                hash: [0x11; SYNC_HASH_LEN],
+            },
+            ManifestEntry {
+                path: "dir/b.bin".to_string(),
+                size: 0,
+                hash: [0x22; SYNC_HASH_LEN],
+            },
+        ];
+        let encoded = encode_manifest(&entries);
+        let decoded = decode_manifest(&encoded).unwrap();
+        assert_eq!(decoded.len(), entries.len());
+        assert_eq!(decoded[0].path, "a.txt");
+        assert_eq!(decoded[0].size, 123);
+        assert_eq!(decoded[1].path, "dir/b.bin");
+    }
+
+    /// Regression test: a manifest declaring a huge entry count relative to
+    /// how much data actually follows must be rejected immediately, not
+    /// used to size a `Vec::with_capacity` allocation. Before the fix, a
+    /// count near u32::MAX drove an immediate multi-gigabyte allocation
+    /// attempt — Rust's allocator failure path aborts the process rather
+    /// than returning a catchable error, so this was a crash-on-receipt DoS
+    /// reachable by either peer in a sync exchange.
+    #[test]
+    fn implausible_entry_count_is_rejected_not_allocated() {
+        let mut data = vec![SYNC_MANIFEST];
+        data.extend_from_slice(&u32::MAX.to_be_bytes());
+        // No entry data follows — a genuine manifest with u32::MAX entries
+        // would need many gigabytes here.
+        let result = decode_manifest(&data);
+        assert!(
+            result.is_err(),
+            "implausible entry count must be rejected before allocation"
+        );
+    }
+
+    #[test]
+    fn empty_manifest_roundtrip() {
+        let encoded = encode_manifest(&[]);
+        let decoded = decode_manifest(&encoded).unwrap();
+        assert!(decoded.is_empty());
+    }
 }

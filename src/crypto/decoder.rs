@@ -66,8 +66,13 @@ impl PacketDecoder {
                     })?,
             );
 
-        // Replay check before decryption
-        self.replay.check_and_insert(pkt_num)?;
+        // Read-only replay check before decryption. The window must not be
+        // mutated (committed) until *after* AEAD authentication succeeds —
+        // `pkt_num` is attacker-controlled at this point (read straight from
+        // the header, pre-auth), so committing here would let one forged
+        // packet with a huge sequence number permanently blackhole the
+        // session. See `ReplayWindow::check`'s doc comment.
+        self.replay.check(pkt_num)?;
 
         // Build nonce
         let mut nonce = self.keys.nonce_base;
@@ -84,6 +89,10 @@ impl PacketDecoder {
 
         let cipher = make_cipher(self.keys.cipher_suite, self.keys.enc_key);
         cipher.decrypt_in_place(&nonce, &header_bytes, &mut ct_buf)?;
+
+        // Authentication succeeded — now, and only now, commit `pkt_num` to
+        // the replay window.
+        self.replay.commit(pkt_num)?;
 
         // ct_buf now contains plaintext (tag has been stripped)
         let plaintext_len = payload_end - HEADER_LEN;
@@ -170,6 +179,41 @@ mod tests {
         // Flip a byte in the ciphertext beyond the 16-byte sample (HEADER_LEN + 17).
         buf[HEADER_LEN + 17] ^= 0xFF;
         assert!(matches!(dec.decode(&mut buf), Err(SeamError::AuthFailed)));
+    }
+
+    /// A single forged/garbage UDP packet with an arbitrary (attacker-chosen,
+    /// effectively random after header-protection removal) sequence number
+    /// must not be able to advance the replay window before it has been
+    /// authenticated. Before the check/commit split, `check_and_insert` slid
+    /// `base_seq` forward for *any* sequence number regardless of whether the
+    /// packet went on to pass AEAD auth — one forged packet with a huge
+    /// `pkt_num` would permanently blackhole the session, since every real
+    /// packet's much smaller sequence number would then read as `TooOld`.
+    #[test]
+    fn test_forged_packet_does_not_blackhole_session() {
+        let (enc, mut dec) = make_pair();
+
+        // A structurally-valid-length but entirely fabricated packet: no
+        // real encoder produced this, so header-protection removal yields a
+        // pseudo-random pkt_num and decryption must fail authentication.
+        let mut forged = vec![0xABu8; HEADER_LEN + 32 + TAG_LEN];
+        // Give it a huge apparent sequence number in the header field so
+        // that, pre-fix, the window slide would jump `base_seq` far forward.
+        forged[16..24].copy_from_slice(&u64::MAX.to_le_bytes());
+        assert!(
+            dec.decode(&mut forged).is_err(),
+            "a fabricated packet must never authenticate"
+        );
+
+        // A real, legitimately-sequenced packet sent afterward must still be
+        // accepted — the forged packet above must not have moved the window.
+        let mut real = vec![0u8; HEADER_LEN + 4 + TAG_LEN];
+        enc.encode(PktType::Data, b"real", &mut real).unwrap();
+        assert!(
+            dec.decode(&mut real).is_ok(),
+            "legitimate packet was rejected after a forged packet — replay \
+             window was corrupted by unauthenticated input"
+        );
     }
 
     #[test]

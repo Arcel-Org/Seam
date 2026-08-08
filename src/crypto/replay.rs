@@ -13,7 +13,43 @@ impl ReplayWindow {
         }
     }
 
-    pub fn check_and_insert(&mut self, seq: u64) -> Result<(), SeamError> {
+    /// Read-only: would `seq` be accepted right now? Never mutates state.
+    ///
+    /// Callers on an authenticated-then-checked path (i.e. everyone except
+    /// `check_and_insert`) MUST call this *before* AEAD authentication and
+    /// only call [`commit`](Self::commit) after authentication succeeds. An
+    /// attacker who can send arbitrary UDP bytes controls `seq` (it's read
+    /// from the packet header before decryption) — if that untrusted `seq`
+    /// could slide `base_seq` forward on its own, one forged packet with a
+    /// huge sequence number would permanently push the window past every
+    /// future legitimate packet's real (small) sequence number, blackholing
+    /// the session. Keeping the slide behind a successful auth check closes
+    /// that off: forged packets fail `commit`'s prerequisite and never touch
+    /// this state.
+    pub fn check(&self, seq: u64) -> Result<(), SeamError> {
+        if seq < self.base_seq {
+            return Err(SeamError::TooOld(seq));
+        }
+        let offset = seq - self.base_seq;
+        // offset >= 1024 always lands on a slot the eventual slide leaves
+        // freshly zeroed (see `commit`), so it can never be a replay.
+        if offset < 1024 {
+            let bit_pos = offset as usize;
+            let word = bit_pos / 64;
+            let bit = bit_pos % 64;
+            if self.bitmap[word] & (1u64 << bit) != 0 {
+                return Err(SeamError::Replay(seq));
+            }
+        }
+        Ok(())
+    }
+
+    /// Record `seq` as received, sliding the window forward if needed.
+    ///
+    /// Must only be called once `seq` has passed [`check`](Self::check) *and*
+    /// the packet has been successfully AEAD-authenticated — see `check`'s
+    /// doc comment for why unauthenticated input must never reach this.
+    pub fn commit(&mut self, seq: u64) -> Result<(), SeamError> {
         if seq < self.base_seq {
             return Err(SeamError::TooOld(seq));
         }
@@ -54,6 +90,16 @@ impl ReplayWindow {
 
         self.bitmap[word] |= 1u64 << bit;
         Ok(())
+    }
+
+    /// `check` then `commit` in one call. Only safe when the caller has no
+    /// separate authentication step to interpose between the two — e.g.
+    /// tests exercising the window in isolation. Anything decoding real
+    /// network packets should call `check` before decryption and `commit`
+    /// after, not this.
+    pub fn check_and_insert(&mut self, seq: u64) -> Result<(), SeamError> {
+        self.check(seq)?;
+        self.commit(seq)
     }
 }
 

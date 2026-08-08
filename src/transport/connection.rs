@@ -803,6 +803,9 @@ impl Connection {
 
     const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(25);
     const IDLE_TIMEOUT: Duration = Duration::from_secs(30);
+    /// How long a connection may sit mid-handshake (any non-Established,
+    /// non-terminal phase) before it's considered abandoned.
+    const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
 
     /// If the connection has been idle on the send side, queue a Ping frame.
     #[allow(clippy::collapsible_if)]
@@ -829,6 +832,27 @@ impl Connection {
     /// the remote went silent (likely a dead NAT mapping or crashed peer).
     pub fn is_idle(&self) -> bool {
         self.phase == ConnPhase::Established && self.last_recv.elapsed() >= Self::IDLE_TIMEOUT
+    }
+
+    /// True if this connection should be reclaimed: either genuinely idle
+    /// (Established but silent past `IDLE_TIMEOUT`) or stuck mid-handshake
+    /// past `HANDSHAKE_TIMEOUT` — e.g. a client that got a cookie challenge
+    /// and never echoed it, or echoed it and never sent msg3. Neither
+    /// `is_idle` (Established-only) nor the reactive "remove if closed"
+    /// check after processing a packet ever catches this: a connection that
+    /// receives no further packets at all is never checked again by
+    /// anything, permanently occupying one of `max_connections` slots. A
+    /// modest flood of never-completed handshakes would eventually fill the
+    /// table and lock out every legitimate client.
+    ///
+    /// Intended for a periodic sweep over the whole connection table, not
+    /// the per-packet reactive path (which already handles `is_closed`).
+    pub fn is_stale(&self) -> bool {
+        match self.phase {
+            ConnPhase::Established => self.last_recv.elapsed() >= Self::IDLE_TIMEOUT,
+            ConnPhase::Draining | ConnPhase::Closed => false,
+            _ => self.last_recv.elapsed() >= Self::HANDSHAKE_TIMEOUT,
+        }
     }
 
     pub fn is_established(&self) -> bool {

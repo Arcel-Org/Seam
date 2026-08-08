@@ -60,6 +60,7 @@ pub struct Endpoint {
     /// Newly-accepted server connections are sent here.
     pub accept_rx: mpsc::UnboundedReceiver<SharedConn>,
     _recv_task: JoinHandle<()>,
+    _cleanup_task: JoinHandle<()>,
 }
 
 impl Endpoint {
@@ -102,6 +103,7 @@ impl Endpoint {
             config.max_connections,
             config.max_new_conns_per_sec_per_ip,
         ));
+        let cleanup_task = tokio::spawn(cleanup_loop(conns.clone()));
 
         Ok(Self {
             socket,
@@ -110,6 +112,7 @@ impl Endpoint {
             conns,
             accept_rx,
             _recv_task: recv_task,
+            _cleanup_task: cleanup_task,
         })
     }
 
@@ -232,6 +235,51 @@ async fn recv_loop(
         if guard.is_closed() {
             drop(guard);
             conns.lock().await.remove(&remote);
+        }
+    }
+}
+
+/// How often to sweep `conns` for stale entries.
+const CLEANUP_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Periodically evict connections `recv_loop`'s reactive cleanup can never
+/// reach: `is_closed()` is only checked right after processing a packet for
+/// that specific remote, so a connection that never receives another packet
+/// at all — the common case for an abandoned/never-completed handshake, or a
+/// peer that vanished mid-session — sits in `conns` forever, permanently
+/// occupying one of `max_connections` slots. See `Connection::is_stale`.
+async fn cleanup_loop(conns: Arc<Mutex<HashMap<SocketAddr, SharedConn>>>) {
+    let mut interval = tokio::time::interval(CLEANUP_INTERVAL);
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        interval.tick().await;
+
+        // Snapshot handles, then check staleness without holding the map
+        // lock — avoids blocking `recv_loop`'s accept path (which needs
+        // `conns.lock()`) for however long a full sweep takes.
+        let snapshot: Vec<(SocketAddr, SharedConn)> = {
+            let map = conns.lock().await;
+            map.iter().map(|(addr, c)| (*addr, c.clone())).collect()
+        };
+
+        let mut stale = Vec::new();
+        for (addr, conn) in snapshot {
+            let guard = conn.lock().await;
+            if guard.is_closed() || guard.is_stale() {
+                stale.push(addr);
+            }
+        }
+
+        if !stale.is_empty() {
+            let mut map = conns.lock().await;
+            for addr in &stale {
+                map.remove(addr);
+            }
+            tracing::debug!(
+                count = stale.len(),
+                remaining = map.len(),
+                "cleanup: evicted stale/closed connections"
+            );
         }
     }
 }

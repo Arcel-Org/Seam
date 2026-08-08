@@ -648,10 +648,43 @@ async fn server_recv_loop(
     // Addresses already delivered to the accept channel.
     let mut delivered: HashSet<SocketAddr> = HashSet::new();
 
+    // Periodic sweep for connections `is_closed()` below can never reach:
+    // that check only runs right after processing a packet for that
+    // specific remote, so a connection that never receives another packet
+    // at all — an abandoned/never-completed handshake, or a peer that
+    // vanished mid-session — sits in `conns` forever. See
+    // `Connection::is_stale` for what counts as stale.
+    let mut cleanup_interval = tokio::time::interval(std::time::Duration::from_secs(10));
+    cleanup_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
     loop {
-        let (n, remote) = match socket.recv_from(&mut buf).await {
-            Ok(v) => v,
-            Err(_) => break,
+        let (n, remote) = tokio::select! {
+            res = socket.recv_from(&mut buf) => match res {
+                Ok(v) => v,
+                Err(_) => break,
+            },
+            _ = cleanup_interval.tick() => {
+                let mut stale = Vec::new();
+                for (addr, conn) in conns.iter() {
+                    let guard = conn.lock().await;
+                    if guard.is_closed() || guard.is_stale() {
+                        stale.push(*addr);
+                    }
+                }
+                for addr in &stale {
+                    conns.remove(addr);
+                    pending_events.remove(addr);
+                    delivered.remove(addr);
+                }
+                if !stale.is_empty() {
+                    tracing::debug!(
+                        count = stale.len(),
+                        remaining = conns.len(),
+                        "cleanup: evicted stale/closed connections"
+                    );
+                }
+                continue;
+            }
         };
 
         let mut pkt = buf[..n].to_vec();

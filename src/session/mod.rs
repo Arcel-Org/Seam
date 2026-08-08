@@ -510,6 +510,20 @@ impl Session {
                     self.role
                 )));
             }
+            // Enforce the same cap `try_open_stream_with_priority` enforces
+            // for locally-initiated streams. Without this, a peer could open
+            // an unbounded number of remote streams (any Data frame with a
+            // fresh, correctly-parity'd stream_id creates one via
+            // `get_or_create_stream` below) — each allocating a `Stream`
+            // (buffer + offset map) that's never reclaimed, defeating
+            // `SessionLimits.max_streams`'s documented purpose as a DoS
+            // defense.
+            if self.streams.len() as u32 >= self.limits.max_streams {
+                return Err(SeamError::ProtocolViolation(format!(
+                    "peer opened stream {stream_id}, exceeding max_streams={}",
+                    self.limits.max_streams
+                )));
+            }
             events.push(SessionEvent::NewStream(stream_id));
         }
         // Track receive-side consumption and schedule a MaxData when the peer's
@@ -678,6 +692,60 @@ mod tests {
         let mut out = Vec::new();
         let n = client.read(sid, &mut out, 256).unwrap();
         assert_eq!(&out[..n], b"pushed from server");
+    }
+
+    /// Regression test for a DoS where `handle_data_frame` created a new
+    /// `Stream` for any remotely-initiated, correctly-parity'd stream_id
+    /// with no cap check — unlike `try_open_stream_with_priority`, which
+    /// enforces `SessionLimits.max_streams` for *locally*-initiated streams.
+    /// A peer could open an unbounded number of remote streams (each
+    /// allocating a buffer + offset map that's never reclaimed) purely by
+    /// sending Data frames with fresh stream IDs, defeating max_streams'
+    /// documented purpose as a DoS defense.
+    #[test]
+    fn remote_stream_creation_is_capped_by_max_streams() {
+        let secret = [0x99u8; 32];
+        let keys_a = PacketKeys::derive_from_secret(&secret);
+        let keys_b = PacketKeys::derive_from_secret(&secret);
+        let mut sender = Session::with_role(
+            1,
+            Role::Client,
+            PacketEncoder::new(keys_a.clone(), 1),
+            PacketDecoder::new(keys_b.clone()),
+        );
+        let mut receiver = Session::with_limits(
+            1,
+            Role::Server,
+            PacketEncoder::new(keys_b, 1),
+            PacketDecoder::new(keys_a),
+            SessionLimits {
+                max_streams: 2,
+                ..SessionLimits::default()
+            },
+        );
+
+        // First two remotely-opened streams succeed (at the cap).
+        for i in 0..2 {
+            let sid = sender.open_stream();
+            sender.send(sid, b"x").unwrap();
+            let pkts = sender.flush().unwrap();
+            let events = receiver
+                .receive_packet(&mut pkts[0].bytes.clone())
+                .unwrap_or_else(|e| panic!("stream {i} (within cap) should succeed: {e}"));
+            assert!(events.iter().any(|e| matches!(e, SessionEvent::NewStream(_))));
+        }
+
+        // The third exceeds max_streams and must be rejected, not silently
+        // allocated.
+        let sid = sender.open_stream();
+        sender.send(sid, b"x").unwrap();
+        let pkts = sender.flush().unwrap();
+        let result = receiver.receive_packet(&mut pkts[0].bytes.clone());
+        assert!(
+            result.is_err(),
+            "stream beyond max_streams should be rejected, not silently created"
+        );
+        assert_eq!(receiver.streams.len(), 2, "stream count must not exceed the cap");
     }
 
     /// Regression test for a bug where `flush()` handed ARQ the *plaintext*

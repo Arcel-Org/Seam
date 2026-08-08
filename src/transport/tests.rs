@@ -818,3 +818,32 @@ async fn chacha20_cipher_explicit_roundtrip() {
     use crate::crypto::CipherSuite;
     cipher_roundtrip(CipherSuite::ChaCha20Poly1305, CipherSuite::ChaCha20Poly1305).await;
 }
+
+/// A connection that has just issued a cookie challenge (fresh
+/// `last_recv`) must never be considered stale — otherwise a periodic
+/// cleanup sweep using `is_stale()` would evict every legitimate
+/// in-progress handshake, not just genuinely abandoned ones.
+#[tokio::test]
+async fn fresh_half_open_connection_is_not_stale() {
+    let (_client_sock, server_sock, client_addr, _server_addr) = loopback_pair().await;
+    let server_id = Arc::new(IdentityKeypair::generate());
+    let cookie_factory = Arc::new(CookieFactory::new([0xEEu8; 32]));
+
+    let (server, _events) = Connection::accept_challenge(
+        server_sock,
+        client_addr,
+        server_id,
+        cookie_factory,
+        None,
+        Default::default(),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(server.phase, ConnPhase::ServerWaitCookie);
+    assert!(
+        !server.is_stale(),
+        "a just-created half-open connection must not be immediately evicted"
+    );
+    assert!(!server.is_closed());
+}

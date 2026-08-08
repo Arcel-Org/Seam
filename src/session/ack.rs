@@ -21,6 +21,17 @@ use std::time::Instant;
 
 pub type AckFrame = (u64, u64, Vec<(u64, u64)>);
 
+/// How far behind `largest_received` a packet number can fall before it's
+/// pruned from the tracked set. `prune_below` existed to bound
+/// `AckRanges::received`'s memory but was never called anywhere — on a
+/// long-lived or high-throughput session (e.g. `seam watch`'s persistent
+/// sessions), `received` grew by one entry per packet ever received, for
+/// the life of the session, and `build_frame` scans the whole set on every
+/// ACK. Comfortably larger than the anti-replay window (1024 slots) since
+/// ACK ranges need to cover more history for loss detection, but still
+/// bounded regardless of session duration.
+const ACK_RETAIN_WINDOW: u64 = 8192;
+
 pub struct AckRanges {
     /// Set of received packet numbers not yet ACKed on the wire.
     received: BTreeSet<u64>,
@@ -54,6 +65,7 @@ impl AckRanges {
         if ack_eliciting {
             self.ack_pending = true;
         }
+        self.prune_below(self.largest_received.saturating_sub(ACK_RETAIN_WINDOW));
     }
 
     pub fn has_pending_ack(&self) -> bool {
@@ -219,5 +231,27 @@ mod tests {
         assert!(a.has_pending_ack());
         a.build_frame();
         assert!(!a.has_pending_ack());
+    }
+
+    /// Regression test: `received` must stay bounded regardless of how many
+    /// packets a session sees over its lifetime — `prune_below` existed but
+    /// was never called, so on a long-lived session this set (and the
+    /// per-ACK O(N) scan in `build_frame`) grew without bound.
+    #[test]
+    fn received_set_stays_bounded_on_long_session() {
+        let mut a = AckRanges::new();
+        for pn in 0..100_000u64 {
+            a.on_received(pn, false);
+        }
+        assert!(
+            a.received.len() as u64 <= ACK_RETAIN_WINDOW + 1,
+            "received set grew unbounded: {} entries after 100,000 packets",
+            a.received.len()
+        );
+        // Still correctly reports the most recent packets.
+        let frame = a.build_frame();
+        let (largest, _, ranges) = parse_ack_frame(&frame).unwrap();
+        assert_eq!(largest, 99_999);
+        assert_eq!(ranges[0].1, 99_999);
     }
 }

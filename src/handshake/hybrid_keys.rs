@@ -299,18 +299,37 @@ impl HybridSharedSecret {
         Self { data }
     }
 
-    pub fn derive_packet_keys(&self, noise_hash: &[u8]) -> PacketKeys {
-        self.derive_packet_keys_with_cipher(noise_hash, CipherSuite::default())
-    }
-
-    pub fn derive_packet_keys_with_cipher(
+    /// Derive independent, directional packet keys for both directions of
+    /// traffic on this session.
+    ///
+    /// Both peers compute the exact same `(secret, noise_hash)` inputs, so
+    /// without a direction label mixed in, `derive_packet_keys_with_cipher`
+    /// alone would hand both sides *the same* enc_key/hp_key/nonce_base —
+    /// meaning the client's packet #N and the server's packet #N would be
+    /// encrypted under the identical key and nonce (`nonce_base XOR N`), a
+    /// two-time-pad break of the AEAD. Mixing a direction label into the KDF
+    /// input gives each direction its own key/nonce space so packet numbers
+    /// only ever collide with themselves.
+    pub fn derive_directional_packet_keys(
         &self,
         noise_hash: &[u8],
         cipher_suite: CipherSuite,
+    ) -> (PacketKeys, PacketKeys) {
+        let c2s = self.derive_packet_keys_with_cipher(noise_hash, cipher_suite, b"c2s");
+        let s2c = self.derive_packet_keys_with_cipher(noise_hash, cipher_suite, b"s2c");
+        (c2s, s2c)
+    }
+
+    fn derive_packet_keys_with_cipher(
+        &self,
+        noise_hash: &[u8],
+        cipher_suite: CipherSuite,
+        direction: &[u8],
     ) -> PacketKeys {
-        let mut ikm = Vec::with_capacity(64 + noise_hash.len());
+        let mut ikm = Vec::with_capacity(64 + noise_hash.len() + direction.len());
         ikm.extend_from_slice(&self.data);
         ikm.extend_from_slice(noise_hash);
+        ikm.extend_from_slice(direction);
         PacketKeys::derive_from_secret_with_cipher(&ikm, cipher_suite)
     }
 }

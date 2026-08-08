@@ -296,7 +296,15 @@ impl Session {
                 let n = self.encoder.encode(PktType::Data, &frame, &mut out)?;
                 out.truncate(n);
 
-                self.arq.on_sent(pkt_num, bytes::Bytes::from(frame));
+                // ARQ must retain the fully-encrypted wire bytes, not the
+                // plaintext `frame` — `retransmit_expired` sends whatever is
+                // stored here straight to the socket with no further
+                // encoding. Storing the plaintext would put unencrypted,
+                // headerless bytes on the wire on every retransmit, which
+                // the receiver's decoder would reject outright (too short /
+                // fails AEAD auth) — i.e. retransmission would silently
+                // never actually recover anything.
+                self.arq.on_sent(pkt_num, bytes::Bytes::from(out.clone()));
                 packets.push(TaggedPacket {
                     is_control: false,
                     bytes: out,
@@ -319,7 +327,9 @@ impl Session {
                 let pkt_num = self.encoder.peek_next_pkt_num();
                 let n = self.encoder.encode(PktType::Data, &frame, &mut out)?;
                 out.truncate(n);
-                self.arq.on_sent(pkt_num, bytes::Bytes::from(frame));
+                // See the comment on the identical pattern above: ARQ needs
+                // the encrypted wire bytes, not the plaintext frame.
+                self.arq.on_sent(pkt_num, bytes::Bytes::from(out.clone()));
                 packets.push(TaggedPacket {
                     is_control: false,
                     bytes: out,
@@ -668,6 +678,49 @@ mod tests {
         let mut out = Vec::new();
         let n = client.read(sid, &mut out, 256).unwrap();
         assert_eq!(&out[..n], b"pushed from server");
+    }
+
+    /// Regression test for a bug where `flush()` handed ARQ the *plaintext*
+    /// stream frame instead of the fully-encrypted wire bytes it actually
+    /// put on the wire. `Connection::retransmit_expired` sends whatever ARQ
+    /// hands back straight to the socket with no further encoding — with
+    /// the plaintext bug, every retransmission was headerless, unencrypted
+    /// garbage that the peer's `PacketDecoder` would reject outright (too
+    /// short, or fails AEAD auth), silently making retransmission a no-op
+    /// forever. The retransmitted bytes must be byte-identical to what was
+    /// originally sent, and must decode successfully on the peer.
+    #[tokio::test]
+    async fn retransmitted_bytes_are_the_original_ciphertext() {
+        let (mut client, mut server) = make_session_pair();
+
+        let sid = client.open_stream();
+        client.send(sid, b"retransmit me").unwrap();
+        let packets = client.flush().unwrap();
+        assert_eq!(packets.len(), 1);
+        let original_wire_bytes = packets[0].bytes.clone();
+
+        // Wait past the default 300ms RTO so drain_retransmits() fires.
+        tokio::time::sleep(Duration::from_millis(350)).await;
+        let expired = client.drain_retransmits();
+        assert_eq!(expired.len(), 1, "expected exactly one expired packet");
+        let (_, retransmit_bytes) = &expired[0];
+
+        assert_eq!(
+            retransmit_bytes.as_ref(),
+            original_wire_bytes.as_slice(),
+            "retransmitted bytes must be the exact original encrypted wire \
+             packet, not a re-serialized plaintext frame"
+        );
+
+        // And it must actually decode on the peer, not just match bytes.
+        let mut retransmit_copy = retransmit_bytes.to_vec();
+        let events = server.receive_packet(&mut retransmit_copy).unwrap();
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, SessionEvent::DataAvailable(s) if *s == sid)),
+            "peer must be able to decode and deliver the retransmitted packet"
+        );
     }
 
     #[test]

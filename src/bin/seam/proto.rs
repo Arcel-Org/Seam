@@ -49,8 +49,26 @@ pub async fn send_frame(conn: &SeamConn, sid: StreamId, payload: &[u8]) -> Resul
     }
 }
 
+/// How often to drive `conn.tick()` while waiting for incoming frames.
+///
+/// `tick()` is what actually retransmits packets that missed their
+/// congestion-window slot (`Connection::flush` silently drops any
+/// stream/FIN packet that doesn't currently fit under `cc.available()` —
+/// ARQ still believes it was sent and will retry it via RTO, but only once
+/// something calls `tick()` again). The only other place that calls `tick()`
+/// is the *sending* side's per-chunk loop in `copy.rs`; a receiver (or a
+/// sender that has finished sending and is just waiting for the final ACK)
+/// never calls it otherwise. For a burst that overflows the initial
+/// congestion window and completes in well under one RTO (300ms) — e.g. any
+/// multi-packet file on a fast/local link — nothing would ever retry the
+/// dropped packet, and both sides would wait for each other forever. Ticking
+/// here on an interval closes that gap for every caller of `read_frame`.
+const TICK_INTERVAL: std::time::Duration = std::time::Duration::from_millis(50);
+
 /// Read a complete frame, accumulating into `buf` as needed.
 pub async fn read_frame(conn: &mut SeamConn, sid: StreamId, buf: &mut Vec<u8>) -> Result<Vec<u8>> {
+    let mut ticker = tokio::time::interval(TICK_INTERVAL);
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
         if buf.len() >= 4 {
             let len = u32::from_be_bytes(buf[..4].try_into().unwrap()) as usize;
@@ -60,19 +78,26 @@ pub async fn read_frame(conn: &mut SeamConn, sid: StreamId, buf: &mut Vec<u8>) -
                 return Ok(frame);
             }
         }
-        match conn.read_event().await {
-            Some(SessionEvent::DataAvailable(s)) if s == sid => {
-                let data = conn
-                    .read(s, 65536)
-                    .await
-                    .map_err(|e| anyhow::anyhow!("{e}"))?;
-                buf.extend_from_slice(&data);
+        tokio::select! {
+            event = conn.read_event() => {
+                match event {
+                    Some(SessionEvent::DataAvailable(s)) if s == sid => {
+                        let data = conn
+                            .read(s, 65536)
+                            .await
+                            .map_err(|e| anyhow::anyhow!("{e}"))?;
+                        buf.extend_from_slice(&data);
+                    }
+                    Some(SessionEvent::StreamFinished(s)) if s == sid => {
+                        bail!("stream {s} closed before frame complete");
+                    }
+                    Some(SessionEvent::Closed) | None => bail!("connection closed"),
+                    _ => {}
+                }
             }
-            Some(SessionEvent::StreamFinished(s)) if s == sid => {
-                bail!("stream {s} closed before frame complete");
+            _ = ticker.tick() => {
+                let _ = conn.tick().await;
             }
-            Some(SessionEvent::Closed) | None => bail!("connection closed"),
-            _ => {}
         }
     }
 }
@@ -87,6 +112,8 @@ pub async fn read_frame_opt(
     sid: StreamId,
     buf: &mut Vec<u8>,
 ) -> Result<Option<Vec<u8>>> {
+    let mut ticker = tokio::time::interval(TICK_INTERVAL);
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
         if buf.len() >= 4 {
             let len = u32::from_be_bytes(buf[..4].try_into().unwrap()) as usize;
@@ -96,7 +123,14 @@ pub async fn read_frame_opt(
                 return Ok(Some(frame));
             }
         }
-        match conn.read_event().await {
+        let event = tokio::select! {
+            event = conn.read_event() => event,
+            _ = ticker.tick() => {
+                let _ = conn.tick().await;
+                continue;
+            }
+        };
+        match event {
             Some(SessionEvent::DataAvailable(s)) if s == sid => {
                 let data = conn
                     .read(s, 65536)

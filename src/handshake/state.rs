@@ -23,7 +23,14 @@ const CIPHER_FLAG_AES: u8 = 0x01;
 
 pub struct HandshakeResult {
     pub session_id: u64,
-    pub keys: PacketKeys,
+    /// Packet keys for client→server traffic. The client encrypts with
+    /// these; the server decrypts with these. Independent from `keys_s2c` —
+    /// see [`HybridSharedSecret::derive_directional_packet_keys`] for why
+    /// directional separation matters.
+    pub keys_c2s: PacketKeys,
+    /// Packet keys for server→client traffic. The server encrypts with
+    /// these; the client decrypts with these.
+    pub keys_s2c: PacketKeys,
     pub peer_static_pubkey: [u8; 32],
     /// The cipher suite agreed during the handshake.
     pub cipher_suite: CipherSuite,
@@ -289,11 +296,12 @@ fn finish(
 ) -> Result<HandshakeResult, SeamError> {
     let x25519_component = blake3::derive_key("apex/x25519-component/v1", &hash);
     let hybrid = HybridSharedSecret::new(kem_shared, x25519_component);
-    let keys = hybrid.derive_packet_keys_with_cipher(&hash, cipher_suite);
+    let (keys_c2s, keys_s2c) = hybrid.derive_directional_packet_keys(&hash, cipher_suite);
     let session_id = u64::from_le_bytes(hash[..8].try_into().unwrap());
     Ok(HandshakeResult {
         session_id,
-        keys,
+        keys_c2s,
+        keys_s2c,
         peer_static_pubkey: peer_static,
         cipher_suite,
         handshake_hash: hash,
@@ -443,5 +451,31 @@ mod tests {
     fn test_full_handshake() {
         // Backward-compat alias
         run_handshake(CipherSuite::default(), CipherSuite::default());
+    }
+
+    /// The two directions of a session must use independent keys (and
+    /// therefore independent nonce spaces) — otherwise the client's packet
+    /// #N and the server's packet #N would be encrypted under the identical
+    /// key and nonce, a two-time-pad break. Both peers must still agree with
+    /// each other on each direction's keys.
+    #[test]
+    fn directional_keys_differ_but_agree_across_peers() {
+        let (c, s) = run_handshake(CipherSuite::default(), CipherSuite::default());
+
+        assert_ne!(
+            c.keys_c2s.enc_key, c.keys_s2c.enc_key,
+            "the two directions must not share an encryption key"
+        );
+        assert_ne!(
+            c.keys_c2s.nonce_base, c.keys_s2c.nonce_base,
+            "the two directions must not share a nonce base"
+        );
+
+        // Client's view of each direction must match the server's view of
+        // the same direction (both derive both directions locally).
+        assert_eq!(c.keys_c2s.enc_key, s.keys_c2s.enc_key);
+        assert_eq!(c.keys_c2s.nonce_base, s.keys_c2s.nonce_base);
+        assert_eq!(c.keys_s2c.enc_key, s.keys_s2c.enc_key);
+        assert_eq!(c.keys_s2c.nonce_base, s.keys_s2c.nonce_base);
     }
 }

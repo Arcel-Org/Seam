@@ -245,8 +245,6 @@ impl Connection {
             "seam.handshake.complete: post-quantum handshake established"
         );
 
-        let enc = PacketEncoder::new(result.keys.clone(), result.session_id);
-        let dec = PacketDecoder::new(result.keys.clone());
         // Client-initiated connections take the Client role; server connections
         // use the Server role so they allocate even stream IDs on push.
         let role = if self.server_identity.is_some() {
@@ -254,6 +252,17 @@ impl Connection {
         } else {
             crate::session::Role::Client
         };
+        // Each direction has its own independent keys (see
+        // `HybridSharedSecret::derive_directional_packet_keys`) — the client
+        // encrypts with keys_c2s and decrypts with keys_s2c; the server does
+        // the reverse. Using the same keys for both directions would mean
+        // both peers' packet #N is encrypted under the identical key+nonce.
+        let (our_tx, our_rx) = match role {
+            crate::session::Role::Client => (result.keys_c2s.clone(), result.keys_s2c.clone()),
+            crate::session::Role::Server => (result.keys_s2c.clone(), result.keys_c2s.clone()),
+        };
+        let enc = PacketEncoder::new(our_tx, result.session_id);
+        let dec = PacketDecoder::new(our_rx);
         self.session = Some(Session::with_role(result.session_id, role, enc, dec));
         self.peer_static_pubkey = Some(result.peer_static_pubkey);
         self.phase = ConnPhase::Established;
@@ -263,12 +272,17 @@ impl Connection {
         self._server_kem_pk = None;
 
         // Install session secret into TAR state for obfuscation key derivation
-        // and cover traffic schedule initialisation.
-        self.tar.set_session_secret(&result.keys.enc_key);
+        // and cover traffic schedule initialisation. This must be identical
+        // on both peers (obfuscation is XORed on one side and reversed on
+        // the other), so it's derived from both directional keys combined
+        // rather than from either single direction.
+        let tar_secret =
+            blake3::hash(&[result.keys_c2s.enc_key, result.keys_s2c.enc_key].concat());
+        self.tar.set_session_secret(tar_secret.as_bytes());
 
         // Server: issue and send an encrypted session ticket for 0-RTT resumption.
         if let Some(tk) = &self.ticket_key {
-            let ticket = tk.issue(result.session_id, &result.keys);
+            let ticket = tk.issue(result.session_id, &result.keys_c2s, &result.keys_s2c);
             if let Some(session) = self.session.as_mut() {
                 let mut out = vec![0u8; 32 + ticket.len() + 16];
                 if let Ok(n) = session.encode_raw(PktType::SessionTicket, &ticket, &mut out) {
@@ -754,10 +768,18 @@ impl Connection {
             self.cc.on_timeout();
         }
         for (_, data) in expired {
+            // Apply the same padding/obfuscation as a normal send. Skipping
+            // this would send an un-obfuscated packet while the peer expects
+            // every packet to be obfuscated (when TAR obfuscation is
+            // enabled), corrupting header parsing on arrival.
+            let mut wire_bytes = self.tar.maybe_pad(data.to_vec());
+            self.tar.maybe_obfuscate(&mut wire_bytes);
             self.socket
-                .send_to(&data, self.remote)
+                .send_to(&wire_bytes, self.remote)
                 .await
                 .map_err(|e| SeamError::HandshakeFailed(e.to_string()))?;
+            self.tar.on_real_send(wire_bytes.len());
+            self.send_counter += 1;
         }
         Ok(())
     }

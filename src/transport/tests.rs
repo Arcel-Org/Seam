@@ -372,11 +372,12 @@ fn session_ticket_encode_decode() {
     use crate::transport::resumption::{SessionTicket, WEAKER_FS_WARNING};
     println!("{WEAKER_FS_WARNING}");
     let keys = PacketKeys::derive_from_secret(&[0xABu8; 32]);
-    let ticket = SessionTicket::new(42u64, keys.clone());
+    let ticket = SessionTicket::new(42u64, keys.clone(), keys.clone());
     let bytes = ticket.to_bytes();
     let parsed = SessionTicket::from_bytes(&bytes).unwrap();
     assert_eq!(parsed.session_id, 42);
-    assert_eq!(parsed.keys.enc_key, keys.enc_key);
+    assert_eq!(parsed.keys_c2s.enc_key, keys.enc_key);
+    assert_eq!(parsed.keys_s2c.enc_key, keys.enc_key);
 }
 
 // ── Datagram end-to-end ──────────────────────────────────────────────────

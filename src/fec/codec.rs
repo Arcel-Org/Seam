@@ -17,9 +17,15 @@ pub const FEC_REPAIR_HDR: usize = 9; // group_id(4) + repair_idx(1) + k(1) + r(1
 
 /// Cauchy matrix element: C[i][j] = 1 / (i XOR (r + j))
 /// i ∈ [0, r), j ∈ [0, k). All (i XOR (r+j)) are distinct and non-zero for
-/// small k+r values (guaranteed when k+r ≤ 128).
+/// small k+r values (guaranteed when k+r ≤ 128) — but that invariant only
+/// holds for `i`/`r`/`k` an honest encoder actually generated. On decode,
+/// `i` (repair_idx), `r`, and `k` are all wire-supplied and not otherwise
+/// range-checked against each other, so a crafted repair packet can make
+/// `i ^ (r+j) == 0`. Returns `None` in that case instead of panicking
+/// (debug) or silently computing a wrong "recovered" value (release) —
+/// callers on the decode path must treat it as a decode failure.
 #[inline]
-fn cauchy(i: u8, j: u8, r: u8) -> u8 {
+fn cauchy(i: u8, j: u8, r: u8) -> Option<u8> {
     gf::inv(i ^ (r.wrapping_add(j)))
 }
 
@@ -147,7 +153,11 @@ impl FecEncoder {
         for i in 0..r {
             let mut sym = vec![0u8; len];
             for j in 0..actual_k {
-                gf::mul_add_slice(&mut sym, &self.sources[j as usize], cauchy(i, j, r));
+                // Safe: i ∈ [0, r) and j ∈ [0, actual_k) are both locally
+                // generated here, not wire data — the k+r ≤ 128 invariant
+                // in `cauchy`'s doc comment applies.
+                let c = cauchy(i, j, r).expect("encoder-generated i/j/r must satisfy k+r <= 128");
+                gf::mul_add_slice(&mut sym, &self.sources[j as usize], c);
             }
             repairs.push(FecRepairData {
                 group_id: self.group_id,
@@ -252,7 +262,16 @@ impl GroupState {
             } else {
                 // Take next available repair row for this missing column.
                 let &ri = rep_iter.next().expect("repair count invariant violated");
-                let row: Vec<u8> = (0..self.k).map(|j| cauchy(ri, j, r)).collect();
+                // `ri`, `r`, and `k` are all wire-supplied — reject rather
+                // than recover from an adversarial/malformed combination
+                // that makes a Cauchy entry's denominator zero.
+                let mut row = Vec::with_capacity(self.k as usize);
+                for j in 0..self.k {
+                    match cauchy(ri, j, r) {
+                        Some(c) => row.push(c),
+                        None => return None,
+                    }
+                }
                 mat.push(row);
                 rhs.push(self.repairs[&ri].clone());
             }
@@ -281,7 +300,9 @@ fn gauss_rhs(mat: &mut [Vec<u8>], rhs: &mut [Vec<u8>], k: usize) -> bool {
         mat.swap(col, pivot);
         rhs.swap(col, pivot);
 
-        let piv_inv = gf::inv(mat[col][col]);
+        // Safe: `pivot` was just selected as a row with a non-zero entry in
+        // this column, and swapped into `mat[col]`.
+        let piv_inv = gf::inv(mat[col][col]).expect("pivot is non-zero by construction");
         for v in mat[col].iter_mut() {
             *v = gf::mul(*v, piv_inv);
         }
@@ -455,6 +476,38 @@ mod tests {
         let rec_map: HashMap<u8, Vec<u8>> = recovered.into_iter().collect();
         assert_eq!(&rec_map[&1][..sources[1].len()], sources[1].as_slice());
         assert_eq!(&rec_map[&4][..sources[4].len()], sources[4].as_slice());
+    }
+
+    /// Regression test: a crafted repair packet with `repair_idx == r` makes
+    /// a Cauchy matrix entry's denominator (`i XOR (r+j)`) zero at j=0 — an
+    /// honest encoder never generates `repair_idx >= r` (its own loop is
+    /// `for i in 0..r`), but decode takes `repair_idx`/`k`/`r` straight off
+    /// the wire with no cross-check. Before the fix, `gf::inv(0)` panicked
+    /// in debug builds and silently returned a wrong value in release
+    /// builds (both feeding a bogus "recovered" source into the caller as
+    /// if it were real data). Must now cleanly fail to recover instead.
+    #[test]
+    fn crafted_repair_idx_equal_to_r_does_not_panic_or_corrupt() {
+        let k = 2u8;
+        let r = 1u8;
+        let mut dec = FecDecoder::new();
+
+        // One source present, one missing — decode needs the repair row.
+        dec.add_source(1, 0, k, r, &payload(0, 16));
+
+        let malicious_repair = FecRepairData {
+            group_id: 1,
+            repair_idx: r, // == r, triggers i ^ (r+0) == 0 in cauchy()
+            k,
+            r,
+            padded_len: 16,
+            data: vec![0u8; 16],
+        };
+        let result = dec.add_repair(&malicious_repair);
+        assert!(
+            result.is_none(),
+            "decode must fail cleanly on a degenerate Cauchy row, not fabricate a value"
+        );
     }
 
     #[test]

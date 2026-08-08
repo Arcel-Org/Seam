@@ -319,16 +319,24 @@ There are two distinct things called "multi-path" in this codebase — don't con
 ### Connection-level (`seam cp --multipath`) — implemented
 
 `seam cp --multipath addr1,addr2,...` opens one independent, fully-handshaked
-connection per local address and round-robins files across them (`src/bin/seam/copy.rs`:
-`run_multipath_push`). Each path is its own session as far as the server's
-connection dispatch is concerned — the receiver (`seam recv --multipath-count N`)
-just accepts N separate connections and drains each concurrently into the same
-destination directory. This gives real fault isolation (losing one path only
-affects the files in flight on it) at the cost of coarser granularity than
-packet-level scheduling and N handshakes instead of one. `--multipath-redundant`
-is not supported this way yet — sending the same file over every path
-concurrently needs per-connection temp-file isolation on the receiver to avoid
-a write race, so it's rejected with an explicit error rather than attempted.
+connection per local address and, by default, round-robins files across them
+(`src/bin/seam/copy.rs`: `run_multipath_push`). Each path is its own session
+as far as the server's connection dispatch is concerned — the receiver
+(`seam recv --multipath-count N`) just accepts N separate connections and
+drains each concurrently into the same destination directory. This gives
+real fault isolation (losing one path only affects the files in flight on
+it) at the cost of coarser granularity than packet-level scheduling and N
+handshakes instead of one.
+
+`--multipath-redundant` sends every file over every path concurrently
+instead of round-robining, trading bandwidth for anti-jamming resilience —
+the transfer survives any N-1 of N paths being lost. The receiver stages
+each path's copy under its own `<name>.seam-partial.p<idx>` file (see
+`recv.rs::receive_file`) so concurrent connections never write the same
+staging file at once; whichever path finishes and checksums first promotes
+to the final path, and later arrivals detect it's already there and clean
+up their own partial instead of re-promoting.
+
 Pull direction and every other command (`forward`, `ping`, `serve`, `shell`)
 don't use this path yet either.
 

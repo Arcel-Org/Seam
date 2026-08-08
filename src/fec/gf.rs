@@ -51,10 +51,19 @@ pub fn div(a: u8, b: u8) -> u8 {
     EXP[log_diff]
 }
 
+/// Multiplicative inverse. `0` has none — returns `None` rather than
+/// panicking (debug builds) or silently returning a wrong value (release
+/// builds, where `LOG[0]` reads as its zero-initialized default and the
+/// computation runs to completion with a bogus result). Callers that reach
+/// this with attacker-controlled input (e.g. FEC decode building a Cauchy
+/// matrix from wire-supplied repair indices) must treat `None` as "reject
+/// this input", not paper over it.
 #[inline(always)]
-pub fn inv(a: u8) -> u8 {
-    debug_assert!(a != 0, "GF inverse of zero");
-    EXP[255 - LOG[a as usize] as usize]
+pub fn inv(a: u8) -> Option<u8> {
+    if a == 0 {
+        return None;
+    }
+    Some(EXP[255 - LOG[a as usize] as usize])
 }
 
 /// Multiply a byte slice by a scalar in-place: dst[i] ^= scalar * src[i].
@@ -166,7 +175,9 @@ pub fn invert_matrix(mat: &mut [Vec<u8>], k: usize) -> bool {
         let Some(pivot) = pivot else { return false };
         aug.swap(col, pivot);
 
-        let pivot_inv = inv(aug[col][col]);
+        // Safe: `pivot` was just selected as a row with a non-zero entry in
+        // this column, and swapped into `aug[col]`.
+        let pivot_inv = inv(aug[col][col]).expect("pivot is non-zero by construction");
         // Scale pivot row
         for v in aug[col].iter_mut() {
             *v = mul(*v, pivot_inv);
@@ -200,8 +211,13 @@ mod tests {
     #[test]
     fn test_mul_inverse() {
         for a in 1u8..=255 {
-            assert_eq!(mul(a, inv(a)), 1, "a={a}");
+            assert_eq!(mul(a, inv(a).unwrap()), 1, "a={a}");
         }
+    }
+
+    #[test]
+    fn test_inv_zero_is_none() {
+        assert_eq!(inv(0), None);
     }
 
     #[test]

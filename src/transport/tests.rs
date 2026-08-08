@@ -255,7 +255,7 @@ fn prober_echo_returns_rtt() {
 fn gf_all_inverses() {
     use crate::fec::gf;
     for a in 1u8..=255 {
-        assert_eq!(gf::mul(a, gf::inv(a)), 1, "a={a}");
+        assert_eq!(gf::mul(a, gf::inv(a).unwrap()), 1, "a={a}");
     }
 }
 

@@ -47,6 +47,11 @@ pub const GET_PATH: u8 = 0x0e;
 /// Response is one ENTRY frame then DONE on success, or just DONE if the
 /// path doesn't exist.
 pub const STAT_PATH: u8 = 0x0f;
+/// TOKEN frame: [type(1)][u16 token_len][token bytes]
+/// Sent by `seam cp --direct` as the *first* frame on the control stream
+/// when its SEAM connection line carries a `TOKEN=` field — `seam share`'s
+/// recipient authentication. See `share.rs`.
+pub const TOKEN: u8 = 0xf0;
 
 pub const COMPRESS_NONE: u8 = 0;
 pub const COMPRESS_ZSTD: u8 = 1;

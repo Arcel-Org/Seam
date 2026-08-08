@@ -136,8 +136,12 @@ pub async fn run(args: CopyArgs, fips_mode: bool) -> Result<()> {
     let src_remote = ssh::parse_remote(&args.src);
     let dst_remote = ssh::parse_remote(&args.dest);
 
+    let mut direct_token: Option<String> = None;
     let (is_pull, ready_line, host, dest_path, _ssh_child) = if let Some(direct) = args.direct {
         // --direct: caller already started the peer, just parse the line.
+        // A TOKEN= field (set by `seam share`) must be sent to the peer
+        // before anything else — see the pull branch below.
+        direct_token = connect::extract_token(&direct);
         let is_pull = src_remote.is_some();
         (
             is_pull,
@@ -217,8 +221,32 @@ pub async fn run(args: CopyArgs, fips_mode: bool) -> Result<()> {
     let mut conn = connect::dial(&host, port, x25519_bytes, kem_pk, cipher).await?;
     eprintln!("connected — post-quantum handshake complete");
 
-    let ctrl_sid = conn.open_stream().await;
+    // Who opens the control stream depends on who speaks first:
+    //   - Normal pull (remote `_send`/`recv` process): the remote opens its
+    //     own stream and sends HELLO unprompted. We must wait for that
+    //     stream (`wait_for_stream`) rather than open a separate one of our
+    //     own — stream IDs are independently allocated per role (odd for
+    //     client, even for server), so a locally-opened stream and the
+    //     remote's stream are two different streams entirely; watching the
+    //     wrong one hangs forever waiting for data that arrives elsewhere.
+    //   - Push, or a `--direct` pull carrying a token (`seam share`'s
+    //     recipient): we speak first (files, or the TOKEN frame), so we
+    //     open the stream ourselves and the remote waits for it.
+    let ctrl_sid = if is_pull && direct_token.is_none() {
+        proto::wait_for_stream(&mut conn).await?
+    } else {
+        conn.open_stream().await
+    };
     let mut buf = Vec::new();
+
+    if let Some(token) = &direct_token {
+        let token_bytes = token.as_bytes();
+        let mut frame = Vec::with_capacity(3 + token_bytes.len());
+        frame.push(proto::TOKEN);
+        frame.extend_from_slice(&(token_bytes.len() as u16).to_be_bytes());
+        frame.extend_from_slice(token_bytes);
+        send_frame(&conn, ctrl_sid, &frame).await?;
+    }
 
     if is_pull {
         // ── Pull protocol: remote sends HELLO, we ACK, then receive files ────
@@ -967,4 +995,87 @@ pub async fn receive_file(
         eprintln!("received: {name} ({size} bytes) [no integrity check]");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use seam_protocol::api::{Client, Server};
+    use seam_protocol::handshake::IdentityKeypair;
+
+    /// Regression test for a bug where `seam cp`'s pull direction opened
+    /// its own control stream instead of waiting for the remote sender's.
+    /// Stream IDs are allocated independently per role (odd for the
+    /// initiating/client side, even for the accepting/server side) — a
+    /// client-opened stream and the stream the remote `_send`/`recv`
+    /// process actually opens and writes HELLO to are two different
+    /// streams entirely. Watching the wrong one hangs forever, since
+    /// `read_frame` only reacts to events for the specific stream ID it was
+    /// given and silently ignores events for any other stream. This means
+    /// `seam cp <remote>:/path <local>` (pull) never worked at all,
+    /// independent of and in addition to the `seam share` auth bypass this
+    /// session also fixed (share.rs uses the same pull code path).
+    ///
+    /// This test mirrors exactly what a real remote sender (`send.rs`'s
+    /// `_send`, or `seam share`'s `handle_share_conn` before its own fix)
+    /// does: open a stream and send HELLO unprompted, without the client
+    /// having spoken first. The fix is `proto::wait_for_stream` on the pull
+    /// path instead of `conn.open_stream()` — see `run()`.
+    #[tokio::test]
+    async fn pull_client_finds_remote_initiated_stream() {
+        let server_id = IdentityKeypair::generate();
+        let server_x25519 = server_id.x25519_public.to_bytes();
+        let server_kem_pk = server_id.kem_pk.clone();
+        let mut server = Server::bind("127.0.0.1:0".parse().unwrap(), server_id)
+            .await
+            .unwrap();
+        let server_addr = server.local_addr().unwrap();
+
+        let (server_conn, mut client_conn) = tokio::join!(
+            async { server.accept().await.unwrap() },
+            async {
+                let client_id = IdentityKeypair::generate();
+                let mut client = Client::bind("127.0.0.1:0".parse().unwrap(), client_id)
+                    .await
+                    .unwrap();
+                client
+                    .connect(
+                        server_addr,
+                        &server_x25519,
+                        &server_kem_pk,
+                        Default::default(),
+                    )
+                    .await
+                    .unwrap()
+            }
+        );
+
+        // Server side: exactly send.rs's pattern — open our own stream and
+        // send HELLO unprompted, no waiting.
+        let server_task = tokio::spawn(async move {
+            let mut conn = server_conn;
+            let ctrl_sid = conn.open_stream().await;
+            send_frame(&conn, ctrl_sid, &[proto::HELLO, proto::COMPRESS_NONE])
+                .await
+                .unwrap();
+            let mut buf = Vec::new();
+            let ack = read_frame(&mut conn, ctrl_sid, &mut buf).await.unwrap();
+            assert_eq!(ack[0], proto::ACK);
+        });
+
+        // Client side: the fix — wait for the remote's stream instead of
+        // opening our own (which would be a completely different stream:
+        // client-role IDs are odd, server-role IDs are even).
+        let ctrl_sid = proto::wait_for_stream(&mut client_conn).await.unwrap();
+        let mut buf = Vec::new();
+        let hello = read_frame(&mut client_conn, ctrl_sid, &mut buf)
+            .await
+            .unwrap();
+        assert_eq!(hello[0], proto::HELLO);
+        send_frame(&client_conn, ctrl_sid, &[proto::ACK])
+            .await
+            .unwrap();
+
+        server_task.await.unwrap();
+    }
 }

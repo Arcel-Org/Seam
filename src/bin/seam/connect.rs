@@ -79,6 +79,15 @@ pub fn parse_seam_line(
     ))
 }
 
+/// Extract an optional `TOKEN=<hex>` field from a SEAM connection line.
+/// Used by `seam cp --direct` to authenticate against a `seam share`
+/// one-time token — see `share.rs`.
+pub fn extract_token(line: &str) -> Option<String> {
+    line.split_whitespace()
+        .skip(1)
+        .find_map(|part| part.strip_prefix("TOKEN=").map(|s| s.to_string()))
+}
+
 pub fn identity_path() -> std::path::PathBuf {
     dirs::config_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("."))

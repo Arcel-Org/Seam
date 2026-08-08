@@ -99,8 +99,7 @@ pub async fn run(args: ShareArgs, fips_mode: bool) -> Result<()> {
     eprintln!();
     eprintln!("  Recipient runs:");
     eprintln!(
-        "  seam cp --direct \"SEAM PORT={local_port} X25519={x25519_hex} KEM={kem_hex} TOKEN={token}\" {}",
-        filename
+        "  seam cp --direct \"SEAM PORT={local_port} X25519={x25519_hex} KEM={kem_hex} TOKEN={token}\" share:/{filename} ./"
     );
     eprintln!();
     eprintln!(
@@ -177,27 +176,32 @@ async fn handle_share_conn(
     remaining: &AtomicUsize,
     _downloads_allowed: usize,
 ) -> Result<()> {
-    let ctrl_sid = conn.open_stream().await;
+    // The client speaks first (TOKEN), so it opens the stream; we wait for
+    // it rather than opening our own — a locally-opened stream here would
+    // be a completely different stream from the one the client is actually
+    // writing to (stream IDs are independently allocated per role), so we'd
+    // wait forever for a TOKEN frame that arrives on a stream we're not
+    // watching. This was the reason `seam share` never worked at all,
+    // token check aside — see connect::wait_for_stream's other callers
+    // (recv.rs, ls.rs, mount.rs) for the same client-speaks-first pattern.
+    let ctrl_sid = proto::wait_for_stream(&mut conn).await?;
     let mut buf = Vec::new();
 
-    // Protocol: client sends TOKEN frame first, then we verify.
-    // TOKEN frame: [0xF0][u16 token_len][token bytes]
+    // Protocol: client must send a TOKEN frame first — this is the entire
+    // access-control mechanism `seam share --times`/`--expire` promises, so
+    // there is no "serve anyway for compatibility" fallback: anything other
+    // than a valid, matching TOKEN frame is rejected outright.
     let frame = read_frame(&mut conn, ctrl_sid, &mut buf).await?;
-    if frame.is_empty() {
-        bail!("no token frame received");
+    if frame.is_empty() || frame[0] != proto::TOKEN || frame.len() < 3 {
+        bail!("expected TOKEN frame — rejected");
     }
-    if frame[0] != 0xF0 || frame.len() < 3 {
-        // Older seam cp without token support — still serve for compatibility.
-        // In a strict deployment, reject here.
-    } else {
-        let token_len = u16::from_be_bytes([frame[1], frame[2]]) as usize;
-        if frame.len() < 3 + token_len {
-            bail!("token frame truncated");
-        }
-        let provided_token = std::str::from_utf8(&frame[3..3 + token_len])?;
-        if provided_token != expected_token {
-            bail!("invalid token — rejected");
-        }
+    let token_len = u16::from_be_bytes([frame[1], frame[2]]) as usize;
+    if frame.len() < 3 + token_len {
+        bail!("token frame truncated");
+    }
+    let provided_token = std::str::from_utf8(&frame[3..3 + token_len])?;
+    if !constant_time_eq(provided_token.as_bytes(), expected_token.as_bytes()) {
+        bail!("invalid token — rejected");
     }
 
     // Decrement remaining before serving (reserve the slot).
@@ -259,6 +263,20 @@ async fn handle_share_conn(
     Ok(())
 }
 
+/// Constant-time byte comparison — avoids leaking how many leading bytes of
+/// the token matched via a timing side-channel (a plain `!=` short-circuits
+/// on the first differing byte).
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
+}
+
 /// Parse human-readable duration string: "30s", "5m", "2h", "1d".
 fn parse_duration(s: &str) -> Result<u64> {
     if let Some(n) = s.strip_suffix('s') {
@@ -312,4 +330,158 @@ fn local_outbound_ip() -> Option<String> {
     let sock = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
     sock.connect("8.8.8.8:80").ok()?;
     Some(sock.local_addr().ok()?.ip().to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use seam_protocol::api::{Client, Server};
+    use seam_protocol::handshake::IdentityKeypair;
+
+    async fn make_pair() -> (
+        seam_protocol::api::SeamConn,
+        seam_protocol::api::SeamConn,
+    ) {
+        let server_id = IdentityKeypair::generate();
+        let server_x25519 = server_id.x25519_public.to_bytes();
+        let server_kem_pk = server_id.kem_pk.clone();
+        let mut server = Server::bind("127.0.0.1:0".parse().unwrap(), server_id)
+            .await
+            .unwrap();
+        let server_addr = server.local_addr().unwrap();
+        tokio::join!(
+            async { server.accept().await.unwrap() },
+            async {
+                let client_id = IdentityKeypair::generate();
+                let mut client = Client::bind("127.0.0.1:0".parse().unwrap(), client_id)
+                    .await
+                    .unwrap();
+                client
+                    .connect(
+                        server_addr,
+                        &server_x25519,
+                        &server_kem_pk,
+                        Default::default(),
+                    )
+                    .await
+                    .unwrap()
+            }
+        )
+    }
+
+    async fn send_token(
+        conn: &seam_protocol::api::SeamConn,
+        sid: seam_protocol::session::stream::StreamId,
+        token: &[u8],
+    ) -> Result<()> {
+        let mut frame = vec![proto::TOKEN];
+        frame.extend_from_slice(&(token.len() as u16).to_be_bytes());
+        frame.extend_from_slice(token);
+        send_frame(conn, sid, &frame).await
+    }
+
+    /// End-to-end: a client that sends the correct TOKEN frame first gets
+    /// served the real file content, checksum and all.
+    #[tokio::test]
+    async fn valid_token_allows_download() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("secret.txt"), b"top secret payload").unwrap();
+        let path = dir.path().join("secret.txt");
+
+        let (server_conn, mut client_conn) = make_pair().await;
+        let remaining = AtomicUsize::new(1);
+
+        let server_task = tokio::spawn(async move {
+            handle_share_conn(server_conn, &path, "correct-token", false, false, &remaining, 1)
+                .await
+        });
+
+        let sid = client_conn.open_stream().await;
+        send_token(&client_conn, sid, b"correct-token").await.unwrap();
+
+        let mut buf = Vec::new();
+        let hello = read_frame(&mut client_conn, sid, &mut buf).await.unwrap();
+        assert_eq!(hello[0], proto::HELLO);
+        send_frame(&client_conn, sid, &[proto::ACK]).await.unwrap();
+
+        let info = read_frame(&mut client_conn, sid, &mut buf).await.unwrap();
+        assert_eq!(info[0], proto::FILE_INFO);
+        let size = u64::from_be_bytes(info[1..9].try_into().unwrap());
+        let mut received = Vec::new();
+        while (received.len() as u64) < size {
+            let d = read_frame(&mut client_conn, sid, &mut buf).await.unwrap();
+            assert_eq!(d[0], proto::DATA);
+            received.extend_from_slice(&d[1..]);
+        }
+        let cksum = read_frame(&mut client_conn, sid, &mut buf).await.unwrap();
+        assert_eq!(cksum[0], proto::CHECKSUM);
+        // send_file (server side) waits for this ACK before returning.
+        send_frame(&client_conn, sid, &[proto::ACK]).await.unwrap();
+        let done = read_frame(&mut client_conn, sid, &mut buf).await.unwrap();
+        assert_eq!(done[0], proto::DONE);
+
+        assert_eq!(received, b"top secret payload");
+        server_task.await.unwrap().unwrap();
+    }
+
+    /// Regression test for the auth-bypass: a client that skips the TOKEN
+    /// frame entirely (sending a plain HELLO first, as a normal `seam cp`
+    /// client — or an attacker — would) must be rejected, not served
+    /// "for compatibility".
+    #[tokio::test]
+    async fn missing_token_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("secret.txt"), b"top secret payload").unwrap();
+        let path = dir.path().join("secret.txt");
+
+        let (server_conn, client_conn) = make_pair().await;
+        let remaining = AtomicUsize::new(1);
+
+        let server_task = tokio::spawn(async move {
+            handle_share_conn(server_conn, &path, "correct-token", false, false, &remaining, 1)
+                .await
+        });
+
+        let sid = client_conn.open_stream().await;
+        send_frame(&client_conn, sid, &[proto::HELLO, proto::COMPRESS_NONE])
+            .await
+            .unwrap();
+
+        let result = server_task.await.unwrap();
+        assert!(
+            result.is_err(),
+            "connection without a TOKEN frame must be rejected, not served"
+        );
+    }
+
+    /// A syntactically valid TOKEN frame with the wrong token must also be
+    /// rejected.
+    #[tokio::test]
+    async fn wrong_token_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("secret.txt"), b"top secret payload").unwrap();
+        let path = dir.path().join("secret.txt");
+
+        let (server_conn, client_conn) = make_pair().await;
+        let remaining = AtomicUsize::new(1);
+
+        let server_task = tokio::spawn(async move {
+            handle_share_conn(server_conn, &path, "correct-token", false, false, &remaining, 1)
+                .await
+        });
+
+        let sid = client_conn.open_stream().await;
+        send_token(&client_conn, sid, b"wrong-token").await.unwrap();
+
+        let result = server_task.await.unwrap();
+        assert!(result.is_err(), "wrong token must be rejected");
+    }
+
+    #[test]
+    fn constant_time_eq_matches_regular_equality() {
+        assert!(constant_time_eq(b"abc", b"abc"));
+        assert!(!constant_time_eq(b"abc", b"abd"));
+        assert!(!constant_time_eq(b"abc", b"ab"));
+        assert!(!constant_time_eq(b"", b"a"));
+    }
 }

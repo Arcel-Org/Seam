@@ -201,12 +201,12 @@ seam share ./dataset/ --times 3 --expire 2h
 
 Output:
 ```
-  seam share  report.pdf  (1 download · expires never)
-  ──────────────────────────────────────────────────────
-  Recipient runs:
-    seam cp --token abc123... 203.0.113.5:59241:/report.pdf ./
+  seam share — 1 download(s) allowed
 
-  Waiting for connection…
+  Recipient runs:
+  seam cp --direct "SEAM PORT=59241 X25519=... KEM=... TOKEN=abc123..." share:/report.pdf ./
+
+  Or with explicit address: seam cp 203.0.113.5:59241/report.pdf  (if on same LAN)
 ```
 
 ---

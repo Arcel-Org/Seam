@@ -6,7 +6,7 @@
 ///
 /// Usage:
 ///   seam mount user@host:/remote/path /local/mountpoint
-use anyhow::{Result, bail};
+use anyhow::Result;
 use clap::Args;
 
 // ── Public argument structs (always compiled) ────────────────────────────────
@@ -41,7 +41,7 @@ pub async fn run(args: MountArgs) -> Result<()> {
     #[cfg(not(feature = "fuse"))]
     {
         let _ = args;
-        bail!(
+        anyhow::bail!(
             "seam was not compiled with FUSE support (enable the 'fuse' feature).\n\
              Rebuild with: cargo build --features fuse"
         );

@@ -28,6 +28,25 @@ pub const CHUNK_INFO: u8 = 0x0b;
 /// persistent multi-round session (e.g. `seam watch` shutting down). Lets the
 /// receiver exit immediately instead of waiting on connection-idle detection.
 pub const BYE: u8 = 0x0c;
+/// LS_PATH frame: [type(1)][path bytes]
+/// Sent by `seam mount`'s client on a freshly-opened stream to list a
+/// directory at an arbitrary remote path (unlike LS, whose target path is
+/// fixed for the lifetime of the bootstrap process). Response is zero or
+/// more ENTRY frames followed by DONE, same as LS.
+pub const LS_PATH: u8 = 0x0d;
+/// GET_PATH frame: [type(1)][path bytes]
+/// Sent by `seam mount`'s client to fetch a file's full contents by path.
+/// Response is FILE_INFO, then DATA frames until FILE_INFO's declared size
+/// is reached, then CHECKSUM (BLAKE3) — the same framing `seam cp` uses for
+/// a push, minus the leading HELLO/ACK negotiation (mount reads are
+/// uncompressed and don't need a compression-preference handshake).
+pub const GET_PATH: u8 = 0x0e;
+/// STAT_PATH frame: [type(1)][path bytes]
+/// Sent by `seam mount`'s client for a single-path metadata lookup
+/// (getattr/lookup) without listing the whole containing directory.
+/// Response is one ENTRY frame then DONE on success, or just DONE if the
+/// path doesn't exist.
+pub const STAT_PATH: u8 = 0x0f;
 
 pub const COMPRESS_NONE: u8 = 0;
 pub const COMPRESS_ZSTD: u8 = 1;

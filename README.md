@@ -69,7 +69,7 @@ seam transfers the same data in about 30% less wall time than scp on a clean loc
 | NAT hole punching | ✅ seam punch | ❌ | ❌ | ❌ |
 | Port scanner built-in | ✅ seam scan | ❌ | ❌ | ❌ |
 | Proxy (SOCKS5) built-in | ✅ seam proxy | ❌ | ✅ | ❌ |
-| FUSE filesystem | 🚧 mounts, but browsing is a stub | ❌ | ❌ | ❌ |
+| FUSE filesystem | ✅ read-only, whole-file reads | ❌ | ❌ | ❌ |
 | Interactive TUI | ✅ | ❌ | ❌ | ❌ |
 
 ---
@@ -307,10 +307,12 @@ Used as a building block for peer-to-peer seam connections through symmetric NAT
 
 Mount a remote directory as a local filesystem. Requires FUSE to be available on the host.
 
-> **Not yet functional.** The mount succeeds, but the filesystem implementation
-> is currently a stub — it never contacts the remote, so it always presents as
-> an empty, read-only directory. Tracked as follow-up work; use `seam cp`/`seam
-> sync`/`seam watch` for real file transfer today.
+> **Read-only, whole-file reads.** Browsing, `stat`, and reading files work —
+> each `open()` fetches the whole file over the encrypted connection
+> (checksum-verified) and caches it in memory for the life of the file
+> handle, so this isn't yet suited to very large files or heavy concurrent
+> access. Writes are not implemented. Use `seam cp`/`seam sync`/`seam watch`
+> for large transfers or write access today.
 
 ```sh
 seam mount alice@server:/data /mnt/remote

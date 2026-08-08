@@ -52,8 +52,6 @@ pub async fn run(args: MountArgs) -> Result<()> {
 
 #[cfg(feature = "fuse")]
 async fn run_fuse(args: MountArgs) -> Result<()> {
-    use std::ffi::OsStr;
-
     let mountpoint = std::path::PathBuf::from(&args.mountpoint);
     if !mountpoint.exists() {
         std::fs::create_dir_all(&mountpoint)?;
@@ -71,15 +69,17 @@ async fn run_fuse(args: MountArgs) -> Result<()> {
     );
 
     let fs = SeamFS::new(args.remote.clone());
-    let mut options = vec![
+    let mut mount_options = vec![
         fuser::MountOption::FSName("seam".to_string()),
         fuser::MountOption::AutoUnmount,
     ];
     if args.read_only {
-        options.push(fuser::MountOption::RO);
+        mount_options.push(fuser::MountOption::RO);
     }
+    let mut config = fuser::Config::default();
+    config.mount_options = mount_options;
 
-    fuser::mount2(fs, &mountpoint, &options)
+    fuser::mount2(fs, &mountpoint, &config)
         .map_err(|e| anyhow::anyhow!("FUSE mount failed: {e}"))?;
 
     Ok(())
@@ -100,26 +100,26 @@ impl SeamFS {
 #[cfg(feature = "fuse")]
 impl fuser::Filesystem for SeamFS {
     fn lookup(
-        &mut self,
-        _req: &fuser::Request<'_>,
-        _parent: u64,
+        &self,
+        _req: &fuser::Request,
+        _parent: fuser::INodeNo,
         _name: &std::ffi::OsStr,
         reply: fuser::ReplyEntry,
     ) {
-        reply.error(libc::ENOENT);
+        reply.error(fuser::Errno::ENOENT);
     }
 
     fn getattr(
-        &mut self,
-        _req: &fuser::Request<'_>,
-        ino: u64,
-        _fh: Option<u64>,
+        &self,
+        _req: &fuser::Request,
+        ino: fuser::INodeNo,
+        _fh: Option<fuser::FileHandle>,
         reply: fuser::ReplyAttr,
     ) {
-        if ino == fuser::FUSE_ROOT_ID {
+        if ino == fuser::INodeNo::ROOT {
             let now = std::time::SystemTime::now();
             let attr = fuser::FileAttr {
-                ino: fuser::FUSE_ROOT_ID,
+                ino: fuser::INodeNo::ROOT,
                 size: 0,
                 blocks: 0,
                 atime: now,
@@ -137,28 +137,28 @@ impl fuser::Filesystem for SeamFS {
             };
             reply.attr(&std::time::Duration::from_secs(1), &attr);
         } else {
-            reply.error(libc::ENOENT);
+            reply.error(fuser::Errno::ENOENT);
         }
     }
 
     fn readdir(
-        &mut self,
-        _req: &fuser::Request<'_>,
-        ino: u64,
-        _fh: u64,
-        offset: i64,
+        &self,
+        _req: &fuser::Request,
+        ino: fuser::INodeNo,
+        _fh: fuser::FileHandle,
+        offset: u64,
         mut reply: fuser::ReplyDirectory,
     ) {
-        if ino != fuser::FUSE_ROOT_ID {
-            reply.error(libc::ENOENT);
+        if ino != fuser::INodeNo::ROOT {
+            reply.error(fuser::Errno::ENOENT);
             return;
         }
         let entries = [
-            (fuser::FUSE_ROOT_ID, fuser::FileType::Directory, "."),
-            (fuser::FUSE_ROOT_ID, fuser::FileType::Directory, ".."),
+            (fuser::INodeNo::ROOT, fuser::FileType::Directory, "."),
+            (fuser::INodeNo::ROOT, fuser::FileType::Directory, ".."),
         ];
         for (i, (ino, kind, name)) in entries.iter().enumerate().skip(offset as usize) {
-            if reply.add(*ino, (i + 1) as i64, *kind, name) {
+            if reply.add(*ino, (i + 1) as u64, *kind, name) {
                 break;
             }
         }

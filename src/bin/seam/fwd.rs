@@ -10,8 +10,47 @@ use seam_protocol::{
     tunnel::SeamMux,
 };
 use tokio::net::TcpListener;
+use tokio::sync::Semaphore;
 
 use crate::{connect, ssh};
+
+/// Maximum number of forwarded connections/streams handled concurrently by a
+/// single `seam fwd` (client) or `_fwd-recv` (remote receiver) process.
+///
+/// `seam fwd` deliberately exposes a TCP port to inbound traffic — that's the
+/// whole point of a reverse forward — so without a cap, anyone able to reach
+/// that port could open unbounded concurrent connections. Each one
+/// unconditionally spawned a Tokio task and opened a new mux stream on both
+/// sides with no limit, which is fd/memory exhaustion triggerable by anyone
+/// who can reach the forwarded port, not just the operator. 256 is a
+/// generous default for interactive/reverse-tunnel use; adjust if needed.
+const MAX_CONCURRENT_FORWARDS: usize = 256;
+
+/// Acquire a forward slot from `slots`, waiting (and logging once) if the
+/// pool is already saturated. Shared by both the client (`run`) and receiver
+/// (`run_recv`) accept loops so a burst of inbound connections can't spawn
+/// unbounded concurrent work — callers acquire this *before* accepting the
+/// next connection/stream, so excess connections queue for a slot (kernel
+/// backlog on the TCP side) instead of all being accepted and spawned at
+/// once.
+async fn acquire_forward_slot(
+    slots: &Arc<Semaphore>,
+    context: &str,
+) -> tokio::sync::OwnedSemaphorePermit {
+    match Arc::clone(slots).try_acquire_owned() {
+        Ok(permit) => permit,
+        Err(_) => {
+            eprintln!(
+                "{context}: {MAX_CONCURRENT_FORWARDS} concurrent forwarded connections already \
+                 in use; waiting for a slot before accepting more"
+            );
+            Arc::clone(slots)
+                .acquire_owned()
+                .await
+                .expect("forward_slots semaphore is never closed")
+        }
+    }
+}
 
 // ── Client args ───────────────────────────────────────────────────────────────
 
@@ -83,7 +122,7 @@ pub async fn run(args: FwdArgs) -> Result<()> {
     // Start the remote receiver: it will listen on TCP :remote_port and wait for
     // the Seam client (us) to connect, then forward accepted TCP connections back.
     let subcmd = format!("_fwd-recv --listen-port {} --port 0", remote_port);
-    let (conn, _child) = connect::bootstrap_and_connect(&remote, &host, &subcmd, cipher).await?;
+    let (conn, child) = connect::bootstrap_and_connect(&remote, &host, &subcmd, cipher).await?;
 
     let mux = SeamMux::new(conn);
 
@@ -104,8 +143,15 @@ pub async fn run(args: FwdArgs) -> Result<()> {
     // consecutive_failures tracks repeated local connect failures; after 5 in a row
     // we back off briefly to avoid spamming logs and burning CPU.
     let consecutive_failures: Arc<AtomicU32> = Arc::new(AtomicU32::new(0));
+    let forward_slots = Arc::new(Semaphore::new(MAX_CONCURRENT_FORWARDS));
 
     loop {
+        // Acquire a slot before accepting the next stream, so we don't keep
+        // pulling in unbounded work from the mux when we're already at
+        // capacity — this provides real backpressure rather than just
+        // capping the count of spawned tasks.
+        let permit = acquire_forward_slot(&forward_slots, "fwd").await;
+
         let stream = match mux.accept_stream().await {
             Some(s) => s,
             None => break,
@@ -113,6 +159,7 @@ pub async fn run(args: FwdArgs) -> Result<()> {
         let target = format!("{local_host}:{local_port}");
         let failures = Arc::clone(&consecutive_failures);
         tokio::spawn(async move {
+            let _permit = permit;
             // Back off if local target has been repeatedly unreachable.
             let fail_count = failures.load(Ordering::Relaxed);
             if fail_count > 0 {
@@ -139,6 +186,13 @@ pub async fn run(args: FwdArgs) -> Result<()> {
             }
         });
     }
+
+    // The mux/connection is done — tear down the bootstrap SSH child (and
+    // the remote `seam` worker it started) explicitly. Just letting `child`
+    // drop here would NOT signal the process (Child::drop only closes our
+    // handle to it), leaking an orphaned local `ssh` process and remote
+    // worker on every successful `seam fwd` run.
+    ssh::terminate_async(child).await;
 
     Ok(())
 }
@@ -177,18 +231,28 @@ pub async fn run_recv(args: FwdRecvArgs) -> Result<()> {
     eprintln!("reverse tunnel receiver ready on TCP :{actual_tcp_port}");
 
     // Accept TCP connections from the outside world and open Seam streams back
-    // to the originating client for each one.
+    // to the originating client for each one. This is the side directly
+    // reachable by inbound traffic, so it's the primary place an unbounded
+    // accept loop turns into remotely-triggerable fd/memory exhaustion —
+    // gate it with the same forward-slot cap as the client loop above.
+    let forward_slots = Arc::new(Semaphore::new(MAX_CONCURRENT_FORWARDS));
     loop {
+        let permit = acquire_forward_slot(&forward_slots, "fwd-recv").await;
+
         let (mut tcp, peer) = match tcp_listener.accept().await {
             Ok(v) => v,
             Err(e) => {
                 eprintln!("tcp accept error: {e}");
+                // Sustained accept errors (e.g. EMFILE) would otherwise busy-spin
+                // this loop; a brief backoff keeps CPU/log usage sane.
+                tokio::time::sleep(Duration::from_millis(20)).await;
                 continue;
             }
         };
         tracing::debug!("fwd-recv: new TCP connection from {peer}");
         let mux = mux.clone();
         tokio::spawn(async move {
+            let _permit = permit;
             let mut seam = mux.open_stream().await;
             let _ = tokio::io::copy_bidirectional(&mut seam, &mut tcp).await;
         });
@@ -199,3 +263,96 @@ pub async fn run_recv(args: FwdRecvArgs) -> Result<()> {
 // The client uses connect::parse_seam_line which ignores unknown fields, so
 // the extra TCP= field is silently skipped. That's fine — we derive the
 // remote TCP port from args, not from the SEAM line.
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::AtomicUsize;
+
+    /// Regression test for the unbounded-connection-fanout bug: `seam fwd` exposes
+    /// a local TCP port to inbound traffic and, before this fix, unconditionally
+    /// spawned a Tokio task + opened a new mux stream per accepted connection with
+    /// no cap — fd/memory exhaustion triggerable by anyone who can reach the
+    /// forwarded port. `acquire_forward_slot` is the shared choke point both
+    /// accept loops (`run` and `run_recv`) now gate on; verify directly (using a
+    /// real `Semaphore`, not a mock) that:
+    ///   1. no more than `cap` callers ever hold a permit concurrently, and
+    ///   2. callers beyond the cap wait (backpressure) rather than being dropped
+    ///      or all being let through at once.
+    #[tokio::test]
+    async fn acquire_forward_slot_caps_concurrency_and_queues_the_rest() {
+        let cap = 4usize;
+        let total = cap * 3;
+        let slots = Arc::new(Semaphore::new(cap));
+        let current = Arc::new(AtomicUsize::new(0));
+        let max_seen = Arc::new(AtomicUsize::new(0));
+        let completed = Arc::new(AtomicUsize::new(0));
+        // Opened only after we've confirmed the cap is being enforced; gates how
+        // many callers may finish and release their forward slot.
+        let release_gate = Arc::new(Semaphore::new(0));
+
+        let mut handles = Vec::with_capacity(total);
+        for _ in 0..total {
+            let slots = Arc::clone(&slots);
+            let current = Arc::clone(&current);
+            let max_seen = Arc::clone(&max_seen);
+            let completed = Arc::clone(&completed);
+            let release_gate = Arc::clone(&release_gate);
+            handles.push(tokio::spawn(async move {
+                let permit = acquire_forward_slot(&slots, "test").await;
+                let now = current.fetch_add(1, Ordering::SeqCst) + 1;
+                max_seen.fetch_max(now, Ordering::SeqCst);
+
+                // Hold the slot until the test releases us.
+                let _release_permit = release_gate.acquire_owned().await.unwrap();
+
+                current.fetch_sub(1, Ordering::SeqCst);
+                completed.fetch_add(1, Ordering::SeqCst);
+                drop(permit);
+            }));
+        }
+
+        // Wait until exactly `cap` callers are holding a permit concurrently.
+        // Bounded by an overall timeout (not a fixed sleep) so this can't hang the
+        // suite if the cap is broken; the poll itself doesn't assert on timing.
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while current.load(Ordering::SeqCst) < cap {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("expected `cap` callers to acquire a permit concurrently");
+
+        // Give the scheduler plenty of chances to let more than `cap` through if
+        // the semaphore weren't actually bounding concurrency.
+        for _ in 0..200 {
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(
+            current.load(Ordering::SeqCst),
+            cap,
+            "no more than `cap` forwarded connections should be in flight at once"
+        );
+        assert_eq!(
+            max_seen.load(Ordering::SeqCst),
+            cap,
+            "concurrency must never have exceeded the cap"
+        );
+        assert_eq!(
+            completed.load(Ordering::SeqCst),
+            0,
+            "excess callers must still be queued, not dropped or completed early"
+        );
+
+        // Release everyone; every queued caller must eventually get a slot and
+        // finish (proving they were waiting, not silently dropped).
+        release_gate.add_permits(total);
+        for h in handles {
+            tokio::time::timeout(Duration::from_secs(5), h)
+                .await
+                .expect("queued caller never completed after its slot was released")
+                .unwrap();
+        }
+        assert_eq!(completed.load(Ordering::SeqCst), total);
+    }
+}

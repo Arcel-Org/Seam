@@ -33,7 +33,7 @@ pub struct LsRecvArgs {
 pub async fn run(args: LsArgs) -> Result<()> {
     let cfg = super::config::Config::load().ok().unwrap_or_default();
     let cipher = seam_protocol::crypto::CipherSuite::parse(&cfg.cipher).unwrap_or_default();
-    let (conn, _child) = if let Some(direct) = args.direct {
+    let (conn, child) = if let Some(direct) = args.direct {
         let (port, x25519, kem_pk) = connect::parse_seam_line(&direct)?;
         let conn = connect::dial("127.0.0.1", port, x25519, kem_pk, cipher).await?;
         (conn, None)
@@ -59,42 +59,57 @@ pub async fn run(args: LsArgs) -> Result<()> {
         (conn, Some(child))
     };
 
-    let mut conn = conn;
-    let ctrl_sid = conn.open_stream().await;
-    let mut buf = Vec::new();
+    // Run the LS exchange in its own scope so we can terminate the bootstrap
+    // SSH child (and the remote worker it started) on the way out
+    // regardless of whether the exchange succeeded or failed — otherwise
+    // both would leak since dropping `Child` doesn't signal the process.
+    let outcome: Result<()> = async {
+        let mut conn = conn;
+        let ctrl_sid = conn.open_stream().await;
+        let mut buf = Vec::new();
 
-    // Send LS request
-    proto::send_frame(&conn, ctrl_sid, &[proto::LS]).await?;
+        // Send LS request
+        proto::send_frame(&conn, ctrl_sid, &[proto::LS]).await?;
 
-    // Read entries until DONE
-    loop {
-        let frame = proto::read_frame(&mut conn, ctrl_sid, &mut buf).await?;
-        if frame.is_empty() {
-            bail!("empty frame");
-        }
-        match frame[0] {
-            proto::ENTRY => {
-                if frame.len() < 15 {
-                    continue;
-                }
-                let name_len = u16::from_be_bytes(frame[1..3].try_into()?) as usize;
-                if frame.len() < 3 + name_len + 8 + 4 {
-                    continue;
-                }
-                let name = String::from_utf8_lossy(&frame[3..3 + name_len]);
-                let size = u64::from_be_bytes(frame[3 + name_len..3 + name_len + 8].try_into()?);
-                let mode =
-                    u32::from_be_bytes(frame[3 + name_len + 8..3 + name_len + 8 + 4].try_into()?);
-                let mode_str = mode_to_str(mode);
-                let size_str = human_size(size);
-                println!("{mode_str} {size_str:>10}  {name}");
+        // Read entries until DONE
+        loop {
+            let frame = proto::read_frame(&mut conn, ctrl_sid, &mut buf).await?;
+            if frame.is_empty() {
+                bail!("empty frame");
             }
-            proto::DONE => break,
-            t => bail!("unexpected frame type 0x{:02x}", t),
+            match frame[0] {
+                proto::ENTRY => {
+                    if frame.len() < 15 {
+                        continue;
+                    }
+                    let name_len = u16::from_be_bytes(frame[1..3].try_into()?) as usize;
+                    if frame.len() < 3 + name_len + 8 + 4 {
+                        continue;
+                    }
+                    let name = String::from_utf8_lossy(&frame[3..3 + name_len]);
+                    let size =
+                        u64::from_be_bytes(frame[3 + name_len..3 + name_len + 8].try_into()?);
+                    let mode = u32::from_be_bytes(
+                        frame[3 + name_len + 8..3 + name_len + 8 + 4].try_into()?,
+                    );
+                    let mode_str = mode_to_str(mode);
+                    let size_str = human_size(size);
+                    println!("{mode_str} {size_str:>10}  {name}");
+                }
+                proto::DONE => break,
+                t => bail!("unexpected frame type 0x{:02x}", t),
+            }
         }
+        conn.close().await;
+        Ok(())
     }
-    conn.close().await;
-    Ok(())
+    .await;
+
+    if let Some(child) = child {
+        ssh::terminate_async(child).await;
+    }
+
+    outcome
 }
 
 pub async fn run_recv(args: LsRecvArgs) -> Result<()> {

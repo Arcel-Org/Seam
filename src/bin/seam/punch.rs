@@ -54,19 +54,18 @@ pub async fn run(args: PunchArgs) -> Result<()> {
         .map_err(|_| anyhow!("invalid peer address: {peer_str} (use IP:PORT)"))?;
 
     eprintln!("discovering external address via STUN ({stun_server})…");
-    let puncher = HolePuncher::new(&stun_server);
+    // Bind ONE socket, discover its external address on it, and punch from
+    // that same socket below — a NAT's external port mapping is tied to the
+    // specific local socket that was used, so discovering on one socket and
+    // punching from another (the previous behavior) means the address
+    // printed here often doesn't match what the peer's probes actually
+    // reach.
+    let puncher = HolePuncher::bind_and_discover(&stun_server)
+        .await
+        .map_err(|e| anyhow!("STUN discovery failed: {e}"))?;
 
-    // First show our own external address so the peer can configure theirs.
-    let stun_client = StunClient::new(&stun_server);
-    match stun_client.discover_external_addr().await {
-        Ok((ext, local)) => {
-            eprintln!("local:    {local}");
-            eprintln!("external: {ext}");
-        }
-        Err(e) => {
-            eprintln!("warning: STUN discovery failed: {e}");
-        }
-    }
+    eprintln!("local:    {}", puncher.local_addr()?);
+    eprintln!("external: {}", puncher.our_external());
 
     eprintln!("punching hole to {peer_addr}…");
     match puncher.punch(peer_addr).await {

@@ -49,29 +49,68 @@ impl StunClient {
 
     /// Discover the external (public) address of a locally-bound UDP socket.
     ///
+    /// Binds a fresh ephemeral socket for the discovery round-trip only —
+    /// use [`StunClient::discover_on`] instead when the socket needs to be
+    /// reused afterwards (e.g. for hole punching), since a NAT's external
+    /// port mapping is tied to the specific local socket that sent the
+    /// request.
+    ///
     /// Returns `(external_addr, local_addr)`.
     pub async fn discover_external_addr(&self) -> Result<(SocketAddr, SocketAddr)> {
-        // Resolve STUN server address.
+        let server_addr = self.resolve_server().await?;
+        let sock = self.bind_matching_family(server_addr).await?;
+        let local_addr = sock.local_addr()?;
+        let external_addr = self.discover_on_resolved(&sock, server_addr).await?;
+        Ok((external_addr, local_addr))
+    }
+
+    /// Like [`StunClient::discover_external_addr`], but runs the STUN
+    /// exchange on a socket the caller already bound and owns, instead of
+    /// binding (and discarding) a new one internally.
+    ///
+    /// This matters because a NAT's external port mapping is per-local-
+    /// socket: the external `IP:port` learned for one socket generally does
+    /// NOT apply to a different socket, even one bound to the same local
+    /// port later (the OS may hand out the same port again, but the NAT's
+    /// mapping is keyed by the 4/5-tuple of the actual traffic it saw). So
+    /// callers that plan to both announce an external address AND use it
+    /// (e.g. hole punching) must discover and punch from the SAME socket.
+    pub async fn discover_on(&self, sock: &UdpSocket) -> Result<SocketAddr> {
+        let server_addr = self.resolve_server().await?;
+        self.discover_on_resolved(sock, server_addr).await
+    }
+
+    /// Resolve the configured STUN server to a single socket address.
+    async fn resolve_server(&self) -> Result<SocketAddr> {
         let server_addrs: Vec<SocketAddr> = tokio::net::lookup_host(&self.server)
             .await
             .map_err(|e| anyhow!("STUN: cannot resolve {}: {e}", self.server))?
             .collect();
-        let server_addr = server_addrs
+        server_addrs
             .first()
             .copied()
-            .ok_or_else(|| anyhow!("STUN: no address for {}", self.server))?;
+            .ok_or_else(|| anyhow!("STUN: no address for {}", self.server))
+    }
 
-        // Bind a UDP socket on the same family as the STUN server.
+    /// Bind a fresh UDP socket on the same address family as `server_addr`.
+    async fn bind_matching_family(&self, server_addr: SocketAddr) -> Result<UdpSocket> {
         let local_bind = if server_addr.is_ipv6() {
             ":::0"
         } else {
             "0.0.0.0:0"
         };
-        let sock = UdpSocket::bind(local_bind)
+        UdpSocket::bind(local_bind)
             .await
-            .map_err(|e| anyhow!("STUN: bind failed: {e}"))?;
-        let local_addr = sock.local_addr()?;
+            .map_err(|e| anyhow!("STUN: bind failed: {e}"))
+    }
 
+    /// Run the STUN Binding Request/Response exchange (with retries) on
+    /// `sock` against an already-resolved `server_addr`.
+    async fn discover_on_resolved(
+        &self,
+        sock: &UdpSocket,
+        server_addr: SocketAddr,
+    ) -> Result<SocketAddr> {
         // Build STUN Binding Request.
         let mut txn_id = [0u8; 12];
         rand::rngs::OsRng.fill_bytes(&mut txn_id);
@@ -87,7 +126,7 @@ impl StunClient {
             match timeout(STUN_TIMEOUT, sock.recv_from(&mut buf)).await {
                 Ok(Ok((n, from))) if from == server_addr => {
                     if let Some(ext) = parse_binding_response(&buf[..n], &txn_id) {
-                        return Ok((ext, local_addr));
+                        return Ok(ext);
                     }
                     tracing::debug!("STUN: bad response on attempt {attempt}, retrying");
                 }
@@ -238,41 +277,75 @@ fn parse_mapped_address(data: &[u8], xor: bool, magic: u32) -> Option<SocketAddr
 /// simultaneously send UDP probes to each other to open NAT mappings.
 ///
 /// Both peers call `punch` concurrently (e.g. coordinated via a relay signaling
-/// channel). The local socket is returned so the caller can use it for the actual
-/// Seam session.
+/// channel).
+///
+/// A NAT's external port mapping is per-local-socket: the external `IP:port`
+/// a STUN server reports is only valid for traffic sent from the exact local
+/// socket that made the STUN request. So a `HolePuncher` always discovers
+/// (or is told) its external address AND punches from the very same bound
+/// socket — never a freshly re-bound one — otherwise the address shared
+/// out-of-band with the peer generally won't match what the peer's probes
+/// actually reach (broken on symmetric NAT, unreliable even on full-cone).
 pub struct HolePuncher {
-    stun: StunClient,
+    sock: std::sync::Arc<UdpSocket>,
+    our_external: SocketAddr,
 }
 
 impl HolePuncher {
-    pub fn new(stun_server: impl Into<String>) -> Self {
-        Self {
-            stun: StunClient::new(stun_server),
-        }
+    /// Bind a fresh local UDP socket and discover its external address via
+    /// STUN, returning a `HolePuncher` that will punch FROM THAT SAME
+    /// SOCKET. Use [`HolePuncher::our_external`] / [`HolePuncher::local_addr`]
+    /// to get the addresses to show the user / share with the peer before
+    /// calling [`HolePuncher::punch`].
+    pub async fn bind_and_discover(stun_server: impl Into<String>) -> Result<Self> {
+        let stun = StunClient::new(stun_server);
+        let server_addr = stun.resolve_server().await?;
+        let sock = stun.bind_matching_family(server_addr).await?;
+        let our_external = stun.discover_on_resolved(&sock, server_addr).await?;
+        Ok(Self {
+            sock: std::sync::Arc::new(sock),
+            our_external,
+        })
+    }
+
+    /// Build a `HolePuncher` from a socket the caller already bound and an
+    /// external address already discovered for that exact socket (e.g. via
+    /// [`StunClient::discover_on`]). Lets callers that manage their own
+    /// socket lifecycle (or, in tests, sidestep the network entirely) still
+    /// go through the same punch logic.
+    pub fn from_socket(sock: std::sync::Arc<UdpSocket>, our_external: SocketAddr) -> Self {
+        Self { sock, our_external }
+    }
+
+    /// The external address discovered for this `HolePuncher`'s socket.
+    pub fn our_external(&self) -> SocketAddr {
+        self.our_external
+    }
+
+    /// The local address this `HolePuncher`'s socket is bound to.
+    pub fn local_addr(&self) -> Result<SocketAddr> {
+        Ok(self.sock.local_addr()?)
     }
 
     /// Perform hole punching:
     ///
-    /// 1. Discover external address via STUN.
+    /// 1. (Already done by construction: this socket's external address was
+    ///    discovered via STUN.)
     /// 2. Caller exchanges external addresses with the peer out-of-band.
     /// 3. Both sides simultaneously send UDP probes to each other's external address.
     ///
-    /// Returns the local socket (bound and ready for use in a Seam session)
-    /// and the verified peer address once a probe is received.
+    /// Returns the local socket (bound and ready for use in a Seam session),
+    /// our external address, and the verified peer address once a probe is
+    /// received. Crucially, probes are sent and received on the SAME socket
+    /// that discovered `our_external`, not a newly bound one.
     pub async fn punch(
-        &self,
+        self,
         peer_external_addr: SocketAddr,
     ) -> Result<(UdpSocket, SocketAddr, SocketAddr)> {
-        let (our_external, local_addr) = self.stun.discover_external_addr().await?;
-
-        // Bind a socket on the same local port that STUN used.
-        let sock = UdpSocket::bind(local_addr)
-            .await
-            .map_err(|e| anyhow!("punch: bind failed: {e}"))?;
+        let Self { sock, our_external } = self;
 
         // Send probes for up to 5 seconds, 100ms apart.
         let probe = b"SEAM-PUNCH-PROBE-v1";
-        let sock = std::sync::Arc::new(sock);
         let sock2 = sock.clone();
         let peer = peer_external_addr;
 
@@ -302,8 +375,14 @@ impl HolePuncher {
         .map_err(|e| anyhow!("hole punch failed: {e}"))?;
 
         send_task.abort();
+        // `abort()` only requests cancellation — the task (and its clone of
+        // `sock`) isn't guaranteed dropped until it's actually polled again
+        // by the runtime. Await the handle so that's finished before we try
+        // to unwrap the Arc below, otherwise this can lose the race and
+        // fail with "could not unwrap socket Arc" even on success.
+        let _ = send_task.await;
 
-        // Unwrap Arc — the send_task is done.
+        // Unwrap Arc — the send_task (and its clone of `sock`) is gone.
         let sock =
             std::sync::Arc::try_unwrap(sock).map_err(|_| anyhow!("could not unwrap socket Arc"))?;
 
@@ -365,5 +444,58 @@ mod tests {
         let addr = result.unwrap();
         assert_eq!(addr.port(), 5678);
         assert_eq!(addr.ip().to_string(), "1.2.3.4");
+    }
+
+    /// Regression test for the discovery/punch socket mismatch bug:
+    /// `HolePuncher::punch` used to independently re-discover (over the
+    /// network) and re-bind a brand-new socket instead of using the one the
+    /// caller had already bound and discovered an external address for. On
+    /// a real NAT that means the address printed to the user rarely matches
+    /// the socket punches actually flow through.
+    ///
+    /// This test doesn't need a real STUN server: it uses two local
+    /// loopback UDP sockets to stand in for two peers' already-bound,
+    /// already-"discovered" sockets (built via `HolePuncher::from_socket`,
+    /// bypassing STUN entirely) and drives a real `punch()` exchange between
+    /// them. The key assertion is that each side's `verified_peer` exactly
+    /// equals the OTHER side's *pre-bound* local address — the address that
+    /// was (hypothetically) shared out-of-band. If `punch()` internally
+    /// re-bound its own socket instead of reusing the one it was given (the
+    /// bug this guards against), probes would go out from — and be expected
+    /// on — a different port than the one advertised, and this would either
+    /// fail outright (bind conflict, since the original socket is still
+    /// held open) or the verified addresses would not match, so the
+    /// assertions below would fail.
+    #[tokio::test]
+    async fn punch_uses_the_provided_socket_not_a_new_one() {
+        let sock_a = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let sock_b = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let addr_a = sock_a.local_addr().unwrap();
+        let addr_b = sock_b.local_addr().unwrap();
+
+        // `our_external` is normally learned from STUN; here we just use
+        // each socket's own bound address as a stand-in, since loopback
+        // traffic isn't NAT-rewritten.
+        let puncher_a = HolePuncher::from_socket(std::sync::Arc::new(sock_a), addr_a);
+        let puncher_b = HolePuncher::from_socket(std::sync::Arc::new(sock_b), addr_b);
+
+        let (res_a, res_b) = tokio::join!(puncher_a.punch(addr_b), puncher_b.punch(addr_a));
+
+        let (sock_a_out, ext_a, verified_b) = res_a.expect("peer A punch should succeed");
+        let (sock_b_out, ext_b, verified_a) = res_b.expect("peer B punch should succeed");
+
+        // Each side must have received the probe from exactly the address
+        // that was "shared out-of-band" — proof both directions punched
+        // from the sockets we handed in, not some internally re-bound one.
+        assert_eq!(verified_b, addr_b);
+        assert_eq!(verified_a, addr_a);
+
+        // The returned socket for reuse in the Seam session must be the
+        // very socket that was provided (same local port), and the
+        // "external" address returned unchanged from what was supplied.
+        assert_eq!(sock_a_out.local_addr().unwrap(), addr_a);
+        assert_eq!(sock_b_out.local_addr().unwrap(), addr_b);
+        assert_eq!(ext_a, addr_a);
+        assert_eq!(ext_b, addr_b);
     }
 }

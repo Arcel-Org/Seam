@@ -134,7 +134,12 @@ impl RemoteInfo {
     ///
     /// Returns the SEAM connection-info line AND the live SSH child process.
     /// The caller MUST keep `Child` alive for the duration of the session —
-    /// dropping it kills the SSH session and the remote worker.
+    /// but note that merely dropping it does NOT end the session: dropping a
+    /// `std::process::Child` only closes the parent's handle, it does not
+    /// signal the process (a well-known Rust footgun). Once the session is
+    /// over the caller MUST explicitly tear it down via [`terminate`] (or
+    /// [`terminate_async`]) so the local `ssh` process and the remote `seam`
+    /// worker it started don't leak.
     pub fn start_remote_seam(&self, seam_bin: &str, subcmd: &str) -> Result<(String, Child)> {
         let cmd = format!("{seam_bin} {subcmd}");
 
@@ -173,6 +178,54 @@ impl RemoteInfo {
             self.target()
         );
     }
+}
+
+/// Tear down a bootstrap SSH child (and, transitively, the remote `seam`
+/// worker it started) instead of just letting it drop.
+///
+/// `Child::drop` does NOT signal the process — it only closes the parent's
+/// handle to it — so without this, every successful `seam ls`/`fwd`/`watch`
+/// invocation (and every reconnect) would leak an orphaned local `ssh`
+/// process along with the remote `seam` worker it launched, since nothing
+/// else causes either to exit on its own.
+///
+/// Sends SIGTERM, gives the process a short grace period to exit on its own
+/// (polled non-blockingly via `try_wait`, never a blocking `wait()`), then
+/// escalates to SIGKILL if it's still around, and finally reaps it so it
+/// never lingers as a zombie. This function blocks the calling thread for up
+/// to the grace period — call it via [`terminate_async`] from async code.
+pub fn terminate(mut child: Child) {
+    let pid = child.id() as libc::pid_t;
+
+    // Best-effort graceful shutdown first.
+    unsafe {
+        libc::kill(pid, libc::SIGTERM);
+    }
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(500);
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => return, // exited on its own — already reaped
+            Ok(None) => {}         // still running, keep polling
+            Err(_) => return,      // nothing more we can do
+        }
+        if std::time::Instant::now() >= deadline {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+
+    // Didn't exit within the grace period — force it, then reap so it
+    // doesn't linger as a zombie.
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+/// Async-friendly [`terminate`]: runs the (briefly) blocking kill/wait
+/// sequence on the blocking thread pool so it doesn't stall the Tokio
+/// runtime.
+pub async fn terminate_async(child: Child) {
+    let _ = tokio::task::spawn_blocking(move || terminate(child)).await;
 }
 
 /// Parse `"user@host"` into `(Option<user>, host)`.

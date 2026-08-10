@@ -39,6 +39,37 @@ pub enum KeyCommand {
     Rotate,
 }
 
+/// Write private key material to `path`, creating the file with owner-only
+/// permissions (mode 0o600) from the moment it is created.
+///
+/// Using `std::fs::write` followed by a separate `set_permissions` call
+/// leaves a window — however brief — where the file exists on disk at the
+/// process's default umask-derived mode (typically 0644, world-readable).
+/// On a shared host, any other local user can read raw X25519/ML-KEM/ML-DSA
+/// private key material during that window. Opening with `mode(0o600)` set
+/// on the `OpenOptions` closes that window entirely: the file never exists
+/// with looser permissions.
+fn write_private_key(path: &std::path::Path, bytes: &[u8]) -> Result<()> {
+    #[cfg(unix)]
+    {
+        use std::io::Write as _;
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(path)?;
+        f.write_all(bytes)?;
+        Ok(())
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::write(path, bytes)?;
+        Ok(())
+    }
+}
+
 pub fn run(args: KeyArgs) -> Result<()> {
     let cfg = super::config::Config::load().ok().unwrap_or_default();
     let id_path = cfg.identity_path();
@@ -78,14 +109,7 @@ fn show_key(id_path: &std::path::Path, format: &str) -> Result<()> {
         if let Some(parent) = id_path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        std::fs::write(id_path, id.to_bytes())?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mut perms = std::fs::metadata(id_path)?.permissions();
-            perms.set_mode(0o600);
-            std::fs::set_permissions(id_path, perms)?;
-        }
+        write_private_key(id_path, &id.to_bytes())?;
         eprintln!("generated new identity key at {}", id_path.display());
         id
     };
@@ -158,14 +182,7 @@ fn rotate_key(id_path: &std::path::Path, format: &str) -> Result<()> {
         );
         let backup_path = id_path.with_file_name(backup_name);
 
-        std::fs::write(&backup_path, &bytes)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mut perms = std::fs::metadata(&backup_path)?.permissions();
-            perms.set_mode(0o600);
-            std::fs::set_permissions(&backup_path, perms)?;
-        }
+        write_private_key(&backup_path, &bytes)?;
         eprintln!("backed up old identity key → {}", backup_path.display());
         Some(id)
     } else {
@@ -174,14 +191,7 @@ fn rotate_key(id_path: &std::path::Path, format: &str) -> Result<()> {
     };
 
     let new_id = IdentityKeypair::generate();
-    std::fs::write(id_path, new_id.to_bytes())?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut perms = std::fs::metadata(id_path)?.permissions();
-        perms.set_mode(0o600);
-        std::fs::set_permissions(id_path, perms)?;
-    }
+    write_private_key(id_path, &new_id.to_bytes())?;
 
     let new_x25519 = hex::encode(new_id.x25519_public.as_bytes());
     let new_kem = hex::encode(pk_to_bytes(&new_id.kem_pk));
@@ -287,4 +297,88 @@ fn fmt_timestamp_utc(secs: u64) -> String {
 
 fn is_leap(year: u32) -> bool {
     (year.is_multiple_of(4) && !year.is_multiple_of(100)) || year.is_multiple_of(400)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression test for a TOCTOU permissions bug: private key material used to be
+    /// written via a plain `std::fs::write` followed by a *separate*
+    /// `set_permissions(0o600)` call, leaving the file briefly readable at the
+    /// process's default umask-derived mode (typically 0644 — world-readable) on a
+    /// shared host between the two syscalls. `write_private_key` must create the file
+    /// with mode 0o600 from the very first `open()`, regardless of umask, so no
+    /// window like that can exist. Setting umask to 0 here means the old two-step
+    /// approach (create at default mode, then chmod) would still happen to leave the
+    /// same *final* permissions — but only the single-open-with-mode approach never
+    /// exposes a looser mode in between.
+    #[test]
+    #[cfg(unix)]
+    fn write_private_key_creates_file_with_owner_only_mode_regardless_of_umask() {
+        use std::os::unix::fs::PermissionsExt;
+
+        // SAFETY: umask is process-global state; libc::umask has no thread-safety
+        // issues beyond that, and this test doesn't run concurrently with other
+        // umask-sensitive tests in this binary.
+        let old_umask = unsafe { libc::umask(0) };
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("identity");
+
+        write_private_key(&path, b"super-secret-key-material").unwrap();
+
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        unsafe { libc::umask(old_umask) };
+
+        assert_eq!(
+            mode, 0o600,
+            "private key file must be created with mode 0600, got {mode:o}"
+        );
+    }
+
+    /// `show_key` generates a fresh identity when none exists; the on-disk key file
+    /// it writes must never be group/world readable, even transiently.
+    #[test]
+    #[cfg(unix)]
+    fn generated_identity_key_file_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let id_path = dir.path().join("identity");
+
+        show_key(&id_path, "json").unwrap();
+
+        let mode = std::fs::metadata(&id_path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+    }
+
+    /// `rotate_key` writes both a backup of the old key and a new key; both files
+    /// must be created owner-only, matching the primary identity file.
+    #[test]
+    #[cfg(unix)]
+    fn rotated_backup_and_new_key_are_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let id_path = dir.path().join("identity");
+
+        // Seed an existing key so rotate_key() takes the "back up old key" path.
+        show_key(&id_path, "text").unwrap();
+        rotate_key(&id_path, "text").unwrap();
+
+        let new_mode = std::fs::metadata(&id_path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(new_mode, 0o600, "rotated identity key must be mode 0600");
+
+        let backup = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .find(|e| e.file_name().to_string_lossy().contains("backup"))
+            .expect("rotate_key should have written a backup file");
+        let backup_mode = std::fs::metadata(backup.path())
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(backup_mode, 0o600, "backup key file must be mode 0600");
+    }
 }

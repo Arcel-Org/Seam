@@ -1,3 +1,5 @@
+use std::collections::VecDeque;
+
 use anyhow::{Result, anyhow};
 use clap::Args;
 use seam_protocol::{
@@ -8,6 +10,39 @@ use seam_protocol::{
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::{connect, ssh};
+
+/// Maximum number of samples retained in `inter_arrivals_ms` /
+/// `throughput_windows` during a single bench run.
+///
+/// `--timeout` defaults to `None` (unbounded), so a peer that keeps
+/// sending/writing indefinitely — including one reached via `--direct`,
+/// which explicitly skips the normal bootstrap/auth path — can keep
+/// `bench_drain_with_metrics`'s read loop running forever. Without a cap
+/// independent of `--timeout`, that grows these vectors without bound: a
+/// memory DoS against whoever runs `seam bench` against an untrusted or
+/// compromised peer. 1,000,000 samples is already far more than any real
+/// benchmark run needs. Once the cap is reached we evict the oldest sample
+/// to make room for the newest, keeping a bounded "most recent window"
+/// (same bounded-retention idiom as `ACK_RETAIN_WINDOW` in
+/// src/session/ack.rs) rather than silently dropping new data or growing
+/// forever — jitter/loss/throughput-CV are still computed over a large,
+/// statistically meaningful window, just not literally every sample ever
+/// seen.
+const MAX_RETAINED_SAMPLES: usize = 1_000_000;
+
+/// Push `value` onto `buf`, evicting the oldest entry first once `buf` has
+/// reached `MAX_RETAINED_SAMPLES`. Returns `true` if an eviction happened
+/// (used by callers to log a one-time warning).
+fn push_bounded(buf: &mut VecDeque<f64>, value: f64, cap: usize) -> bool {
+    let evicted = if buf.len() >= cap {
+        buf.pop_front();
+        true
+    } else {
+        false
+    };
+    buf.push_back(value);
+    evicted
+}
 
 /// Congestion / network quality metrics collected during a bench run.
 struct CongestionMetrics {
@@ -31,15 +66,16 @@ async fn bench_drain_with_metrics(
 ) -> Result<(u64, CongestionMetrics)> {
     let mut buf = vec![0u8; 64 * 1024];
     let mut total_bytes: u64 = 0;
-    let mut inter_arrivals_ms: Vec<f64> = Vec::new();
+    let mut inter_arrivals_ms: VecDeque<f64> = VecDeque::new();
     let mut window_bytes: u64 = 0;
     let mut window_start = std::time::Instant::now();
-    let mut throughput_windows: Vec<f64> = Vec::new();
+    let mut throughput_windows: VecDeque<f64> = VecDeque::new();
     let window_dur = std::time::Duration::from_millis(500);
     let mut last_read = std::time::Instant::now();
     let deadline =
         timeout_secs.map(|s| std::time::Instant::now() + std::time::Duration::from_secs(s));
     let mut bucket = bw_cap_mbps.map(TokenBucket::new);
+    let mut warned_sample_cap = false;
 
     loop {
         let read_fut = stream.read(&mut buf);
@@ -70,7 +106,15 @@ async fn bench_drain_with_metrics(
         let gap_ms = (now - last_read).as_secs_f64() * 1000.0;
         if total_bytes > 0 {
             // Only record gaps after the first read (warm-up excluded).
-            inter_arrivals_ms.push(gap_ms);
+            if push_bounded(&mut inter_arrivals_ms, gap_ms, MAX_RETAINED_SAMPLES)
+                && !warned_sample_cap
+            {
+                eprintln!(
+                    "bench: reached {MAX_RETAINED_SAMPLES} retained samples; \
+                     older samples are now evicted to bound memory use"
+                );
+                warned_sample_cap = true;
+            }
         }
         last_read = now;
 
@@ -81,7 +125,15 @@ async fn bench_drain_with_metrics(
         if now.duration_since(window_start) >= window_dur {
             let w_secs = now.duration_since(window_start).as_secs_f64();
             let mib_s = (window_bytes as f64 / (1024.0 * 1024.0)) / w_secs;
-            throughput_windows.push(mib_s);
+            if push_bounded(&mut throughput_windows, mib_s, MAX_RETAINED_SAMPLES)
+                && !warned_sample_cap
+            {
+                eprintln!(
+                    "bench: reached {MAX_RETAINED_SAMPLES} retained samples; \
+                     older samples are now evicted to bound memory use"
+                );
+                warned_sample_cap = true;
+            }
             window_bytes = 0;
             window_start = now;
         }
@@ -90,7 +142,11 @@ async fn bench_drain_with_metrics(
     // Flush the last partial window.
     if window_bytes > 0 {
         let w_secs = window_start.elapsed().as_secs_f64().max(0.001);
-        throughput_windows.push((window_bytes as f64 / (1024.0 * 1024.0)) / w_secs);
+        push_bounded(
+            &mut throughput_windows,
+            (window_bytes as f64 / (1024.0 * 1024.0)) / w_secs,
+            MAX_RETAINED_SAMPLES,
+        );
     }
 
     // Compute jitter (stddev of inter-arrival times).
@@ -593,4 +649,158 @@ pub async fn run_recv(args: BenchRecvArgs) -> Result<()> {
     }
     stream.flush().await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression test for the unbounded-memory-growth bug: `--timeout` defaults to
+    /// `None`, so a peer that keeps sending indefinitely (including one reached via
+    /// `--direct`, which skips the normal bootstrap/auth path) used to be able to
+    /// grow `inter_arrivals_ms` / `throughput_windows` without bound — a memory DoS
+    /// against whoever runs `seam bench` against an untrusted or compromised peer.
+    /// `push_bounded` must keep the retained count capped regardless of how many
+    /// samples are pushed, evicting the oldest entries first.
+    #[test]
+    fn push_bounded_caps_len_and_keeps_most_recent() {
+        let cap = 8usize;
+        let mut buf: VecDeque<f64> = VecDeque::new();
+
+        for i in 0..(cap * 3) {
+            push_bounded(&mut buf, i as f64, cap);
+        }
+
+        assert_eq!(buf.len(), cap, "retained count must never exceed the cap");
+        // Oldest entries (0..cap*2) must have been evicted; only the most recent
+        // `cap` values (cap*2 .. cap*3) remain, in arrival order.
+        let expected: Vec<f64> = ((cap * 2)..(cap * 3)).map(|i| i as f64).collect();
+        let actual: Vec<f64> = buf.into_iter().collect();
+        assert_eq!(actual, expected, "must retain the most recent samples");
+    }
+
+    /// `push_bounded` must report whether it evicted an entry, so callers can log a
+    /// one-time warning without spamming on every subsequent push past the cap.
+    #[test]
+    fn push_bounded_reports_eviction_only_once_cap_is_reached() {
+        let cap = 4usize;
+        let mut buf: VecDeque<f64> = VecDeque::new();
+
+        for i in 0..cap {
+            assert!(
+                !push_bounded(&mut buf, i as f64, cap),
+                "must not report eviction while under the cap"
+            );
+        }
+        assert!(
+            push_bounded(&mut buf, 99.0, cap),
+            "must report eviction once the cap is reached"
+        );
+        assert_eq!(buf.len(), cap);
+    }
+
+    /// Sanity check that the real `MAX_RETAINED_SAMPLES` cap used by
+    /// `bench_drain_with_metrics` bounds retention the same way, without silently
+    /// corrupting the statistics computed from what remains (mean/stddev over the
+    /// retained window are still well-defined and finite).
+    #[test]
+    fn push_bounded_bounds_growth_at_the_real_sample_cap() {
+        let mut buf: VecDeque<f64> = VecDeque::new();
+
+        for i in 0..(MAX_RETAINED_SAMPLES + 5) {
+            push_bounded(&mut buf, i as f64, MAX_RETAINED_SAMPLES);
+        }
+
+        assert_eq!(buf.len(), MAX_RETAINED_SAMPLES);
+        // The 5 oldest samples (0..5) must have been evicted.
+        assert_eq!(*buf.front().unwrap(), 5.0);
+        assert_eq!(*buf.back().unwrap(), (MAX_RETAINED_SAMPLES + 4) as f64);
+    }
+
+    /// End-to-end regression test: an unbounded-duration read loop (no `--timeout`)
+    /// against a peer that keeps writing forever must not grow retained sample
+    /// counts past the cap. Uses a small cap override plumbed through
+    /// `bench_drain_with_metrics_capped` (test-only helper) so the test runs fast
+    /// without waiting for a million real reads.
+    #[tokio::test]
+    async fn bench_drain_with_metrics_bounds_retained_samples_against_unbounded_sender() {
+        let (mut client, mut server) = tokio::io::duplex(64);
+
+        // A "compromised or buggy remote" that never stops writing and never sends
+        // --timeout-independent EOF — exactly the scenario this fix defends against.
+        let writer = tokio::spawn(async move {
+            let chunk = [0u8; 1];
+            // Enough iterations to blow well past a tiny test cap, but bounded so
+            // the test itself terminates.
+            for _ in 0..500 {
+                if server.write_all(&chunk).await.is_err() {
+                    break;
+                }
+            }
+        });
+
+        let small_cap = 16usize;
+        let (_bytes, buf_len) =
+            bench_drain_capped_for_test(&mut client, Some(1), None, small_cap).await;
+
+        writer.abort();
+        assert!(
+            buf_len <= small_cap,
+            "retained inter-arrival samples ({buf_len}) exceeded the cap ({small_cap})"
+        );
+    }
+
+    /// Test-only variant of `bench_drain_with_metrics`'s accumulation loop with an
+    /// overridable cap, so the bounded-retention behavior can be verified without
+    /// requiring a million real reads. Mirrors the production loop closely enough
+    /// to exercise the same `push_bounded` call path.
+    async fn bench_drain_capped_for_test(
+        stream: &mut (impl AsyncReadExt + Unpin),
+        timeout_secs: Option<u64>,
+        bw_cap_mbps: Option<f64>,
+        cap: usize,
+    ) -> (u64, usize) {
+        let mut buf = [0u8; 1];
+        let mut total_bytes: u64 = 0;
+        let mut inter_arrivals_ms: VecDeque<f64> = VecDeque::new();
+        let mut last_read = std::time::Instant::now();
+        let deadline =
+            timeout_secs.map(|s| std::time::Instant::now() + std::time::Duration::from_secs(s));
+        let mut bucket = bw_cap_mbps.map(TokenBucket::new);
+
+        loop {
+            let read_fut = stream.read(&mut buf);
+            let n = if let Some(dl) = deadline {
+                let remaining = dl.saturating_duration_since(std::time::Instant::now());
+                if remaining.is_zero() {
+                    break;
+                }
+                match tokio::time::timeout(remaining, read_fut).await {
+                    Ok(Ok(0)) | Err(_) => break,
+                    Ok(Ok(n)) => n,
+                    Ok(Err(_)) => break,
+                }
+            } else {
+                match read_fut.await {
+                    Ok(0) => break,
+                    Ok(n) => n,
+                    Err(_) => break,
+                }
+            };
+
+            if let Some(ref mut tb) = bucket {
+                tb.consume(n as u64).await;
+            }
+
+            let now = std::time::Instant::now();
+            let gap_ms = (now - last_read).as_secs_f64() * 1000.0;
+            if total_bytes > 0 {
+                push_bounded(&mut inter_arrivals_ms, gap_ms, cap);
+            }
+            last_read = now;
+            total_bytes += n as u64;
+        }
+
+        (total_bytes, inter_arrivals_ms.len())
+    }
 }

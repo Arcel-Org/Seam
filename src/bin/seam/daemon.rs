@@ -90,7 +90,55 @@ pub async fn run(args: DaemonArgs) -> Result<()> {
     }
 }
 
+/// Probe whether a daemon is already listening on `sock_path`.
+///
+/// Returns `Some(pid)` if a connection succeeds — `pid` is read from
+/// `pid_file` when it exists and parses cleanly, `None` otherwise (a running
+/// daemon whose PID we simply couldn't determine still counts as running).
+/// Returns the outer `None` (plain "not running") when the connect attempt
+/// fails or times out.
+///
+/// Takes explicit paths (rather than calling [`socket_path`]/[`pid_path`]
+/// internally) so tests can point it at an isolated tempdir instead of the
+/// real per-user runtime directory.
+async fn probe_daemon_at(
+    sock_path: &std::path::Path,
+    pid_file: &std::path::Path,
+) -> Option<Option<u32>> {
+    let connect = tokio::net::UnixStream::connect(sock_path);
+    match tokio::time::timeout(std::time::Duration::from_millis(500), connect).await {
+        Ok(Ok(_stream)) => {
+            let pid = std::fs::read_to_string(pid_file)
+                .ok()
+                .and_then(|s| s.trim().parse::<u32>().ok());
+            Some(pid)
+        }
+        _ => None,
+    }
+}
+
+/// Probe whether a daemon is already listening on the real daemon socket for
+/// this user.
+async fn probe_existing_daemon() -> Option<Option<u32>> {
+    probe_daemon_at(&socket_path(), &pid_path()).await
+}
+
 async fn start_daemon() -> Result<()> {
+    // Refuse to spawn a second daemon on top of one that's already running:
+    // run_daemon_server() unconditionally unlinks and rebinds the socket, so
+    // a second `seam daemon start` would silently steal the socket out from
+    // under the first (still-alive) daemon, orphaning it — and overwrite the
+    // pid file so `seam daemon stop` could no longer reach the orphan either.
+    if let Some(pid) = probe_existing_daemon().await {
+        match pid {
+            Some(pid) => {
+                eprintln!("seam daemon already running (pid {pid}) — use `seam daemon stop` first")
+            }
+            None => eprintln!("seam daemon already running — use `seam daemon stop` first"),
+        }
+        bail!("daemon already running");
+    }
+
     // Spawn a new detached process rather than fork()-in-async.
     // fork() inside a tokio runtime leaves the child with corrupted
     // thread-pool state; spawning a fresh process avoids that entirely.
@@ -253,4 +301,63 @@ async fn status() -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression test for the "seam daemon start" double-spawn bug: previously
+    /// `start_daemon()` never checked whether a daemon was already listening before
+    /// spawning a new worker, so running it twice let the second worker's
+    /// `run_daemon_server()` unlink and rebind the socket out from under the first
+    /// (still-alive) daemon, orphaning it. `probe_daemon_at()` is the check that
+    /// now guards against that — verify it detects a listener on the socket path
+    /// and reports the pid recorded in the pid file.
+    #[tokio::test]
+    async fn probe_daemon_at_detects_listener_and_reads_pid() {
+        let dir = tempfile::tempdir().unwrap();
+        let sock_path = dir.path().join("seam-daemon.sock");
+        let pid_file = dir.path().join("seam-daemon.pid");
+        std::fs::write(&pid_file, "4242\n").unwrap();
+
+        let _listener = tokio::net::UnixListener::bind(&sock_path).unwrap();
+
+        let result = probe_daemon_at(&sock_path, &pid_file).await;
+
+        assert_eq!(
+            result,
+            Some(Some(4242)),
+            "must detect the running listener and parse the pid file"
+        );
+    }
+
+    /// When no daemon is listening (stale or missing socket path), the probe must
+    /// report "not running" so `start_daemon()` proceeds with a normal spawn.
+    #[tokio::test]
+    async fn probe_daemon_at_reports_none_when_nothing_listening() {
+        let dir = tempfile::tempdir().unwrap();
+        // Path that exists in a real dir but has no listener bound to it.
+        let sock_path = dir.path().join("seam-daemon.sock");
+        let pid_file = dir.path().join("seam-daemon.pid");
+
+        let result = probe_daemon_at(&sock_path, &pid_file).await;
+
+        assert_eq!(result, None, "no listener means no daemon is running");
+    }
+
+    /// If the pid file is missing or unparsable, the daemon should still be reported
+    /// as running (connection succeeded) — just without a pid to print.
+    #[tokio::test]
+    async fn probe_daemon_at_running_with_unreadable_pid_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let sock_path = dir.path().join("seam-daemon.sock");
+        // Deliberately do not create a pid file at all.
+        let pid_file = dir.path().join("does-not-exist.pid");
+
+        let _listener = tokio::net::UnixListener::bind(&sock_path).unwrap();
+        let result = probe_daemon_at(&sock_path, &pid_file).await;
+
+        assert_eq!(result, Some(None), "running daemon with no readable pid");
+    }
 }

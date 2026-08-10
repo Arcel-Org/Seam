@@ -53,9 +53,11 @@ pub struct WatchArgs {
 struct PersistentPush {
     conn: SeamConn,
     ctrl_sid: StreamId,
-    // Kept alive for the session's duration — dropping it kills the SSH
-    // channel and the remote `recv` process.
-    _remote_process: Child,
+    // Kept alive for the session's duration. Note that merely dropping this
+    // does NOT end the SSH channel or the remote `recv` process — dropping a
+    // `std::process::Child` only closes our handle to it, it doesn't signal
+    // the process. `close()` below explicitly terminates it on teardown.
+    remote_process: Child,
 }
 
 impl PersistentPush {
@@ -80,7 +82,7 @@ impl PersistentPush {
         Ok(Self {
             conn,
             ctrl_sid,
-            _remote_process: remote_process,
+            remote_process,
         })
     }
 
@@ -111,6 +113,11 @@ impl PersistentPush {
         // connection-idle timeout eventually fires.
         let _ = proto::send_frame(&self.conn, self.ctrl_sid, &[proto::BYE]).await;
         self.conn.close().await;
+        // Explicitly tear down the bootstrap SSH child (and the remote
+        // `recv` worker it started) — letting it merely drop here would not
+        // signal the process, leaking an orphaned local `ssh` process and
+        // remote worker on every teardown/reconnect.
+        ssh::terminate_async(self.remote_process).await;
     }
 }
 

@@ -24,6 +24,66 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use crate::serve::{SVC_INFO, SVC_PING};
 use crate::{connect, ssh};
 
+// ── Bounded SVC_INFO read ───────────────────────────────────────────────────────
+
+/// SVC_INFO is tiny health-check metadata (a version string plus a handful of
+/// flags) — cap how much a peer can make us buffer while we read it. Without
+/// this, a misbehaving or malicious peer (exactly what's being health-checked,
+/// so this is remotely triggerable, unlike most other bugs in this file) could
+/// stream data for the full read time bound on a fast link, driving unbounded
+/// client-side memory growth. 1 MiB is generous headroom over any real
+/// SVC_INFO payload.
+const MAX_INFO_RESPONSE_BYTES: usize = 1024 * 1024;
+
+/// Outcome of reading a peer's SVC_INFO response.
+enum InfoReadOutcome {
+    /// The peer closed the stream (or errored) before hitting the size cap;
+    /// here is everything read so far.
+    Complete(Vec<u8>),
+    /// The peer sent more than `cap` bytes without closing the stream.
+    Oversized,
+    /// Nothing (or an incomplete response) arrived within `timeout`.
+    TimedOut,
+}
+
+/// Read from `reader` until EOF/error, a `cap`-byte limit, or `timeout`,
+/// whichever comes first. See [`MAX_INFO_RESPONSE_BYTES`] for why the cap
+/// exists — this is `seam health`'s only defense against a peer that just
+/// keeps streaming bytes at the SVC_INFO request.
+async fn read_info_response<R>(
+    reader: &mut R,
+    cap: usize,
+    timeout: std::time::Duration,
+) -> InfoReadOutcome
+where
+    R: tokio::io::AsyncRead + Unpin,
+{
+    let mut buf = Vec::new();
+    let mut oversized = false;
+    let read_result = tokio::time::timeout(timeout, async {
+        let mut tmp = [0u8; 4096];
+        loop {
+            match reader.read(&mut tmp).await {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    if buf.len() + n > cap {
+                        oversized = true;
+                        break;
+                    }
+                    buf.extend_from_slice(&tmp[..n]);
+                }
+            }
+        }
+    })
+    .await;
+
+    match read_result {
+        _ if oversized => InfoReadOutcome::Oversized,
+        Ok(_) => InfoReadOutcome::Complete(buf),
+        Err(_) => InfoReadOutcome::TimedOut,
+    }
+}
+
 // ── Health check result ───────────────────────────────────────────────────────
 
 struct CheckResult {
@@ -169,45 +229,50 @@ pub async fn run(args: HealthArgs, fips_mode: bool) -> Result<()> {
         let mut info_stream = mux.open_stream().await;
         info_stream.write_all(&[SVC_INFO]).await.ok();
 
-        let mut info_buf = Vec::new();
-        let read_result = tokio::time::timeout(std::time::Duration::from_secs(5), async {
-            let mut tmp = [0u8; 4096];
-            loop {
-                match info_stream.read(&mut tmp).await {
-                    Ok(0) | Err(_) => break,
-                    Ok(n) => info_buf.extend_from_slice(&tmp[..n]),
+        match read_info_response(
+            &mut info_stream,
+            MAX_INFO_RESPONSE_BYTES,
+            std::time::Duration::from_secs(5),
+        )
+        .await
+        {
+            InfoReadOutcome::Complete(info_buf) => {
+                match serde_json::from_slice::<serde_json::Value>(&info_buf) {
+                    Ok(info) => {
+                        let server_version = info["version"].as_str().unwrap_or("unknown");
+                        let version_ok = server_version == local_version;
+                        results.push(CheckResult {
+                            name: "version",
+                            status: if version_ok {
+                                CheckStatus::Pass
+                            } else {
+                                CheckStatus::Warn
+                            },
+                            detail: format!(
+                                "server={server_version} client={local_version}{}",
+                                if version_ok { "" } else { " (mismatch)" }
+                            ),
+                        });
+                    }
+                    Err(e) => {
+                        results.push(CheckResult {
+                            name: "version",
+                            status: CheckStatus::Warn,
+                            detail: format!("could not parse info response: {e}"),
+                        });
+                    }
                 }
             }
-        })
-        .await;
-
-        match read_result {
-            Ok(_) => match serde_json::from_slice::<serde_json::Value>(&info_buf) {
-                Ok(info) => {
-                    let server_version = info["version"].as_str().unwrap_or("unknown");
-                    let version_ok = server_version == local_version;
-                    results.push(CheckResult {
-                        name: "version",
-                        status: if version_ok {
-                            CheckStatus::Pass
-                        } else {
-                            CheckStatus::Warn
-                        },
-                        detail: format!(
-                            "server={server_version} client={local_version}{}",
-                            if version_ok { "" } else { " (mismatch)" }
-                        ),
-                    });
-                }
-                Err(e) => {
-                    results.push(CheckResult {
-                        name: "version",
-                        status: CheckStatus::Warn,
-                        detail: format!("could not parse info response: {e}"),
-                    });
-                }
-            },
-            Err(_) => {
+            InfoReadOutcome::Oversized => {
+                results.push(CheckResult {
+                    name: "version",
+                    status: CheckStatus::Fail,
+                    detail: format!(
+                        "info response exceeded {MAX_INFO_RESPONSE_BYTES} byte cap — refusing to buffer more"
+                    ),
+                });
+            }
+            InfoReadOutcome::TimedOut => {
                 results.push(CheckResult {
                     name: "version",
                     status: CheckStatus::Fail,
@@ -330,4 +395,87 @@ pub async fn run(args: HealthArgs, fips_mode: bool) -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression test for unbounded SVC_INFO buffering: previously `info_buf`
+    /// accumulated data from a remote peer for up to a 5-second time bound with no
+    /// size cap at all. A misbehaving or malicious `seam serve` peer on a fast link
+    /// could stream data for the full window, growing client-side memory without
+    /// bound. `read_info_response` must stop and report `Oversized` as soon as the
+    /// cap is crossed, rather than keep buffering until the timeout fires.
+    #[tokio::test]
+    async fn read_info_response_stops_at_the_size_cap_instead_of_buffering_forever() {
+        let (mut writer, mut reader) = tokio::io::duplex(64 * 1024);
+
+        let cap = 1024usize;
+        let feeder = tokio::spawn(async move {
+            // A "malicious peer" that just keeps streaming far more than the cap
+            // for as long as the other end lets it.
+            let chunk = vec![0xABu8; 4096];
+            loop {
+                if writer.write_all(&chunk).await.is_err() {
+                    break;
+                }
+            }
+        });
+
+        let outcome = read_info_response(&mut reader, cap, std::time::Duration::from_secs(5)).await;
+
+        feeder.abort();
+
+        assert!(
+            matches!(outcome, InfoReadOutcome::Oversized),
+            "expected Oversized, got a different outcome"
+        );
+    }
+
+    /// A well-behaved peer that sends a small response and closes the stream must
+    /// be read to completion, unaffected by the cap.
+    #[tokio::test]
+    async fn read_info_response_returns_complete_for_small_well_behaved_response() {
+        let (mut writer, mut reader) = tokio::io::duplex(64 * 1024);
+        let payload = br#"{"version":"9.9.9"}"#.to_vec();
+        let expected = payload.clone();
+
+        writer.write_all(&payload).await.unwrap();
+        drop(writer); // EOF
+
+        let outcome = read_info_response(
+            &mut reader,
+            MAX_INFO_RESPONSE_BYTES,
+            std::time::Duration::from_secs(5),
+        )
+        .await;
+
+        match outcome {
+            InfoReadOutcome::Complete(buf) => assert_eq!(buf, expected),
+            _ => panic!("expected Complete outcome for a small, well-behaved response"),
+        }
+    }
+
+    /// A peer that never sends anything and never closes the stream must be
+    /// reported as `TimedOut` once the deadline passes, not hang forever.
+    #[tokio::test]
+    async fn read_info_response_times_out_on_silent_peer() {
+        let (writer, mut reader) = tokio::io::duplex(64 * 1024);
+        // Keep the write half alive (so the stream doesn't hit EOF) but never
+        // write anything.
+        let _keep_open = writer;
+
+        let outcome = read_info_response(
+            &mut reader,
+            MAX_INFO_RESPONSE_BYTES,
+            std::time::Duration::from_millis(50),
+        )
+        .await;
+
+        assert!(
+            matches!(outcome, InfoReadOutcome::TimedOut),
+            "expected TimedOut for a silent peer"
+        );
+    }
 }

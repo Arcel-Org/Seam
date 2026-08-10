@@ -305,7 +305,15 @@ Used as a building block for peer-to-peer seam connections through symmetric NAT
 
 ### `seam mount` — FUSE filesystem
 
-Mount a remote directory as a local filesystem. Requires FUSE to be available on the host.
+Mount a remote directory as a local filesystem.
+
+> **Not in the prebuilt release binaries.** FUSE support is an opt-in Cargo
+> feature (`fuse`) so the default release binaries stay dependency-free and
+> portable. To use `seam mount`, build from source with the feature enabled:
+> `cargo build --release --features fuse` (requires libfuse3 dev headers on
+> Linux, e.g. `apt install libfuse3-dev pkg-config`, or macFUSE on macOS).
+> Running an unfeatured binary prints a clear "rebuild with --features fuse"
+> error rather than failing silently.
 
 > **Read-only, whole-file reads.** Browsing, `stat`, and reading files work —
 > each `open()` fetches the whole file over the encrypted connection

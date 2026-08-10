@@ -42,6 +42,39 @@ jobs:
       - name: Test
         run: cargo test --all-targets
 
+  fuse-feature:
+    name: Build & Test (fuse feature)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-fuse-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-fuse-${{ runner.os }}-
+
+      # macOS runners can't load the macFUSE kext in CI, so the fuse feature
+      # is only exercised on Linux (libfuse3, via pkg-config).
+      - name: Install libfuse3
+        run: sudo apt-get update && sudo apt-get install -y libfuse3-dev pkg-config
+
+      - name: Clippy (--all-features)
+        run: cargo clippy --all-features --all-targets -- -D warnings
+
+      - name: Build (--all-features)
+        run: cargo build --all-features --all-targets --release
+
+      - name: Test (--all-features)
+        run: cargo test --all-features --all-targets
+
   security-audit:
     name: Security Audit
     runs-on: ubuntu-latest

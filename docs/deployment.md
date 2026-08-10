@@ -254,6 +254,37 @@ journalctl -u seam-serve --since "1 hour ago"
 
 ---
 
+## Docker
+
+A `Dockerfile` at the repo root builds a minimal image that runs `seam serve`. It's built WITHOUT the `fuse` feature — matching the prebuilt release binaries — so the image stays dependency-free; `seam mount` isn't available from inside a container built this way.
+
+```sh
+docker build -t seam .
+
+# Persist the identity key across restarts/recreation — without this, every
+# restart generates a fresh identity, which breaks TOFU pins any client has
+# already stored for this server.
+docker volume create seam-data
+docker run -d --name seam \
+    -p 2222:2222/udp \
+    -v seam-data:/home/seam/.config \
+    seam serve --port 2222
+```
+
+The container runs as a dedicated non-root `seam` user (uid/gid allocated by `useradd -r`, home `/home/seam`). `--max-connections`, `--auth-keys-dir`, and the other `seam serve` flags documented in [cli-reference.md](cli-reference.md#seam-serve) all work the same way — append them to the `docker run` command after `seam serve --port 2222`. To mount an `--auth-keys-dir`, bind-mount it read-only:
+
+```sh
+docker run -d --name seam \
+    -p 2222:2222/udp \
+    -v seam-data:/home/seam/.config \
+    -v /etc/seam/authorized_keys.d:/home/seam/authorized_keys.d:ro \
+    seam serve --port 2222 --auth-keys-dir /home/seam/authorized_keys.d
+```
+
+For FIPS mode, either append `--fips-mode` to the command or set `-e SEAM_FIPS_MODE=1`.
+
+---
+
 ## FIPS Mode in Production
 
 To run `seam serve` in FIPS mode:

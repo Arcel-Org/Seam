@@ -1,0 +1,6 @@
+target
+.git
+docs
+fuzz
+.github
+*.md

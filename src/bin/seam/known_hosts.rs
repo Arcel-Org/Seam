@@ -37,6 +37,10 @@ pub fn short_fp(fp: &str) -> &str {
 }
 
 fn known_hosts_path() -> PathBuf {
+    // Test-only override so unit tests never touch the real user config dir.
+    if let Ok(p) = std::env::var("SEAM_KNOWN_HOSTS_PATH") {
+        return PathBuf::from(p);
+    }
     dirs::config_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join("seam")
@@ -79,10 +83,55 @@ fn save_pins(pins: &HashMap<String, String>) -> Result<()> {
     for (host, fp) in entries {
         text.push_str(&format!("{host} {fp}\n"));
     }
-    let tmp = path.with_extension("tmp");
+    // Use a PID-suffixed temp name so two concurrent `seam` processes racing
+    // this function never write/rename the same temp file out from under
+    // each other; the rename itself is still atomic per-process.
+    let tmp = path.with_extension(format!("tmp.{}", std::process::id()));
     std::fs::write(&tmp, &text)?;
     std::fs::rename(&tmp, &path)?;
     Ok(())
+}
+
+/// Hold an exclusive, cross-process advisory lock for the duration of `f`,
+/// serializing the load-modify-save cycle in [`verify_or_pin`] and
+/// [`remove_pin`].
+///
+/// Without this, two `seam` processes racing a first-time connection to the
+/// same host can both observe "no pin yet", each independently accept
+/// whatever key they were offered (including a MITM'd one), and then
+/// silently clobber each other's pin on save — with neither ever seeing the
+/// "REMOTE HOST IDENTIFICATION HAS CHANGED" warning, since that check only
+/// fires against a pin that was already on disk when `load_pins` ran.
+/// Locking makes the whole check-then-pin sequence atomic across processes.
+#[cfg(unix)]
+fn with_pins_lock<R>(f: impl FnOnce() -> Result<R>) -> Result<R> {
+    use std::os::fd::AsRawFd;
+
+    let lock_path = known_hosts_path().with_extension("lock");
+    if let Some(parent) = lock_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let lock_file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&lock_path)?;
+    // SAFETY: lock_file owns a valid, open fd for the duration of this call;
+    // flock is released automatically when it's dropped/closed below.
+    let rc = unsafe { libc::flock(lock_file.as_raw_fd(), libc::LOCK_EX) };
+    if rc != 0 {
+        // Locking failed (e.g. unsupported filesystem) — fall back to
+        // best-effort unlocked operation rather than hard-failing.
+        return f();
+    }
+    let result = f();
+    unsafe { libc::flock(lock_file.as_raw_fd(), libc::LOCK_UN) };
+    result
+}
+
+#[cfg(not(unix))]
+fn with_pins_lock<R>(f: impl FnOnce() -> Result<R>) -> Result<R> {
+    f()
 }
 
 /// Policy for how to handle key pinning on this connection.
@@ -114,12 +163,16 @@ pub fn verify_or_pin(host: &str, x25519_pub: &[u8; 32], policy: PinPolicy) -> Re
     }
 
     let fp = fingerprint(x25519_pub);
+    with_pins_lock(|| verify_or_pin_locked(host, &fp, policy))
+}
+
+fn verify_or_pin_locked(host: &str, fp: &str, policy: PinPolicy) -> Result<()> {
     let mut pins = load_pins();
 
     match pins.get(host) {
         Some(pinned) => {
-            if pinned == &fp {
-                eprintln!("  server identity OK: {} [{}…]", host, short_fp(&fp));
+            if pinned == fp {
+                eprintln!("  server identity OK: {} [{}…]", host, short_fp(fp));
                 Ok(())
             } else {
                 // Key mismatch — potential MITM.
@@ -156,12 +209,12 @@ pub fn verify_or_pin(host: &str, x25519_pub: &[u8; 32], policy: PinPolicy) -> Re
             } else {
                 format!(
                     "  first connection to {host} — pinning server key: SHA256:{}…",
-                    short_fp(&fp)
+                    short_fp(fp)
                 )
             };
             eprintln!("{msg}");
             eprintln!("  Stored in: {}", known_hosts_path().display());
-            pins.insert(host.to_string(), fp);
+            pins.insert(host.to_string(), fp.to_string());
             if let Err(e) = save_pins(&pins) {
                 eprintln!("  warning: could not save pin ({e}) — continuing without persistence");
             }
@@ -172,15 +225,17 @@ pub fn verify_or_pin(host: &str, x25519_pub: &[u8; 32], policy: PinPolicy) -> Re
 
 /// Remove a pinned entry for `host`. Returns true if an entry was removed.
 pub fn remove_pin(host: &str) -> Result<bool> {
-    let mut pins = load_pins();
-    let removed = pins.remove(host).is_some();
-    if removed {
-        save_pins(&pins)?;
-        println!("removed pin for {host}");
-    } else {
-        println!("no pin found for {host}");
-    }
-    Ok(removed)
+    with_pins_lock(|| {
+        let mut pins = load_pins();
+        let removed = pins.remove(host).is_some();
+        if removed {
+            save_pins(&pins)?;
+            println!("removed pin for {host}");
+        } else {
+            println!("no pin found for {host}");
+        }
+        Ok(removed)
+    })
 }
 
 /// List all currently pinned hosts.
@@ -206,5 +261,62 @@ mod tests {
         let a = [1u8; 32];
         let b = [2u8; 32];
         assert_ne!(fingerprint(&a), fingerprint(&b));
+    }
+
+    // SEAM_KNOWN_HOSTS_PATH is process-global; serialize the tests that touch it
+    // so they can't interleave under cargo's default parallel test runner.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn concurrent_first_pin_is_serialized_and_not_corrupted() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("known_hosts");
+        // SAFETY: single-threaded within this test under ENV_LOCK; no other
+        // thread reads/writes SEAM_KNOWN_HOSTS_PATH concurrently.
+        unsafe { std::env::set_var("SEAM_KNOWN_HOSTS_PATH", &path) };
+
+        // 16 threads race to be the first to pin distinct keys for the same
+        // host. Exactly one may win the TOFU pin; every other racer must see
+        // that pin already committed (via the lock) and correctly reject its
+        // own differing key as a mismatch — never silently overwrite it.
+        let mut handles = Vec::new();
+        for i in 0..16u8 {
+            handles.push(std::thread::spawn(move || {
+                let key = [i; 32];
+                verify_or_pin("race-host", &key, PinPolicy::Enforce).is_ok()
+            }));
+        }
+        let successes: usize = handles.into_iter().map(|h| h.join().unwrap()).filter(|ok| *ok).count();
+        assert_eq!(successes, 1, "exactly one racer should win the first-pin race");
+
+        // The file must parse cleanly (no torn/interleaved writes) and pin
+        // exactly one of the 16 candidate keys, proving the load-check-save
+        // cycle was serialized rather than raced.
+        let pins = load_pins();
+        assert_eq!(pins.len(), 1);
+        let pinned = pins.get("race-host").unwrap();
+        let candidates: Vec<String> = (0..16u8).map(|i| fingerprint(&[i; 32])).collect();
+        assert!(candidates.contains(pinned));
+
+        unsafe { std::env::remove_var("SEAM_KNOWN_HOSTS_PATH") };
+    }
+
+    #[test]
+    fn mismatched_key_after_pin_is_rejected() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("known_hosts");
+        unsafe { std::env::set_var("SEAM_KNOWN_HOSTS_PATH", &path) };
+
+        let key_a = [1u8; 32];
+        let key_b = [2u8; 32];
+        verify_or_pin("stable-host", &key_a, PinPolicy::Enforce).unwrap();
+        let err = verify_or_pin("stable-host", &key_b, PinPolicy::Enforce).unwrap_err();
+        assert!(err.to_string().contains("identity mismatch"));
+        // Re-verifying with the originally pinned key still succeeds.
+        verify_or_pin("stable-host", &key_a, PinPolicy::Enforce).unwrap();
+
+        unsafe { std::env::remove_var("SEAM_KNOWN_HOSTS_PATH") };
     }
 }

@@ -349,19 +349,40 @@ async fn do_handle_hop_stream(
     Ok(())
 }
 
+/// How long a hop's UDP proxy stays alive without seeing any traffic before it
+/// tears itself down. UDP is connectionless — `recv_from` never errors out on
+/// its own when the peer goes away — so without this, every `seam route` hop
+/// request leaks one socket and one background task for the life of the
+/// relay process.
+const UDP_PROXY_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+
 /// Bidirectional UDP proxy: forward packets between the client (first sender) and next_relay.
 ///
 /// The proxy learns the client's address on the first received packet. All subsequent
 /// packets from the client are forwarded to next_relay, and packets from next_relay
-/// are forwarded back to the client.
+/// are forwarded back to the client. The proxy closes itself after
+/// `UDP_PROXY_IDLE_TIMEOUT` of inactivity so an abandoned route hop doesn't leak
+/// its socket/task indefinitely.
 async fn udp_proxy(sock: Arc<tokio::net::UdpSocket>, next_relay: std::net::SocketAddr) {
+    udp_proxy_with_timeout(sock, next_relay, UDP_PROXY_IDLE_TIMEOUT).await
+}
+
+async fn udp_proxy_with_timeout(
+    sock: Arc<tokio::net::UdpSocket>,
+    next_relay: std::net::SocketAddr,
+    idle_timeout: std::time::Duration,
+) {
     let mut buf = vec![0u8; 65535];
     let mut client_addr: Option<std::net::SocketAddr> = None;
 
     loop {
-        let (n, from) = match sock.recv_from(&mut buf).await {
-            Ok(v) => v,
-            Err(_) => break,
+        let (n, from) = match tokio::time::timeout(idle_timeout, sock.recv_from(&mut buf)).await {
+            Ok(Ok(v)) => v,
+            Ok(Err(_)) => break,
+            Err(_) => {
+                tracing::debug!(%next_relay, "route udp_proxy: idle timeout, closing");
+                break;
+            }
         };
         let data = &buf[..n];
 
@@ -375,5 +396,66 @@ async fn udp_proxy(sock: Arc<tokio::net::UdpSocket>, next_relay: std::net::Socke
             client_addr = Some(from);
             let _ = sock.send_to(data, next_relay).await;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::net::UdpSocket;
+
+    #[tokio::test]
+    async fn idle_udp_proxy_task_exits_and_frees_its_socket() {
+        let proxy_sock = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let proxy_addr = proxy_sock.local_addr().unwrap();
+        let next_relay: std::net::SocketAddr = "127.0.0.1:1".parse().unwrap();
+
+        let handle = tokio::spawn(udp_proxy_with_timeout(
+            proxy_sock,
+            next_relay,
+            std::time::Duration::from_millis(100),
+        ));
+
+        // No traffic at all — the task must reap itself well within the test
+        // timeout instead of living for the process lifetime.
+        tokio::time::timeout(std::time::Duration::from_secs(5), handle)
+            .await
+            .expect("udp_proxy task did not exit on idle timeout")
+            .unwrap();
+
+        // The port is free again since the proxy socket was dropped with the task.
+        let rebind = UdpSocket::bind(proxy_addr).await;
+        assert!(rebind.is_ok(), "proxy socket was not released after idle timeout");
+    }
+
+    #[tokio::test]
+    async fn active_udp_proxy_forwards_both_directions() {
+        let proxy_sock = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let proxy_addr = proxy_sock.local_addr().unwrap();
+
+        let relay_sock = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let relay_addr = relay_sock.local_addr().unwrap();
+
+        let handle = tokio::spawn(udp_proxy_with_timeout(
+            proxy_sock,
+            relay_addr,
+            std::time::Duration::from_secs(5),
+        ));
+
+        let client_sock = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        client_sock.send_to(b"hello", proxy_addr).await.unwrap();
+
+        let mut buf = [0u8; 16];
+        let (n, from) = relay_sock.recv_from(&mut buf).await.unwrap();
+        assert_eq!(&buf[..n], b"hello");
+        assert_eq!(from, proxy_addr);
+
+        relay_sock.send_to(b"world", proxy_addr).await.unwrap();
+        let mut buf2 = [0u8; 16];
+        let (n2, from2) = client_sock.recv_from(&mut buf2).await.unwrap();
+        assert_eq!(&buf2[..n2], b"world");
+        assert_eq!(from2, proxy_addr);
+
+        handle.abort();
     }
 }

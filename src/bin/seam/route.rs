@@ -425,7 +425,10 @@ mod tests {
 
         // The port is free again since the proxy socket was dropped with the task.
         let rebind = UdpSocket::bind(proxy_addr).await;
-        assert!(rebind.is_ok(), "proxy socket was not released after idle timeout");
+        assert!(
+            rebind.is_ok(),
+            "proxy socket was not released after idle timeout"
+        );
     }
 
     #[tokio::test]

@@ -551,7 +551,10 @@ struct SeamFS {
 
 #[cfg(feature = "fuse")]
 impl SeamFS {
-    fn block_on_conn<F, T>(&self, f: impl FnOnce(std::sync::Arc<tokio::sync::Mutex<seam_protocol::api::SeamConn>>) -> F) -> T
+    fn block_on_conn<F, T>(
+        &self,
+        f: impl FnOnce(std::sync::Arc<tokio::sync::Mutex<seam_protocol::api::SeamConn>>) -> F,
+    ) -> T
     where
         F: std::future::Future<Output = T>,
     {
@@ -593,7 +596,11 @@ impl fuser::Filesystem for SeamFS {
                         .ino_for_path(&join_path(&parent_path, name_str))
                 };
                 let attr = make_attr(fuser::INodeNo(ino), &entry);
-                reply.entry(&std::time::Duration::from_secs(1), &attr, fuser::Generation(0));
+                reply.entry(
+                    &std::time::Duration::from_secs(1),
+                    &attr,
+                    fuser::Generation(0),
+                );
             }
             Ok(None) => reply.error(fuser::Errno::ENOENT),
             Err(_) => reply.error(fuser::Errno::EIO),
@@ -785,9 +792,8 @@ mod tests {
             .unwrap();
         let server_addr = server.local_addr().unwrap();
 
-        let (server_conn, mut client_conn) = tokio::join!(
-            async { server.accept().await.unwrap() },
-            async {
+        let (server_conn, mut client_conn) =
+            tokio::join!(async { server.accept().await.unwrap() }, async {
                 let client_id = IdentityKeypair::generate();
                 let mut client = Client::bind("127.0.0.1:0".parse().unwrap(), client_id)
                     .await
@@ -801,8 +807,7 @@ mod tests {
                     )
                     .await
                     .unwrap()
-            }
-        );
+            });
 
         // Mirrors run_recv's request loop, serving exactly the 4 requests
         // this test makes.

@@ -338,10 +338,7 @@ mod tests {
     use seam_protocol::api::{Client, Server};
     use seam_protocol::handshake::IdentityKeypair;
 
-    async fn make_pair() -> (
-        seam_protocol::api::SeamConn,
-        seam_protocol::api::SeamConn,
-    ) {
+    async fn make_pair() -> (seam_protocol::api::SeamConn, seam_protocol::api::SeamConn) {
         let server_id = IdentityKeypair::generate();
         let server_x25519 = server_id.x25519_public.to_bytes();
         let server_kem_pk = server_id.kem_pk.clone();
@@ -349,24 +346,21 @@ mod tests {
             .await
             .unwrap();
         let server_addr = server.local_addr().unwrap();
-        tokio::join!(
-            async { server.accept().await.unwrap() },
-            async {
-                let client_id = IdentityKeypair::generate();
-                let mut client = Client::bind("127.0.0.1:0".parse().unwrap(), client_id)
-                    .await
-                    .unwrap();
-                client
-                    .connect(
-                        server_addr,
-                        &server_x25519,
-                        &server_kem_pk,
-                        Default::default(),
-                    )
-                    .await
-                    .unwrap()
-            }
-        )
+        tokio::join!(async { server.accept().await.unwrap() }, async {
+            let client_id = IdentityKeypair::generate();
+            let mut client = Client::bind("127.0.0.1:0".parse().unwrap(), client_id)
+                .await
+                .unwrap();
+            client
+                .connect(
+                    server_addr,
+                    &server_x25519,
+                    &server_kem_pk,
+                    Default::default(),
+                )
+                .await
+                .unwrap()
+        })
     }
 
     async fn send_token(
@@ -392,12 +386,22 @@ mod tests {
         let remaining = AtomicUsize::new(1);
 
         let server_task = tokio::spawn(async move {
-            handle_share_conn(server_conn, &path, "correct-token", false, false, &remaining, 1)
-                .await
+            handle_share_conn(
+                server_conn,
+                &path,
+                "correct-token",
+                false,
+                false,
+                &remaining,
+                1,
+            )
+            .await
         });
 
         let sid = client_conn.open_stream().await;
-        send_token(&client_conn, sid, b"correct-token").await.unwrap();
+        send_token(&client_conn, sid, b"correct-token")
+            .await
+            .unwrap();
 
         let mut buf = Vec::new();
         let hello = read_frame(&mut client_conn, sid, &mut buf).await.unwrap();
@@ -438,8 +442,16 @@ mod tests {
         let remaining = AtomicUsize::new(1);
 
         let server_task = tokio::spawn(async move {
-            handle_share_conn(server_conn, &path, "correct-token", false, false, &remaining, 1)
-                .await
+            handle_share_conn(
+                server_conn,
+                &path,
+                "correct-token",
+                false,
+                false,
+                &remaining,
+                1,
+            )
+            .await
         });
 
         let sid = client_conn.open_stream().await;
@@ -466,8 +478,16 @@ mod tests {
         let remaining = AtomicUsize::new(1);
 
         let server_task = tokio::spawn(async move {
-            handle_share_conn(server_conn, &path, "correct-token", false, false, &remaining, 1)
-                .await
+            handle_share_conn(
+                server_conn,
+                &path,
+                "correct-token",
+                false,
+                false,
+                &remaining,
+                1,
+            )
+            .await
         });
 
         let sid = client_conn.open_stream().await;

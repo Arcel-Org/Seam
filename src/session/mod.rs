@@ -732,7 +732,11 @@ mod tests {
             let events = receiver
                 .receive_packet(&mut pkts[0].bytes.clone())
                 .unwrap_or_else(|e| panic!("stream {i} (within cap) should succeed: {e}"));
-            assert!(events.iter().any(|e| matches!(e, SessionEvent::NewStream(_))));
+            assert!(
+                events
+                    .iter()
+                    .any(|e| matches!(e, SessionEvent::NewStream(_)))
+            );
         }
 
         // The third exceeds max_streams and must be rejected, not silently
@@ -745,7 +749,11 @@ mod tests {
             result.is_err(),
             "stream beyond max_streams should be rejected, not silently created"
         );
-        assert_eq!(receiver.streams.len(), 2, "stream count must not exceed the cap");
+        assert_eq!(
+            receiver.streams.len(),
+            2,
+            "stream count must not exceed the cap"
+        );
     }
 
     /// Regression test for a bug where `flush()` handed ARQ the *plaintext*

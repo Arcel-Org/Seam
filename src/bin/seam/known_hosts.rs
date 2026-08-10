@@ -287,8 +287,15 @@ mod tests {
                 verify_or_pin("race-host", &key, PinPolicy::Enforce).is_ok()
             }));
         }
-        let successes: usize = handles.into_iter().map(|h| h.join().unwrap()).filter(|ok| *ok).count();
-        assert_eq!(successes, 1, "exactly one racer should win the first-pin race");
+        let successes: usize = handles
+            .into_iter()
+            .map(|h| h.join().unwrap())
+            .filter(|ok| *ok)
+            .count();
+        assert_eq!(
+            successes, 1,
+            "exactly one racer should win the first-pin race"
+        );
 
         // The file must parse cleanly (no torn/interleaved writes) and pin
         // exactly one of the 16 candidate keys, proving the load-check-save

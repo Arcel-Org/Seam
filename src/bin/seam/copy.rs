@@ -1031,9 +1031,8 @@ mod tests {
             .unwrap();
         let server_addr = server.local_addr().unwrap();
 
-        let (server_conn, mut client_conn) = tokio::join!(
-            async { server.accept().await.unwrap() },
-            async {
+        let (server_conn, mut client_conn) =
+            tokio::join!(async { server.accept().await.unwrap() }, async {
                 let client_id = IdentityKeypair::generate();
                 let mut client = Client::bind("127.0.0.1:0".parse().unwrap(), client_id)
                     .await
@@ -1047,8 +1046,7 @@ mod tests {
                     )
                     .await
                     .unwrap()
-            }
-        );
+            });
 
         // Server side: exactly send.rs's pattern — open our own stream and
         // send HELLO unprompted, no waiting.

@@ -276,8 +276,7 @@ impl Connection {
         // on both peers (obfuscation is XORed on one side and reversed on
         // the other), so it's derived from both directional keys combined
         // rather than from either single direction.
-        let tar_secret =
-            blake3::hash(&[result.keys_c2s.enc_key, result.keys_s2c.enc_key].concat());
+        let tar_secret = blake3::hash(&[result.keys_c2s.enc_key, result.keys_s2c.enc_key].concat());
         self.tar.set_session_secret(tar_secret.as_bytes());
 
         // Server: issue and send an encrypted session ticket for 0-RTT resumption.

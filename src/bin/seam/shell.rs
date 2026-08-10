@@ -711,8 +711,7 @@ async fn pty_bridge_loop(
                 match b {
                     Err(_) => break 'bridge,
                     Ok(SHELL_STDIN_EOF) => {
-                        // EOF from client — close PTY master write side.
-                        drop(pty_in_tx);
+                        // EOF from client — bridge loop will close PTY master write side below.
                         break 'bridge;
                     }
                     Ok(SHELL_STDIN) => {
@@ -741,9 +740,34 @@ async fn pty_bridge_loop(
         }
     }
 
-    // Reap the child.
-    let mut wstatus: i32 = 0;
-    unsafe { libc::waitpid(child_pid, &mut wstatus, 0) };
+    // Always close the PTY input side once we leave the bridge loop, even on
+    // abrupt disconnect (Err path above) — otherwise the child never sees
+    // stdin EOF/HUP and the reap below can block indefinitely.
+    drop(pty_in_tx);
+
+    // Reap off the async runtime: a child that ignores the closed stdin can
+    // hang for a long time, and a blocking waitpid() called inline here would
+    // wedge a Tokio worker thread for the whole process. Give it a bounded
+    // grace period, then SIGKILL so we never leak a reaped-but-stuck process.
+    let wstatus = tokio::task::spawn_blocking(move || {
+        let mut wstatus = 0i32;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let ret = unsafe { libc::waitpid(child_pid, &mut wstatus, libc::WNOHANG) };
+            if ret == child_pid || ret < 0 {
+                break;
+            }
+            if std::time::Instant::now() >= deadline {
+                unsafe { libc::kill(child_pid, libc::SIGKILL) };
+                unsafe { libc::waitpid(child_pid, &mut wstatus, 0) };
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        wstatus
+    })
+    .await
+    .unwrap_or(0);
     if libc::WIFEXITED(wstatus) {
         exit_code = libc::WEXITSTATUS(wstatus) as u8;
     } else if libc::WIFSIGNALED(wstatus) {

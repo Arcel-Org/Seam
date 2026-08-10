@@ -135,19 +135,7 @@ pub fn run(_args: DoctorArgs) -> Result<()> {
                 ok = false;
             }
             Ok(text) => {
-                // Check for unknown keys by comparing raw TOML table keys against the known set.
-                let known_keys = [
-                    "cc",
-                    "compress",
-                    "identity",
-                    "cipher",
-                    "max_connections",
-                    "listen_port",
-                    "fec_k",
-                    "fec_r",
-                    "fips_mode",
-                    "relays",
-                ];
+                let known_keys = known_config_keys();
                 match text.parse::<toml::Value>() {
                     Err(e) => {
                         eprintln!("  ✗  config parse error: {e}");
@@ -160,17 +148,19 @@ pub fn run(_args: DoctorArgs) -> Result<()> {
                     Ok(toml::Value::Table(table)) => {
                         let mut unknown_keys: Vec<String> = table
                             .keys()
-                            .filter(|k| !known_keys.contains(&k.as_str()))
+                            .filter(|k| !known_keys.iter().any(|kk| kk == *k))
                             .cloned()
                             .collect();
                         unknown_keys.sort();
                         if !unknown_keys.is_empty() {
+                            let mut valid = known_keys.clone();
+                            valid.sort();
                             eprintln!(
                                 "  !  config at {} has unknown key(s): {}",
                                 cfg_path.display(),
                                 unknown_keys.join(", ")
                             );
-                            eprintln!("     valid keys: {}", known_keys.join(", "));
+                            eprintln!("     valid keys: {}", valid.join(", "));
                             // Not fatal — forward-compat; but warn loudly.
                         }
                     }
@@ -889,6 +879,36 @@ fn probe_relay_tcp(host: &str, port: u16, timeout: std::time::Duration) -> anyho
     Err(last_err)
 }
 
+/// The set of config keys `Config` actually deserializes, derived from
+/// `Config` itself rather than hand-maintained here.
+///
+/// Every `Config` field has `#[serde(default)]`, so an empty TOML document
+/// deserializes to a fully-defaulted `Config`. Serializing that back out
+/// gives the field set — via `serde_json`, not `toml`: TOML has no null
+/// representation, so the `toml` crate's serializer silently DROPS any
+/// `Option<T>` field whose value is `None` (identity, fec_k, fec_r,
+/// stun_server, max_bandwidth are all `Option<T>` and default to `None`,
+/// so a toml-based round-trip here would omit them). `serde_json` emits
+/// `null` for `None` instead of dropping the key, so the object's keys are
+/// the complete field set regardless of each field's default value.
+///
+/// This previously WAS a hand-maintained list that fell out of sync as
+/// fields were added (traffic_padding, obfuscate, timing_jitter_ms,
+/// multipath_*, ratchet_epoch_*, stun_server, connection_migration,
+/// max_bandwidth were all missing), causing `seam doctor` to falsely warn
+/// about legitimate, documented keys. Deriving it instead makes that class
+/// of staleness impossible.
+fn known_config_keys() -> Vec<String> {
+    toml::from_str::<super::config::Config>("")
+        .ok()
+        .and_then(|cfg| serde_json::to_value(&cfg).ok())
+        .and_then(|v| {
+            v.as_object()
+                .map(|obj| obj.keys().cloned().collect::<Vec<_>>())
+        })
+        .unwrap_or_default()
+}
+
 fn try_udp_buffer_test() -> Option<(usize, usize)> {
     use socket2::{Domain, Socket, Type};
     let sock = Socket::new(Domain::IPV4, Type::DGRAM, None).ok()?;
@@ -897,4 +917,53 @@ fn try_udp_buffer_test() -> Option<(usize, usize)> {
     let rx = sock.recv_buffer_size().ok()?;
     let tx = sock.send_buffer_size().ok()?;
     Some((rx, tx))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Guards against the derivation silently degrading to an empty set
+    /// (e.g. if `toml::Value::try_from` ever started failing for `Config`)
+    /// — that would be strictly worse than the stale-hand-maintained-list
+    /// bug this replaced, since an empty known-set flags every real key as
+    /// "unknown". Also pins a representative sample of fields, including
+    /// ones that were missing from the old hand-maintained list.
+    #[test]
+    fn known_config_keys_covers_every_config_field() {
+        let keys = known_config_keys();
+        assert!(
+            !keys.is_empty(),
+            "must not silently degrade to an empty set"
+        );
+        for expected in [
+            "cc",
+            "compress",
+            "identity",
+            "cipher",
+            "max_connections",
+            "listen_port",
+            "fec_k",
+            "fec_r",
+            "fips_mode",
+            "relays",
+            // Previously missing from the hand-maintained list:
+            "traffic_padding",
+            "cover_traffic_kbps",
+            "timing_jitter_ms",
+            "obfuscate",
+            "multipath_addrs",
+            "multipath_mode",
+            "ratchet_epoch_packets",
+            "ratchet_epoch_seconds",
+            "stun_server",
+            "connection_migration",
+            "max_bandwidth",
+        ] {
+            assert!(
+                keys.iter().any(|k| k == expected),
+                "known_config_keys() is missing field {expected:?}"
+            );
+        }
+    }
 }

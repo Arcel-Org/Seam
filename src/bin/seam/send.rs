@@ -19,7 +19,11 @@ pub struct SendArgs {
     /// UDP port to listen on (0 = OS-assigned)
     #[arg(long, default_value_t = 0)]
     pub port: u16,
-    /// Exit after one transfer
+    /// Exit after one transfer. Accepted for CLI compatibility with callers
+    /// (e.g. `seam cp`'s bootstrap of `_send`) that always pass it, but it's
+    /// currently a no-op: `run()` only ever accepts a single connection and
+    /// returns, so this is already the unconditional behavior regardless of
+    /// this flag's value.
     #[arg(long)]
     pub once: bool,
     /// Disable zstd compression (on by default)

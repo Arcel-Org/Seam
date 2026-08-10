@@ -234,7 +234,7 @@ Seam connects to `server:54321` over UDP and performs:
 - ML-DSA-65 identity proof exchange (quantum-resistant identity binding)
 - Cipher negotiation (ChaCha20-Poly1305 by default, AES-256-GCM in FIPS mode)
 
-The handshake takes approximately 247 µs. Both sides now share session keys that neither could force to be weak, and that cannot be decrypted by a quantum computer even if recordings of the handshake are captured today.
+The handshake takes approximately 247 µs. Both sides now hold independent, per-direction encryption keys (one for client→server, one for server→client, so traffic in each direction gets its own key and nonce space) that neither side could force to be weak, and that cannot be decrypted by a quantum computer even if recordings of the handshake are captured today.
 
 **Step 3 — File transfer**
 

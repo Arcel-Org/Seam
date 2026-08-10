@@ -75,8 +75,8 @@ seam cp --multipath 192.168.1.100:0,10.0.0.1:0 ./dataset/ alice@server:/data/dat
 | `--resume` | false | Resume an interrupted transfer (uses `.seam-partial` staging files; atomic rename on success) |
 | `--direct <LINE>` | — | Skip SSH bootstrap; use a pre-started SEAM connection line directly. Format: `"SEAM PORT=<n> X25519=<hex> KEM=<hex>"` |
 | `--rate <Mbps>` | — | Cap bandwidth to N Mbps using a token-bucket limiter |
-| `--multipath <addr1,...>` | — | Push only. Opens one independent connection per local address and round-robins files across them. See [architecture.md](architecture.md#multi-path-transport). |
-| `--multipath-redundant` | false | Not yet supported for `seam cp` (would need per-connection temp-file isolation on the receiver). Passing it with `--multipath` is an error. |
+| `--multipath <addr1,...>` | — | Push only. Opens one independent connection per local address. See [architecture.md](architecture.md#multi-path-transport). |
+| `--multipath-redundant` | false | Requires `--multipath`. Sends every file over *every* path concurrently instead of round-robining, for redundancy against a jammed/dropped path. The receiver stages each path's copy under its own `<name>.seam-partial.p<idx>` file so the concurrent connections can't corrupt each other; the first path to finish and checksum-verify wins and is promoted to the final path. |
 
 ### Behavior
 
@@ -656,6 +656,269 @@ seam ls alice@server:/data
 ```
 
 Output includes Unix-style permissions, human-readable sizes, and filenames.
+
+---
+
+## seam share
+
+Share a file or directory via a one-time post-quantum download link. Starts a local receiver on a random port with a fresh identity and a random 16-byte auth token, then prints the exact `seam cp` command the recipient should run. The server shuts down after the configured number of downloads (default: 1) or when the expiry duration elapses, whichever comes first.
+
+```sh
+seam share <path> [flags]
+```
+
+### Examples
+
+```sh
+# Share a single file, one download allowed
+seam share ./report.pdf
+
+# Allow 3 downloads
+seam share ./dataset/ --times 3
+
+# Auto-expire after 1 hour regardless of download count
+seam share ./report.pdf --expire 1h
+
+# Disable zstd compression (already-compressed data)
+seam share ./archive.zip.enc --no-compress
+```
+
+### Flags
+
+| Flag | Default | Description |
+|---|---|---|
+| `--times <N>` | `1` | Number of downloads allowed before the share closes |
+| `--expire <DURATION>` | — | Auto-expire after this duration (e.g. `30m`, `1h`, `24h`) |
+| `--no-compress` | false | Disable zstd compression |
+
+### Behavior
+
+The printed recipient command looks like:
+
+```sh
+seam cp --direct "SEAM PORT=<port> X25519=<hex> KEM=<hex> TOKEN=<hex>" share:/<filename> ./
+```
+
+The recipient's client sends the token as an explicit `TOKEN` frame before any data is transferred; the server rejects the connection outright (constant-time comparison) if the token is missing, wrong, or truncated — there is no compatibility fallback that serves the file without one.
+
+---
+
+## seam watch
+
+Watch a local directory for filesystem changes and sync them to a remote host in real time. Changes are debounced (default 100ms) so rapid edits are batched into one sync round rather than triggering a transfer per write. A persistent Seam session (and control stream) is kept open for the whole `seam watch` run — each sync round reuses it instead of re-bootstrapping over SSH and redoing the handshake.
+
+```sh
+seam watch <local-dir> <user@host:/remote-dir> [flags]
+```
+
+### Examples
+
+```sh
+# Watch and sync a directory
+seam watch ./src alice@server:/home/alice/src
+
+# Wider debounce window for very bursty editors
+seam watch ./src alice@server:/home/alice/src --debounce-ms 500
+
+# Verbose sync log
+seam watch ./src alice@server:/home/alice/src --verbose
+```
+
+### Flags
+
+| Flag | Default | Description |
+|---|---|---|
+| `--debounce-ms <MS>` | `100` | Debounce window: batch filesystem events within this window into one sync |
+| `--no-compress` | false | Disable zstd compression |
+| `--ssh-port <PORT>` | — | SSH port for the initial bootstrap connection |
+| `--verbose` | false | Show a per-file sync log |
+
+Stop with Ctrl-C. If the remote connection drops, `seam watch` reconnects and re-bootstraps on the next detected change rather than exiting.
+
+---
+
+## seam route
+
+Route a connection through one or more intermediate Seam relay nodes (multi-hop). Each relay must be reachable via SSH (or already running `seam serve`) and, once bootstrapped, binds a local UDP proxy that forwards raw ciphertext to the next hop — relays never see plaintext, only the final destination decrypts.
+
+```sh
+seam route --via <relay1> [--via <relay2> ...] <user@dest> [subcommand] [args...]
+```
+
+### Examples
+
+```sh
+# Establish a route through one relay, run an interactive shell at dest
+seam route --via relay.example.com alice@dest.internal shell
+
+# Two hops, run a single command at dest
+seam route --via relay1.example.com --via relay2.example.com alice@dest.internal shell "uptime"
+
+# Pipe a command's stdio through the route
+seam route --via relay.example.com alice@dest.internal pipe "tail -f /var/log/app.log"
+
+# Just establish the route (no subcommand) and exit
+seam route --via relay.example.com alice@dest.internal
+```
+
+### Flags
+
+| Flag | Default | Description |
+|---|---|---|
+| `--via <HOST>` | — | Intermediate relay node; repeatable, order matters (first hop first) |
+| `--ssh-port <PORT>` | — | SSH port for the initial bootstrap connection to the first hop |
+
+### Supported subcommands
+
+Only `shell`/`sh` and `pipe` currently run through an established route. Other subcommands (`cp`, `sync`, etc.) are not yet wired through the hop chain.
+
+### Idle proxy cleanup
+
+Each relay's per-hop UDP proxy tears itself down after 5 minutes of no traffic, so an abandoned or crashed route doesn't leak a socket and background task on the relay indefinitely.
+
+---
+
+## seam punch
+
+Discover your external `IP:PORT` via STUN, and optionally attempt UDP hole punching to a peer's external address for direct NAT-to-NAT connectivity without a relay.
+
+```sh
+seam punch [--peer <ADDR>] [--stun <HOST:PORT>]
+```
+
+### Examples
+
+```sh
+# Discover-only: print local and external address
+seam punch
+
+# Hole-punch to a peer (both sides run this simultaneously with each other's external address)
+seam punch --peer 203.0.113.5:4433
+
+# Use a specific STUN server
+seam punch --stun stun.example.com:3478
+```
+
+### Flags
+
+| Flag | Default | Description |
+|---|---|---|
+| `--peer <ADDR>` | — | Peer's external address (`IP:PORT`) to punch a hole to. Omit to only discover your own external address. |
+| `--stun <HOST:PORT>` | `stun.l.google.com:19302` | STUN server for external address discovery. Configurable via `stun_server` in `~/.config/seam/config.toml`. |
+
+Both peers must run `seam punch --peer <the-other-side's-external-addr>` at roughly the same time — hole punching relies on both sides sending outbound packets close enough together that each side's NAT creates a mapping the other's packet can land in.
+
+---
+
+## seam scan
+
+Scan TCP ports on a target host or CIDR range, optionally routed through a Seam relay so the scan traffic itself is post-quantum encrypted end-to-end.
+
+```sh
+seam scan <target> [flags]
+```
+
+### Examples
+
+```sh
+# Default port set on a single host
+seam scan 192.168.1.1
+
+# Specific ports and ranges
+seam scan 192.168.1.1 --ports 22,80,443,8080-8090
+
+# Scan a whole subnet with higher concurrency
+seam scan 10.0.0.0/24 --concurrency 256
+
+# Route the scan through a Seam relay
+seam scan 192.168.1.1 --via relay.example.com
+
+# Machine-readable output
+seam scan 192.168.1.1 --json
+```
+
+### Flags
+
+| Flag | Default | Description |
+|---|---|---|
+| `--ports <SPEC>` | `22,80,443,8080,8443` | Comma-separated ports and/or ranges (e.g. `22,80,443,8080-8090`) |
+| `--timeout <MS>` | `2000` | Connection timeout per port, in milliseconds |
+| `--concurrency <N>` | `100` | Maximum concurrent probes |
+| `--via <HOST:PORT>` | — | Route TCP probes through a Seam relay |
+| `--json` | false | Output one JSON object per result line (JSONL) instead of a human-readable table |
+
+---
+
+## seam mount
+
+Mount a remote directory as a local filesystem via FUSE.
+
+```sh
+seam mount <user@host:/remote-path> <local-mountpoint> [flags]
+```
+
+### Examples
+
+```sh
+seam mount alice@server:/data /mnt/remote
+# ... browse/read files under /mnt/remote ...
+fusermount -u /mnt/remote   # unmount (Linux); umount /mnt/remote on macOS
+```
+
+### Flags
+
+| Flag | Default | Description |
+|---|---|---|
+| `--read-only` | false | Mount read-only (reads are already the only supported operation — see below) |
+| `-p` / `--port <PORT>` | — | SSH port for the bootstrap connection |
+
+### Requires the `fuse` build feature
+
+Prebuilt release binaries do **not** include FUSE support, to keep them dependency-free and portable. Build from source with `cargo build --release --features fuse` (requires libfuse3 dev headers on Linux, e.g. `apt install libfuse3-dev pkg-config`, or macFUSE on macOS). Running a binary built without the feature prints a clear error telling you to rebuild with it, rather than failing silently.
+
+### Behavior and limits
+
+- **Read-only, whole-file reads.** `lookup`/`getattr`/`readdir`/`open`/`read`/`release` are implemented; writes are not — fuser's default handlers return `ENOSYS` for anything this filesystem doesn't override.
+- Each `open()` fetches the entire file over the encrypted connection (checksum-verified) and buffers it in memory for the life of the file handle. There is no partial/streaming read yet, so this isn't suited to very large files or heavy concurrent access.
+- One persistent Seam connection is kept open to the remote for the life of the mount; every FUSE callback issues one request/response round-trip over it.
+
+---
+
+## seam daemon
+
+Manage a background `seam` daemon process that can hold persistent connections and answer status queries over a local Unix domain socket.
+
+```sh
+seam daemon <start|stop|status>
+```
+
+### Examples
+
+```sh
+seam daemon start
+seam daemon status
+seam daemon stop
+```
+
+### Socket and PID file
+
+The daemon listens on `/run/user/<uid>/seam-daemon.sock` and writes its PID to `/run/user/<uid>/seam-daemon.pid`. Access is gated by that directory's permissions (mode `0700` under systemd's `pam_systemd`-managed `XDG_RUNTIME_DIR` on typical Linux distributions) — there is no additional authentication on the socket itself, so it should only be relied on in environments where the per-user runtime directory is properly access-controlled.
+
+### Current status
+
+The daemon's `status` reply lists connections loaded from `~/.config/seam/daemon.toml`, but the daemon does not yet actively establish or maintain those connections — `connected` is always reported `false`. `seam daemon` today is a minimal process/socket lifecycle skeleton, not a full connection-pooling daemon.
+
+---
+
+## seam perf
+
+Run a local, in-process cryptographic performance self-test — no network connection involved. Useful for sanity-checking that the build's crypto primitives perform as expected on the current machine (e.g. hardware AES-NI availability).
+
+```sh
+seam perf
+```
+
+Reports median timings (over 1000 iterations) for: the Noise_XX + ML-KEM-768 handshake, ML-DSA-65 sign/verify, ChaCha20-Poly1305 and AES-256-GCM at a 1400-byte packet size (with effective Gbps throughput), a double-ratchet chain step, and Reed-Solomon FEC encode (k=8, r=2).
 
 ---
 

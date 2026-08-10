@@ -63,16 +63,27 @@ ML-KEM-768 (previously CRYSTALS-Kyber level 3) is a key encapsulation mechanism 
 
 ### Why KEM is not enough alone — the hybrid construction
 
-ML-KEM-768 is relatively new. Elliptic-curve cryptography (X25519) has decades of cryptanalysis. The hybrid construction XORs both shared secrets into the root key:
+ML-KEM-768 is relatively new. Elliptic-curve cryptography (X25519) has decades of cryptanalysis. The hybrid construction concatenates both shared secrets into a hybrid secret:
 
 ```
-root_key = BLAKE3(x25519_shared_secret || kem_shared_secret)
+x25519_component = BLAKE3(dh_split.0 || dh_split.1)   # both halves of the raw Noise DH split
+hybrid_secret     = x25519_component || kem_shared_secret
+```
+
+`dh_split` comes from the Noise chaining key's final HKDF split (the accumulator for all three DH operations in Noise_XX) — real key material, not the public handshake transcript, so an eavesdropper who only observed the handshake messages cannot reconstruct it.
+
+The hybrid secret is then combined with the handshake transcript hash and a per-direction label to derive **two independent key sets**, one for each traffic direction:
+
+```
+keys_c2s = KDF(hybrid_secret || noise_hash || "c2s")
+keys_s2c = KDF(hybrid_secret || noise_hash || "s2c")
 ```
 
 This means:
 - A classical adversary cannot break the session (X25519 hardness holds)
 - A quantum adversary cannot break the session (ML-KEM-768 hardness holds)
 - If either primitive has an unknown weakness, the session is still protected by the other
+- Each direction of traffic uses its own key and nonce space, so packet numbers from the two peers can never collide under the same key
 
 Traffic recorded today cannot be decrypted later even if only one primitive is broken in the future.
 

@@ -97,16 +97,33 @@ Client                                          Server
 
 After Noise_XX completes, both sides share:
 - The Noise handshake hash (BLAKE3 transcript of all three messages)
-- The Noise-derived session secret (from X25519 key agreement)
+- The raw X25519 DH split — both halves of the Noise chaining key's final HKDF split (`dangerously_get_raw_split()`), the accumulator for all three DH operations in Noise_XX (ee, se, es)
 - The ML-KEM-768 shared secret (from KEM encapsulation)
 
-The final session root key is derived by mixing both secrets via BLAKE3:
+The X25519 component is derived by hashing both halves of the raw DH split together:
 
 ```
-root_key = BLAKE3(noise_secret || kem_shared_secret)
+x25519_component = BLAKE3(dh_split.0 || dh_split.1)
 ```
 
-This ensures that a quantum adversary who breaks X25519 still cannot derive the session key without also breaking ML-KEM-768, and vice versa.
+This is real, peer-authenticated key material — not the handshake transcript hash, which is public and reconstructible by anyone who merely observed the three handshake messages. (An earlier version of this derivation used the public transcript hash here, which made the "hybrid" construction hybrid in name only: confidentiality rested entirely on ML-KEM-768 despite the documented claim below.)
+
+The hybrid secret combines both primitives:
+
+```
+hybrid_secret = x25519_component || kem_shared_secret
+```
+
+Finally, **two independent directional key sets** are derived — one per traffic direction — by mixing in a direction label:
+
+```
+keys_c2s = KDF(hybrid_secret || noise_hash || "c2s")
+keys_s2c = KDF(hybrid_secret || noise_hash || "s2c")
+```
+
+Without the direction label, both peers would compute the exact same `(hybrid_secret, noise_hash)` input and end up with *identical* encryption keys and nonce spaces — the client's packet #N and the server's packet #N would be encrypted under the same key and nonce, a two-time-pad break of the AEAD. Session tickets (`seam`'s 0-RTT resumption) also carry both `keys_c2s` and `keys_s2c` so a resumed session preserves the same directional separation.
+
+This ensures that a quantum adversary who breaks X25519 still cannot derive either directional key without also breaking ML-KEM-768, and vice versa.
 
 The ML-DSA-65 identity proofs bind each party's post-quantum identity to the session by signing the handshake transcript hash. This prevents a relay from substituting a different identity key without detection.
 

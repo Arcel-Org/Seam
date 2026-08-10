@@ -1164,11 +1164,18 @@ fn draw(f: &mut Frame, app: &mut App) {
     }
 }
 
+/// Truncate `s` to at most `max` *characters* (not bytes), appending `…` when
+/// truncated. Operates on `char_indices()` rather than byte-slicing at
+/// `max`, which would panic if that byte offset landed in the middle of a
+/// multi-byte UTF-8 character — reachable via the audit log's "recent
+/// connections" list, which can contain non-ASCII hostnames.
 fn trunc(s: &str, max: usize) -> String {
-    if s.len() <= max {
+    if s.chars().count() <= max {
         s.to_string()
     } else {
-        format!("{}…", &s[..max.saturating_sub(1)])
+        let keep = max.saturating_sub(1);
+        let truncated: String = s.chars().take(keep).collect();
+        format!("{truncated}…")
     }
 }
 
@@ -1431,5 +1438,19 @@ mod tests {
         assert!(Action::Sync.supports_direction());
         assert!(!Action::Shell.supports_direction());
         assert!(!Action::Watch.supports_direction());
+    }
+
+    #[test]
+    fn trunc_does_not_panic_on_multibyte_utf8_boundary() {
+        // Each "🦀" is 4 bytes; byte-slicing at an arbitrary offset (the old
+        // implementation) would land mid-character and panic. Truncating by
+        // char count must not.
+        let s = "🦀🦀🦀🦀🦀🦀🦀🦀🦀🦀";
+        let out = trunc(s, 5);
+        assert_eq!(out.chars().count(), 5);
+        assert!(out.ends_with('…'));
+
+        let short = trunc("héllo", 10);
+        assert_eq!(short, "héllo");
     }
 }

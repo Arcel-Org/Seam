@@ -27,17 +27,49 @@ struct HostKeyChecker {
 impl client::Handler for HostKeyChecker {
     type Error = anyhow::Error;
 
+    /// Real TOFU / accept-new verification against `~/.ssh/known_hosts`, via
+    /// `russh::keys::known_hosts` (the same file and format `ssh` itself
+    /// uses). This previously always returned `Ok(true)` with no check at
+    /// all — an unconditional MITM bypass for every connection, despite this
+    /// module's own doc comment claiming known-hosts verification was
+    /// implemented. Not currently reachable from any live code path (nothing
+    /// constructs `RusshRemote` yet — `ssh.rs`'s subprocess `ssh` is used
+    /// instead), but left as-is it would have been a silent, total loss of
+    /// host authentication the moment something wired it up.
     async fn check_server_key(
         &mut self,
-        _server_public_key: &PublicKey,
+        server_public_key: &PublicKey,
     ) -> Result<bool, Self::Error> {
-        // TOFU / accept-new behaviour: accept all keys on first connection.
-        tracing::debug!(
-            "russh: accepting host key for {}:{} (StrictHostKeyChecking=accept-new)",
-            self.host,
-            self.port
-        );
-        Ok(true)
+        use russh::keys::known_hosts::{check_known_hosts, learn_known_hosts};
+
+        match check_known_hosts(&self.host, self.port, server_public_key) {
+            Ok(true) => Ok(true),
+            Ok(false) => {
+                // No matching entry — first connection. TOFU: accept and record it.
+                tracing::info!(
+                    "russh: pinning new host key for {}:{} (TOFU, ~/.ssh/known_hosts)",
+                    self.host,
+                    self.port
+                );
+                if let Err(e) = learn_known_hosts(&self.host, self.port, server_public_key) {
+                    tracing::warn!("russh: failed to save known_hosts entry: {e}");
+                }
+                Ok(true)
+            }
+            Err(e) => {
+                // A same-algorithm entry exists but the key differs: this is
+                // exactly the "REMOTE HOST IDENTIFICATION HAS CHANGED" case.
+                // Reject; do not connect.
+                tracing::error!(
+                    "russh: host key verification FAILED for {}:{} — {e} \
+                     (possible MITM attack, or the host key legitimately changed; \
+                     remove the stale entry from ~/.ssh/known_hosts to proceed)",
+                    self.host,
+                    self.port
+                );
+                Ok(false)
+            }
+        }
     }
 }
 

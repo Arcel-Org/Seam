@@ -38,18 +38,24 @@ pub async fn run(args: LsArgs) -> Result<()> {
         let conn = connect::dial("127.0.0.1", port, x25519, kem_pk, cipher).await?;
         (conn, None)
     } else {
-        let (user, host) =
-            ssh::parse_userhost(args.remote.split(':').next().unwrap_or(&args.remote));
-        let remote = ssh::RemoteInfo {
-            host: host.clone(),
-            user,
-            ssh_port: args.port,
-        };
-        let remote_path = ssh::parse_remote(&args.remote)
-            .map(|(_, p)| p)
-            .unwrap_or_default();
+        // Use the fully ~/.ssh/config-resolved RemoteInfo (respects Host
+        // aliases, HostName, User, Port overrides via `ssh -G`) for BOTH the
+        // SSH bootstrap and the actual UDP dial target below. Previously this
+        // resolved `remote` only to extract the remote path, then rebuilt a
+        // second, unresolved `(user, host)` pair from the raw spec via
+        // `parse_userhost` and dialed that instead — so any host that's only
+        // reachable through an SSH config alias (HostName pointing elsewhere,
+        // a Port override, etc.) would bootstrap fine over SSH but then fail
+        // the UDP handshake by dialing the literal, unresolved alias.
+        let (mut remote, remote_path) = ssh::parse_remote(&args.remote).ok_or_else(|| {
+            anyhow::anyhow!("invalid remote spec: {} (use user@host:/path)", args.remote)
+        })?;
+        if args.port.is_some() {
+            remote.ssh_port = args.port;
+        }
         let subcmd = format!("_ls-recv {} --port 0", connect::shell_quote(&remote_path));
-        let (conn, child) = connect::bootstrap_and_connect(&remote, &host, &subcmd, cipher).await?;
+        let (conn, child) =
+            connect::bootstrap_and_connect(&remote, &remote.host, &subcmd, cipher).await?;
         (conn, Some(child))
     };
 

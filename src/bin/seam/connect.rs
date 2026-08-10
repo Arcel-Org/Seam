@@ -89,6 +89,10 @@ pub fn extract_token(line: &str) -> Option<String> {
 }
 
 pub fn identity_path() -> std::path::PathBuf {
+    // Test-only override so unit tests never touch the real user config dir.
+    if let Ok(p) = std::env::var("SEAM_IDENTITY_PATH") {
+        return std::path::PathBuf::from(p);
+    }
     dirs::config_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("."))
         .join("seam")

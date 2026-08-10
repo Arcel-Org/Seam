@@ -8,6 +8,7 @@
 ///   Ctrl-E / End         — end of line
 ///   Ctrl-K               — kill to end of line
 ///   Ctrl-W               — delete word back
+///   Ctrl-D               — flip push/pull direction (Copy, Sync)
 ///   Enter                — run command or select recent
 ///   ?                    — toggle help overlay
 ///   Esc / q              — quit (outside text fields)
@@ -177,13 +178,14 @@ impl Action {
         }
     }
 
-    fn param_label(self) -> Option<&'static str> {
+    fn param_label(self, pull: bool) -> Option<&'static str> {
         match self {
+            Action::Copy | Action::Sync if pull => Some("Path (remote, pulling)"),
             Action::Forward => Some("Spec"),
             Action::Tunnel => Some("Ports"),
             Action::Fwd => Some("Spec"),
-            Action::Copy => Some("Path"),
-            Action::Sync => Some("Path"),
+            Action::Copy => Some("Path (local, pushing)"),
+            Action::Sync => Some("Path (local, pushing)"),
             Action::Proxy => Some("Local port"),
             Action::Scan => Some("Ports"),
             Action::Share => Some("File/dir"),
@@ -194,8 +196,9 @@ impl Action {
         }
     }
 
-    fn param_placeholder(self) -> &'static str {
+    fn param_placeholder(self, pull: bool) -> &'static str {
         match self {
+            Action::Copy | Action::Sync if pull => "/remote/file.txt",
             Action::Forward => "8080:localhost:80",
             Action::Tunnel => "8080 8443",
             Action::Fwd => "3000:8080",
@@ -212,10 +215,16 @@ impl Action {
     }
 
     fn needs_param(self) -> bool {
-        self.param_label().is_some()
+        self.param_label(false).is_some()
     }
 
-    fn to_args(self, host: &str, param: &str) -> Vec<String> {
+    /// Whether this action has a push/pull direction the user can flip
+    /// (Ctrl-D). Every other action's Host/Param mapping is fixed.
+    fn supports_direction(self) -> bool {
+        matches!(self, Action::Copy | Action::Sync)
+    }
+
+    fn to_args(self, host: &str, param: &str, pull: bool) -> Vec<String> {
         let host = host.trim().to_string();
         let param = param.trim().to_string();
         match self {
@@ -236,16 +245,23 @@ impl Action {
                 };
                 vec!["fwd".into(), format!("{host}:{rp}"), lp.to_string()]
             }
+            // Direction is explicit (Ctrl-D toggles it, reflected in the Param
+            // label/placeholder below) rather than guessed from the Param
+            // field's content. A content-sniffing heuristic here previously
+            // meant that typing a path into the "Path" field — exactly what
+            // its own label and placeholder told you to do — always produced
+            // a *push* even when the user meant to pull a remote file, with
+            // no indication anything needed to be typed differently.
             Action::Copy => {
-                if param.contains('@') || (param.starts_with('/') && host.contains(':')) {
-                    vec!["cp".into(), param, host]
+                if pull {
+                    vec!["cp".into(), format!("{host}:{param}"), ".".into()]
                 } else {
                     vec!["cp".into(), param, format!("{host}:")]
                 }
             }
             Action::Sync => {
-                if param.contains('@') {
-                    vec!["sync".into(), param, host]
+                if pull {
+                    vec!["sync".into(), format!("{host}:{param}"), ".".into()]
                 } else {
                     vec!["sync".into(), param, format!("{host}:")]
                 }
@@ -356,14 +372,23 @@ fn format_ts_ago(ts: &str) -> String {
     }
 }
 
+/// Short display fingerprint for the title bar: the first 4 bytes of the
+/// SHA-256 fingerprint of the local *public* X25519 key — the same value
+/// `seam key` and `known_hosts.rs` show, so it's something a user could
+/// actually compare against a pin. This must never read raw key bytes off
+/// disk and print them directly: earlier this showed the first 4 bytes of
+/// the on-disk identity file, which (per `IdentityKeypair::to_bytes`) is a
+/// 1-byte version tag followed by the raw X25519 *private* scalar — i.e. it
+/// leaked private key material to the screen on every launch, and wasn't
+/// even a real fingerprint (real fingerprints hash the public key).
 fn load_identity_fp() -> String {
-    let path = dirs::config_dir()
-        .unwrap_or_default()
-        .join("seam")
-        .join("identity");
-    match std::fs::read(&path) {
-        Ok(b) if b.len() >= 4 => format!("{:02x}:{:02x}:{:02x}:{:02x}", b[0], b[1], b[2], b[3]),
-        _ => "--:--:--:--".into(),
+    let path = super::connect::identity_path();
+    match seam_protocol::handshake::IdentityKeypair::load_or_generate(&path) {
+        Ok(id) => {
+            let fp = super::known_hosts::fingerprint(id.x25519_public.as_bytes());
+            format!("{}:{}:{}:{}", &fp[0..2], &fp[2..4], &fp[4..6], &fp[6..8])
+        }
+        Err(_) => "--:--:--:--".into(),
     }
 }
 
@@ -393,6 +418,11 @@ struct App {
     show_help: bool,
     show_extra: bool,
     identity_fp: String,
+    /// Push/pull direction for actions where `Action::supports_direction()`
+    /// is true (Copy, Sync). Toggled with Ctrl-D; ignored by every other
+    /// action. Always starts false (push) so the default behavior matches
+    /// the Param field's own placeholder/label.
+    pull: bool,
 }
 
 impl App {
@@ -416,6 +446,7 @@ impl App {
             show_help: false,
             show_extra: false,
             identity_fp: load_identity_fp(),
+            pull: false,
         }
     }
 
@@ -439,7 +470,7 @@ impl App {
     }
 
     fn build_args(&self) -> Vec<String> {
-        self.action().to_args(&self.host, &self.param)
+        self.action().to_args(&self.host, &self.param, self.pull)
     }
     fn preview_command(&self) -> String {
         let args = self.build_args();
@@ -933,14 +964,18 @@ fn draw(f: &mut Frame, app: &mut App) {
     // Param input
     if needs_param && rows[3].height > 0 {
         let focused = app.focus == Focus::Param;
-        let label = app.action().param_label().unwrap_or("Param");
-        let placeholder = app.action().param_placeholder();
+        let label = app.action().param_label(app.pull).unwrap_or("Param");
+        let placeholder = app.action().param_placeholder(app.pull);
         let w = render_input(&app.param, app.param_cursor, focused, placeholder).block(
             Block::default()
                 .title(Line::from(vec![
                     Span::raw(" "),
                     Span::styled(label, style_bold(C_ACCENT)),
-                    Span::raw(" "),
+                    Span::raw(if app.action().supports_direction() {
+                        " (Ctrl-D flips direction) "
+                    } else {
+                        " "
+                    }),
                 ]))
                 .borders(Borders::ALL)
                 .border_style(border_style(focused)),
@@ -996,8 +1031,8 @@ fn draw(f: &mut Frame, app: &mut App) {
             Line::from(Span::styled(
                 format!(
                     "  enter {} above  (e.g. {})",
-                    app.action().param_label().unwrap_or("param"),
-                    app.action().param_placeholder()
+                    app.action().param_label(app.pull).unwrap_or("param"),
+                    app.action().param_placeholder(app.pull)
                 ),
                 style_dim(),
             ))
@@ -1083,6 +1118,12 @@ fn draw(f: &mut Frame, app: &mut App) {
             Line::from(vec![
                 Span::styled("  Ctrl-W          ", style_accent()),
                 Span::styled("delete word back", style_muted()),
+            ]),
+            Line::from(""),
+            Line::from(vec![Span::styled(" Copy / Sync", style_bold(C_WHITE))]),
+            Line::from(vec![
+                Span::styled("  Ctrl-D          ", style_accent()),
+                Span::styled("flip push/pull direction", style_muted()),
             ]),
             Line::from(""),
             Line::from(vec![Span::styled(" General", style_bold(C_WHITE))]),
@@ -1211,6 +1252,10 @@ pub fn run() -> Result<()> {
                     app.kill_to_end();
                     continue;
                 }
+                KeyCode::Char('d') if app.action().supports_direction() => {
+                    app.pull = !app.pull;
+                    continue;
+                }
                 _ => {}
             }
         }
@@ -1301,10 +1346,10 @@ pub fn run() -> Result<()> {
                         app.validation = Some("enter a host first  (user@hostname)".into());
                         app.focus = Focus::Host;
                     } else if app.needs_param() && app.param.trim().is_empty() {
-                        let label = app.action().param_label().unwrap_or("param");
+                        let label = app.action().param_label(app.pull).unwrap_or("param");
                         app.validation = Some(format!(
                             "enter {label}  (e.g. {})",
-                            app.action().param_placeholder()
+                            app.action().param_placeholder(app.pull)
                         ));
                         app.focus = Focus::Param;
                     }
@@ -1322,4 +1367,69 @@ pub fn run() -> Result<()> {
 
     teardown(&mut terminal)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn identity_fp_is_public_key_hash_not_raw_private_bytes() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("identity");
+        unsafe { std::env::set_var("SEAM_IDENTITY_PATH", &path) };
+
+        let id = seam_protocol::handshake::IdentityKeypair::load_or_generate(&path).unwrap();
+        let expected = crate::known_hosts::fingerprint(id.x25519_public.as_bytes());
+        let expected_short = format!(
+            "{}:{}:{}:{}",
+            &expected[0..2],
+            &expected[2..4],
+            &expected[4..6],
+            &expected[6..8]
+        );
+
+        let shown = load_identity_fp();
+        assert_eq!(shown, expected_short);
+
+        // Must not be derivable from (or equal to) the raw on-disk bytes —
+        // guards against ever again showing key material instead of a hash.
+        let raw = std::fs::read(&path).unwrap();
+        let raw_as_shown = format!(
+            "{:02x}:{:02x}:{:02x}:{:02x}",
+            raw[0], raw[1], raw[2], raw[3]
+        );
+        assert_ne!(shown, raw_as_shown);
+
+        unsafe { std::env::remove_var("SEAM_IDENTITY_PATH") };
+    }
+
+    #[test]
+    fn copy_direction_toggle_produces_correct_positional_args() {
+        let push = Action::Copy.to_args("alice@host", "./file.txt", false);
+        assert_eq!(push, vec!["cp", "./file.txt", "alice@host:"]);
+
+        let pull = Action::Copy.to_args("alice@host", "/remote/file.txt", true);
+        assert_eq!(pull, vec!["cp", "alice@host:/remote/file.txt", "."]);
+    }
+
+    #[test]
+    fn sync_direction_toggle_produces_correct_positional_args() {
+        let push = Action::Sync.to_args("alice@host", "./mydir", false);
+        assert_eq!(push, vec!["sync", "./mydir", "alice@host:"]);
+
+        let pull = Action::Sync.to_args("alice@host", "/remote/dir", true);
+        assert_eq!(pull, vec!["sync", "alice@host:/remote/dir", "."]);
+    }
+
+    #[test]
+    fn only_copy_and_sync_support_direction_toggle() {
+        assert!(Action::Copy.supports_direction());
+        assert!(Action::Sync.supports_direction());
+        assert!(!Action::Shell.supports_direction());
+        assert!(!Action::Watch.supports_direction());
+    }
 }

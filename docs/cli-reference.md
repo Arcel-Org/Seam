@@ -1,6 +1,6 @@
 # CLI Reference
 
-This document covers every subcommand, flag, and option in the `seam` CLI (version 1.0.2).
+This document covers every subcommand, flag, and option in the `seam` CLI (version 1.1.0).
 
 ---
 
@@ -988,7 +988,7 @@ seam version [flags]
 ### Output (text)
 
 ```
-seam 1.0.2
+seam 1.1.0
 Build date   : 2025-06-01
 Noise pattern: Noise_XX_25519_ChaChaPoly_BLAKE2s
 KEM          : ML-KEM-768 (FIPS 203, CRYSTALS-Kyber)

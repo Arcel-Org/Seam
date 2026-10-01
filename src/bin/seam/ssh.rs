@@ -195,11 +195,14 @@ impl RemoteInfo {
 /// never lingers as a zombie. This function blocks the calling thread for up
 /// to the grace period — call it via [`terminate_async`] from async code.
 pub fn terminate(mut child: Child) {
-    let pid = child.id() as libc::pid_t;
-
-    // Best-effort graceful shutdown first.
-    unsafe {
-        libc::kill(pid, libc::SIGTERM);
+    // Best-effort graceful shutdown first. POSIX-only: Windows has no
+    // SIGTERM, so there we fall straight through to the hard kill below.
+    #[cfg(unix)]
+    {
+        let pid = child.id() as libc::pid_t;
+        unsafe {
+            libc::kill(pid, libc::SIGTERM);
+        }
     }
 
     let deadline = std::time::Instant::now() + std::time::Duration::from_millis(500);

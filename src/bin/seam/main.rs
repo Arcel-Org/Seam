@@ -241,6 +241,7 @@ enum Commands {
     ProxyRecv(proxy::ProxyRecvArgs),
     #[command(name = "_route-hop-recv", hide = true)]
     RouteHopRecv(route::RouteHopRecvArgs),
+    #[cfg(unix)]
     #[command(name = "_mount-recv", hide = true)]
     MountRecv(mount::MountRecvArgs),
 }
@@ -449,6 +450,7 @@ async fn main() -> Result<()> {
         Some(Commands::PingRecv(args)) => ping::run_recv(args).await,
         Some(Commands::ProxyRecv(args)) => proxy::run_recv(args).await,
         Some(Commands::RouteHopRecv(args)) => route::run_hop_recv(args).await,
+        #[cfg(unix)]
         Some(Commands::MountRecv(args)) => mount::run_recv(args).await,
     }
 }

@@ -3,7 +3,7 @@ exclude = ["fuzz"]
 
 [package]
 name = "seam-protocol"
-version = "1.1.0"
+version = "1.1.1"
 edition = "2024"
 license = "AGPL-3.0-only"
 description = "Post-quantum encrypted UDP transport (Noise_XX + ML-KEM-768 + ML-DSA-65) with a seam CLI: cp, shell, tunnel, mount, and more"

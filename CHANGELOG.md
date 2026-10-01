@@ -2,6 +2,22 @@
 
 All notable changes to Seam are documented here.
 
+## [1.1.1] - 2026-10-01
+
+### Security
+
+- Upgrade russh 0.62.5 → 0.63.3 and pageant → 0.2.3, resolving six
+  Dependabot advisories:
+  - GHSA-35g8-35p8-c8fw (unbounded memory exhaustion via CHANNEL_OPEN flood)
+  - GHSA-p8qx-h547-fjw9 (MAC-none block-cipher slice-index out-of-range panic)
+  - GHSA-47hw-gvq5-r2gm (channel-scoped Handler callbacks for unopened channels)
+  - GHSA-w3jg-pjxf-73p4 (missing X25519 zero-point validation in hybrid ML-KEM kex)
+  - GHSA-g6xm-f9xp-qq35 (client auth-attempt cap not enforced)
+  - GHSA-g4mp-vgx3-xrvm (pageant OOB read/oversized alloc on Windows)
+- Adapt to russh 0.63 `check_server_key` signature (`&PublicKey` →
+  `&PublicKeyOrCertificate`): Seam pins raw host keys only and rejects
+  server host certificates.
+
 ## [1.1.0] - 2026-10-01
 
 ### Added

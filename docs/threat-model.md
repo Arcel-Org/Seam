@@ -4,7 +4,7 @@
 **Version:** 1.0  
 **Date:** 2026-06-05  
 **Prepared by:** Arcel  
-**Product:** Seam v1.1.0 — Post-Quantum UDP Transport Protocol  
+**Product:** Seam v1.1.1 — Post-Quantum UDP Transport Protocol  
 **Status:** Pre-audit (third-party security audit not yet completed; see Section 6)
 
 ---
@@ -648,4 +648,4 @@ seam audit show --json --since 2026-01-01 > /var/log/seam-export.jsonl
 
 ---
 
-*This document was prepared by Arcel for the Seam v1.1.0 release. It reflects the state of the implementation as read from the source tree at the time of writing. Security properties are conditional on correct implementation; evaluators should perform independent code review against the source files cited in Section 5. This document does not constitute a security certification or accreditation.*
+*This document was prepared by Arcel for the Seam v1.1.1 release. It reflects the state of the implementation as read from the source tree at the time of writing. Security properties are conditional on correct implementation; evaluators should perform independent code review against the source files cited in Section 5. This document does not constitute a security certification or accreditation.*

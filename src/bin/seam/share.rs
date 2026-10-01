@@ -205,7 +205,7 @@ async fn handle_share_conn(
     }
 
     // Decrement remaining before serving (reserve the slot).
-    let prev = remaining.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |v| {
+    let prev = remaining.try_update(Ordering::SeqCst, Ordering::SeqCst, |v| {
         if v > 0 { Some(v - 1) } else { None }
     });
     if prev.is_err() {

@@ -57,7 +57,7 @@ seam transfers the same data in about 30% less wall time than scp on a clean loc
 | Forward secrecy | ✅ Double ratchet | ✅ per-session | ✅ per-session | Unknown |
 | Traffic analysis resistance | ✅ padding + chaff + jitter | ❌ | ❌ | ❌ |
 | Multi-path (round-robin, `seam cp`) | ✅ `--multipath` | ❌ | ❌ | ❌ |
-| Multi-path anti-jamming (redundant, packet-level) | 🚧 engine built, not wired to any command yet | ❌ | ❌ | ❌ |
+| Multi-path anti-jamming (redundant, packet-level) | ✅ `seam cp --multipath-redundant` | ❌ | ❌ | ❌ |
 | Session resumption | ✅ zero-RTT | ❌ | ❌ | Unknown |
 | FIPS mode | ✅ --fips-mode | ❌ | Partial | ✅ |
 | Audit logging (SP 800-53) | ✅ | ❌ | Partial | Unknown |
@@ -632,7 +632,7 @@ src/bin/seam/
 ├── stats.rs            # seam stats (live connection metrics)
 ├── scan.rs             # seam scan (port scanner)
 ├── ls.rs               # seam ls (remote file listing)
-├── russh_client.rs     # pure-Rust SSH (russh 0.61, no system ssh required)
+├── russh_client.rs     # pure-Rust SSH (russh 0.62, no system ssh required)
 └── config.rs           # seam config
 
 benches/                # Criterion benchmarks

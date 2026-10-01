@@ -115,7 +115,7 @@ seam
 ```
 
 ```
-╭─ Seam ───────────────────────────── v1.0.2 ─╮  ╭─ Actions ──────────────────╮
+╭─ Seam ───────────────────────────── v1.1.0 ─╮  ╭─ Actions ──────────────────╮
 │  Host  alice@server.example.com             │  │  1 ⬆  Copy file/dir        │
 │                                             │  │  2 ⬇  Sync directory       │
 ╰─────────────────────────────────────────────╯  │  3 ⧎  Open tunnel          │
@@ -463,7 +463,7 @@ Identity keys are signed with **ML-DSA-65** (NIST FIPS 204). Forward secrecy is 
 
 ### Supply chain security
 
-Seam runs `cargo audit` in CI on every push. As of v1.0.2, no unresolved `cargo audit` findings — one transitive dependency (`anyhow`, pulled in via the TUI's terminal backend) carries an allowed advisory with no fix released upstream yet.
+Seam runs `cargo audit` in CI on every push. As of v1.1.0, no unresolved `cargo audit` vulnerabilities — a handful of transitive dependencies carry allowed advisories (mostly `unsound` warnings with no upstream fix yet, e.g. `anyhow` `downcast_mut` and `lru`).
 
 ### Anti-replay
 

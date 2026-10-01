@@ -267,10 +267,7 @@ impl GroupState {
                 // that makes a Cauchy entry's denominator zero.
                 let mut row = Vec::with_capacity(self.k as usize);
                 for j in 0..self.k {
-                    match cauchy(ri, j, r) {
-                        Some(c) => row.push(c),
-                        None => return None,
-                    }
+                    row.push(cauchy(ri, j, r)?);
                 }
                 mat.push(row);
                 rhs.push(self.repairs[&ri].clone());

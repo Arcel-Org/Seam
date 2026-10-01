@@ -57,7 +57,7 @@ libc = "0.2"
 fips204 = { version = "0.4", features = ["ml-dsa-65", "default-rng"] }
 ratatui = "0.30"
 crossterm = "0.28"
-russh = { version = "0.62.5", default-features = false, features = ["flate2", "aws-lc-rs"] }
+russh = { version = "0.63.3", default-features = false, features = ["flate2", "aws-lc-rs"] }
 notify = "6"
 async-trait = "0.1"
 

@@ -14,7 +14,7 @@
 /// subprocess SSH on any russh failure, ensuring robustness.
 use anyhow::{Context, Result, bail};
 use russh::client;
-use russh::keys::{PrivateKeyWithHashAlg, PublicKey, decode_secret_key};
+use russh::keys::{PrivateKeyWithHashAlg, decode_secret_key};
 use std::sync::Arc;
 
 // ── Host-key verification handler ─────────────────────────────────────────────
@@ -38,11 +38,18 @@ impl client::Handler for HostKeyChecker {
     /// host authentication the moment something wired it up.
     async fn check_server_key(
         &mut self,
-        server_public_key: &PublicKey,
+        server_public_key: &russh::keys::PublicKeyOrCertificate,
     ) -> Result<bool, Self::Error> {
         use russh::keys::known_hosts::{check_known_hosts, learn_known_hosts};
 
-        match check_known_hosts(&self.host, self.port, server_public_key) {
+        // Seam pins raw host keys in ~/.ssh/known_hosts (TOFU), not
+        // certificates — so only consider plain public keys here.
+        let russh::keys::PublicKeyOrCertificate::PublicKey { key, .. } = server_public_key else {
+            tracing::warn!("russh: rejecting server host certificate (Seam pins raw keys only)");
+            return Ok(false);
+        };
+
+        match check_known_hosts(&self.host, self.port, key) {
             Ok(true) => Ok(true),
             Ok(false) => {
                 // No matching entry — first connection. TOFU: accept and record it.
@@ -51,7 +58,7 @@ impl client::Handler for HostKeyChecker {
                     self.host,
                     self.port
                 );
-                if let Err(e) = learn_known_hosts(&self.host, self.port, server_public_key) {
+                if let Err(e) = learn_known_hosts(&self.host, self.port, key) {
                     tracing::warn!("russh: failed to save known_hosts entry: {e}");
                 }
                 Ok(true)

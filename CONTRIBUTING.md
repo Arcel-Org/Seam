@@ -4,9 +4,9 @@ Thank you for your interest in contributing to Seam.
 
 ## Contributor License Agreement
 
-Before your contribution can be accepted, you must sign the **Arcel Contributor License Agreement (CLA)**. This grants Arcel the right to include your contribution in both the open-source (AGPL v3) and commercial releases of Seam.
+Before your contribution can be accepted, you must sign the [**Arcel Contributor License Agreement (CLA)**](https://github.com/Arcel-Org/cla/blob/main/cla.md). This grants Arcel LLC the right to include your contribution in both the open-source (AGPL v3) and commercial releases of Seam.
 
-The CLA is managed automatically via [CLA Assistant](https://cla-assistant.io/). When you open a pull request, a bot will check your CLA status and prompt you to sign if you haven't already.
+Signing is quick: if the [CLA Assistant](https://cla-assistant.io/) bot is installed it will prompt you on your pull request; otherwise email `legal@arcel.org` per the instructions in the CLA document. Contributions cannot be merged until you've signed.
 
 **Why a CLA?** Seam is dual-licensed. Without a CLA, we cannot include your contribution in commercial releases, which would mean rejecting the PR. The CLA keeps contribution open while preserving our ability to sustain the project commercially.
 

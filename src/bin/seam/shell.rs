@@ -130,7 +130,7 @@ pub async fn run_with_mux(
 }
 
 pub async fn run(args: ShellArgs) -> Result<()> {
-    connect::warn_if_multipath_requested(&args.multipath, args.multipath_redundant);
+    connect::reject_unsupported_multipath(&args.multipath, args.multipath_redundant)?;
     let cfg = super::config::Config::load().ok().unwrap_or_default();
     let cipher = seam_protocol::crypto::CipherSuite::parse(&cfg.cipher).unwrap_or_default();
 

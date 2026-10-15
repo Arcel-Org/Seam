@@ -172,8 +172,8 @@ seam shell --no-pty alice@server -- cat /etc/os-release
 |---|---|---|
 | `-p` / `--port <PORT>` | — | SSH port for bootstrap |
 | `--no-pty` | false | Force non-interactive mode (no PTY) even when stdin is a TTY |
-| `--multipath <addr1,...>` | — | **Not yet wired up — parses but has no effect.** See [architecture.md](architecture.md#multi-path-transport). |
-| `--multipath-redundant` | false | **Not yet wired up — parses but has no effect.** |
+| `--multipath <addr1,...>` | — | **Rejected — this command opens a single session and cannot shard streams across independent connections; only `seam cp` does multipath.** See [architecture.md](architecture.md#multi-path-transport). |
+| `--multipath-redundant` | false | **Rejected — not supported on this command.** |
 
 ### Behavior
 
@@ -220,8 +220,8 @@ seam forward -p 2222 8080:localhost:3000 alice@server
 | `-p` / `--port <PORT>` | — | SSH port for bootstrap |
 | `--bind-all` | false | Bind local port on `0.0.0.0` instead of `127.0.0.1` |
 | `--via <user@relay>` | — | Route through an intermediate Seam relay node (two-hop tunnel) |
-| `--multipath <addr1,...>` | — | **Not yet wired up — parses but has no effect.** See [architecture.md](architecture.md#multi-path-transport). |
-| `--multipath-redundant` | false | **Not yet wired up — parses but has no effect.** |
+| `--multipath <addr1,...>` | — | **Rejected — this command opens a single session and cannot shard streams across independent connections; only `seam cp` does multipath.** See [architecture.md](architecture.md#multi-path-transport). |
+| `--multipath-redundant` | false | **Rejected — not supported on this command.** |
 
 ### Multi-hop tunneling
 
@@ -392,8 +392,8 @@ seam serve --fips-mode --port 2222
 | `--no-shell` | false | Disable the shell service (forward and info remain available) |
 | `--auth-keys <FILE>` | — | Path to a file containing authorized client X25519 public keys (one hex key per line) |
 | `--auth-keys-dir <DIR>` | — | Directory containing `*.pub` files with authorized keys |
-| `--multipath <addr1,...>` | — | **Not yet wired up — parses but has no effect.** See [architecture.md](architecture.md#multi-path-transport). |
-| `--multipath-redundant` | false | **Not yet wired up — parses but has no effect.** |
+| `--multipath <addr1,...>` | — | **Rejected — this command opens a single session and cannot shard streams across independent connections; only `seam cp` does multipath.** See [architecture.md](architecture.md#multi-path-transport). |
+| `--multipath-redundant` | false | **Rejected — not supported on this command.** |
 
 ### Auth-keys file format
 
@@ -521,8 +521,8 @@ seam ping alice@server -i 200
 | `-p` / `--port <PORT>` | — | SSH port for bootstrap |
 | `-n` / `--count <N>` | `5` | Number of pings to send (0 = continuous until Ctrl-C) |
 | `-i` / `--interval <MS>` | `1000` | Interval between pings in milliseconds |
-| `--multipath <addr1,...>` | — | **Not yet wired up — parses but has no effect.** See [architecture.md](architecture.md#multi-path-transport). |
-| `--multipath-redundant` | false | **Not yet wired up — parses but has no effect.** |
+| `--multipath <addr1,...>` | — | **Rejected — this command opens a single session and cannot shard streams across independent connections; only `seam cp` does multipath.** See [architecture.md](architecture.md#multi-path-transport). |
+| `--multipath-redundant` | false | **Rejected — not supported on this command.** |
 
 ### Output
 

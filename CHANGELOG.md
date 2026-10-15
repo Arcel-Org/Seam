@@ -2,6 +2,33 @@
 
 All notable changes to Seam are documented here.
 
+## [1.1.2] - 2026-10-14
+
+### Security
+
+- **Dependency security + currency update** (184 crates):
+  - rustls 0.23.45 → 0.23.46 (RUSTSEC-2026-0346..0349: `Debug` leaks TLS
+    secrets, ServerHello classical-key-exchange downgrade, Brotli
+    pre-auth 1 GiB alloc, ECH rejection data leak)
+  - anyhow 1.0.102 → 1.0.103 (RUSTSEC-2026-0190: `downcast_mut` unsoundness)
+  - lru 0.18.0 → 0.18.2 (RUSTSEC-2026-0253: `LruCache::pop` use-after-free)
+  - chacha20 0.10.1 → 0.10.2, der 0.8.0 → 0.8.2, wnaf 0.14.0 → 0.14.1 (yanked)
+  - argon2 0.6.0-rc.8 → 0.6.0 stable, aws-lc-rs/aws-lc-sys bumps, and more
+  - `cargo audit` now clean (0 vulnerabilities / 0 warnings).
+
+### Changed
+
+- **Multipath flags on single-session commands now fail loudly instead of
+  being silently ignored.** `--multipath`/`--multipath-redundant` on
+  `shell`, `forward`, `ping` and `serve` previously printed a warning and
+  then transferred over a single path — implying anti-jamming redundancy
+  the user wasn't getting. They now error out, because those commands
+  establish a single session and cannot shard a stream across independent
+  connections the way `seam cp` (connection-level multipath) does. True
+  packet-level scheduling within a single session remains documented
+  follow-up work (it requires the server to associate one session with
+  several source addresses).
+
 ## [1.1.1] - 2026-10-01
 
 ### Security

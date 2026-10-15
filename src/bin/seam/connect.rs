@@ -15,18 +15,26 @@ thread_local! {
     static PIN_POLICY: Cell<PinPolicy> = const { Cell::new(PinPolicy::Enforce) };
 }
 
-/// Warn if `--multipath`/`--multipath-redundant` were passed on a command
-/// that doesn't implement them (everything except `seam cp`, which has its
-/// own connection-level implementation in `copy.rs::run_multipath_push`).
-/// See architecture.md#multi-path-transport for what's implemented and why
-/// the rest isn't yet.
-pub fn warn_if_multipath_requested(multipath: &Option<String>, multipath_redundant: bool) {
+/// Reject `--multipath`/`--multipath-redundant` on commands that can't honor
+/// them. Only `seam cp` supports (connection-level) multipath, via
+/// `copy.rs::run_multipath_push`; the streaming commands establish a single
+/// session and cannot shard a stream across independent connections the way
+/// `cp` shards files. Refusing loudly beats silently transferring over a
+/// single path while the operator believes they have anti-jamming redundancy.
+/// See architecture.md#multi-path-transport.
+pub fn reject_unsupported_multipath(
+    multipath: &Option<String>,
+    multipath_redundant: bool,
+) -> Result<()> {
     if multipath.is_some() || multipath_redundant {
-        eprintln!(
-            "warning: --multipath/--multipath-redundant are not yet implemented \
-             — transferring over a single path. See architecture.md#multi-path-transport."
-        );
+        return Err(anyhow::anyhow!(
+            "--multipath/--multipath-redundant are not supported on this command: \
+it opens a single session and cannot shard a stream across independent \
+connections (only `seam cp` does connection-level multipath).\
+See architecture.md#multi-path-transport."
+        ));
     }
+    Ok(())
 }
 
 /// Set the global TOFU pin policy for this process. Called once from main().

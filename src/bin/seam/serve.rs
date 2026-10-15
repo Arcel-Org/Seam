@@ -178,7 +178,7 @@ pub fn load_auth_keys_dir(dir: &std::path::Path) -> Result<HashSet<[u8; 32]>> {
 }
 
 pub async fn run(args: ServeArgs, fips_mode: bool) -> Result<()> {
-    connect::warn_if_multipath_requested(&args.multipath, args.multipath_redundant);
+    connect::reject_unsupported_multipath(&args.multipath, args.multipath_redundant)?;
     let cfg = super::config::Config::load().ok().unwrap_or_default();
     let cipher_str = if fips_mode {
         "aes256gcm"

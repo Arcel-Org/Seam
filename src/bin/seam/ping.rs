@@ -73,7 +73,7 @@ fn print_summary(remote: &str, stats: &PingStats) {
 }
 
 pub async fn run(args: PingArgs) -> Result<()> {
-    connect::warn_if_multipath_requested(&args.multipath, args.multipath_redundant);
+    connect::reject_unsupported_multipath(&args.multipath, args.multipath_redundant)?;
     let cfg = super::config::Config::load().ok().unwrap_or_default();
     let cipher = seam_protocol::crypto::CipherSuite::parse(&cfg.cipher).unwrap_or_default();
 

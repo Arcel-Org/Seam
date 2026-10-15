@@ -113,7 +113,7 @@ fn parse_forward_spec(spec: &str) -> Result<(u16, String, u16)> {
 // ── Client (initiating side) ──────────────────────────────────────────────────
 
 pub async fn run(args: ForwardArgs, fips_mode: bool) -> Result<()> {
-    connect::warn_if_multipath_requested(&args.multipath, args.multipath_redundant);
+    connect::reject_unsupported_multipath(&args.multipath, args.multipath_redundant)?;
     let (local_port, remote_host, remote_port) = parse_forward_spec(&args.spec)?;
 
     let (user, host) = if let Some(at) = args.remote.find('@') {

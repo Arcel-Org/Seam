@@ -27,4 +27,4 @@ jobs:
           branch: main
           allowlist: bot*,*[bot],dependabot*
           remote-organization-name: Arcel-Org
-          remote-repo-name: cla
+          remote-repository-name: cla

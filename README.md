@@ -6,8 +6,15 @@
 
 [![CI](https://github.com/Arcel-Org/Seam/actions/workflows/ci.yml/badge.svg)](https://github.com/Arcel-Org/Seam/actions/workflows/ci.yml)
 [![Dependency Audit](https://github.com/Arcel-Org/Seam/actions/workflows/security.yml/badge.svg)](https://github.com/Arcel-Org/Seam/actions/workflows/security.yml)
+[![Latest Release](https://img.shields.io/github/v/release/Arcel-Org/Seam)](https://github.com/Arcel-Org/Seam/releases)
+[![Changelog](https://img.shields.io/badge/changelog-See%20CHANGELOG.md-blue.svg)](CHANGELOG.md)
 [![License: AGPL v3](https://img.shields.io/badge/license-AGPL%20v3-blue.svg)](LICENSE)
 [![Rust 1.88+](https://img.shields.io/badge/rust-1.88+-orange.svg)](#build-from-source)
+
+**Platforms** —
+[![macOS](https://img.shields.io/badge/macOS-%E2%9C%93%20arm64%20+%20Intel-brightgreen.svg)]()
+[![Linux](https://img.shields.io/badge/Linux-%E2%9C%93%20x86_64%20+%20ARM-brightgreen.svg)]()
+[![Windows](https://img.shields.io/badge/Windows-%E2%9C%93%20x86_64-brightgreen.svg)]()
 
 </div>
 

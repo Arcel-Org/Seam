@@ -186,7 +186,6 @@ mod tests {
     #[test]
     fn proof_of_possession_verifies() {
         let t = make_ticket();
-        // codeql[rust/hard-coded-cryptographic-value] — fixed test vector
         let mut nonce = [0u8; POP_NONCE_LEN];
         OsRng.fill_bytes(&mut nonce);
         let proof = t.proof_of_possession(&nonce);
@@ -196,7 +195,6 @@ mod tests {
     #[test]
     fn wrong_nonce_fails_verification() {
         let t = make_ticket();
-        // codeql[rust/hard-coded-cryptographic-value] — fixed test vector
         let mut nonce = [0u8; POP_NONCE_LEN];
         OsRng.fill_bytes(&mut nonce);
         let proof = t.proof_of_possession(&nonce);

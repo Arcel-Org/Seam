@@ -123,7 +123,6 @@ mod tests {
             let inserted = seen.insert(nonce);
             assert!(
                 inserted,
-                // codeql[rust/cleartext-logging] — test-only self-check logging a synthetic nonce
                 "nonce collision detected at packet #{pkt_num} — \
                  nonce construction is broken (nonce={:?})",
                 nonce

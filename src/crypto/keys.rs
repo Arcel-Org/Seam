@@ -45,6 +45,8 @@ impl PacketKeys {
     /// Derive all keys from a single 32-byte traffic secret using BLAKE3,
     /// with an explicit cipher suite selection.
     pub fn derive_from_secret_with_cipher(secret: &[u8], cipher_suite: CipherSuite) -> Self {
+        // codeql[rust/hard-coded-cryptographic-value] — these are BLAKE3 domain-separation
+        // context labels, not keys; actual key material comes from `secret` at runtime.
         let enc_key: [u8; 32] = blake3::derive_key("apex/payload-encryption/v1", secret);
         let hp_key: [u8; 32] = blake3::derive_key("apex/header-protection/v1", secret);
         let nb_full: [u8; 32] = blake3::derive_key("apex/nonce-base/v1", secret);

@@ -942,6 +942,7 @@ fn enumerate_local_ips() -> Vec<std::net::IpAddr> {
             }
             let mut ifa = ifap;
             while !ifa.is_null() {
+                // codeql[rust/access-invalid-pointer] — `ifa` is null-guarded above; canonical getifaddrs walk
                 let ifa_ref = &*ifa;
                 if ifa_ref.ifa_addr.is_null() {
                     ifa = ifa_ref.ifa_next;

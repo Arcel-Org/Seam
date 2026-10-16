@@ -144,6 +144,7 @@ mod tests {
 
     #[test]
     fn ticket_roundtrip() {
+        // codeql[rust/hard-coded-cryptographic-value] — fixed test vectors
         let key = TicketKey::new([0x42u8; 32]);
         let keys_c2s = PacketKeys::derive_from_secret(&[0xBEu8; 32]);
         let keys_s2c = PacketKeys::derive_from_secret(&[0xCFu8; 32]);
@@ -160,6 +161,7 @@ mod tests {
 
     #[test]
     fn tampered_ticket_rejected() {
+        // codeql[rust/hard-coded-cryptographic-value] — fixed test vectors
         let key = TicketKey::new([0x42u8; 32]);
         let keys = PacketKeys::derive_from_secret(&[0u8; 32]);
         let mut ticket = key.issue(1, &keys, &keys);
@@ -169,6 +171,7 @@ mod tests {
 
     #[test]
     fn issued_tickets_use_fresh_nonces() {
+        // codeql[rust/hard-coded-cryptographic-value] — fixed test vectors
         let key = TicketKey::new([0x42u8; 32]);
         let keys = PacketKeys::derive_from_secret(&[0xBEu8; 32]);
         let t1 = key.issue(7, &keys, &keys);

@@ -28,6 +28,7 @@ mod tests {
 
     #[test]
     fn header_protection_is_symmetric() {
+        // codeql[rust/hard-coded-cryptographic-value] — fixed test vector, not a real key
         let hp_key = [7u8; 32];
         let sample = [3u8; 16];
         let mut header = [1u8; 32];
@@ -41,6 +42,7 @@ mod tests {
 
     #[test]
     fn changing_sample_changes_mask() {
+        // codeql[rust/hard-coded-cryptographic-value] — fixed test vector, not a real key
         let hp_key = [9u8; 32];
         let mut a = [0xAAu8; 32];
         let mut b = [0xAAu8; 32];

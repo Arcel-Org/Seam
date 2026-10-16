@@ -7,6 +7,7 @@ use libfuzzer_sys::fuzz_target;
 use seam_protocol::transport::TicketKey;
 
 fuzz_target!(|data: &[u8]| {
+    // codeql[rust/hard-coded-cryptographic-value] — fixed key for reproducible fuzzing
     let key = TicketKey::new([0x42u8; 32]);
     let _ = key.redeem(data);
 });
